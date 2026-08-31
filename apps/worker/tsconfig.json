@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "outDir": "../../dist/apps/worker",
+    "rootDir": "src",
+    "tsBuildInfoFile": "../../dist/apps/worker.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../../packages/application" },
+    { "path": "../../packages/config" },
+    { "path": "../../packages/domain" },
+    { "path": "../../packages/persistence" },
+    { "path": "../../packages/telegram" }
+  ]
+}

@@ -1,0 +1,6 @@
+dist/
+node_modules/
+.worktrees/
+docs/
+pnpm-lock.yaml
+README.md
