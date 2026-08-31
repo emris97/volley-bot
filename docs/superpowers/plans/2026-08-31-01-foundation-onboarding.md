@@ -6,7 +6,7 @@
 
 **Architecture:** A pnpm workspace contains independently runnable API and worker applications plus focused domain, application, persistence, Telegram, configuration, and contract packages. PostgreSQL is authoritative; Telegram is accessed behind a gateway so onboarding can be tested without the network.
 
-**Tech Stack:** Node.js 24 LTS, pnpm 11.19.0, TypeScript 5.9.3, NestJS 11.1.28, Fastify 5.11.0, grammY 1.45.1, Drizzle ORM 0.45.2, PostgreSQL 16, Redis 8, Vitest 4.1.10, Testcontainers 12.0.4
+**Tech Stack:** Node.js 24 LTS, pnpm 11.19.0, TypeScript 5.9.3, NestJS 11.1.28, Nest CLI 11.0.24, Fastify 5.11.0, grammY 1.45.1, Drizzle ORM 0.45.2, PostgreSQL 16, Redis 8, Vitest 4.1.10, Testcontainers 12.0.4
 
 **Spec:** `docs/superpowers/specs/2026-08-31-volleyball-bot-design.md`
 
@@ -35,6 +35,7 @@
 - Create: `eslint.config.mjs`
 - Create: `tsconfig.base.json`
 - Create: `vitest.config.ts`
+- Create from Nest CLI and retain: `nest-cli.json`
 - Create: `apps/api/package.json`
 - Create: `apps/api/tsconfig.json`
 - Create: `apps/worker/package.json`
@@ -47,6 +48,7 @@
 **Interfaces:**
 - Produces: workspace package names `@volley/application`, `@volley/config`, `@volley/contracts`, `@volley/domain`, `@volley/persistence`, and `@volley/telegram`.
 - Produces: root commands `pnpm test`, `pnpm typecheck`, `pnpm lint`, and `pnpm build`.
+- Produces: Nest CLI projects `api` and `worker`; later `nest generate` commands must always specify one of these projects.
 
 - [ ] **Step 1: Write the failing workspace smoke test**
 
@@ -69,7 +71,18 @@ Run: `corepack enable && pnpm install && pnpm vitest run tests/workspace.spec.ts
 
 Expected: FAIL because the workspace manifests and package exports do not exist.
 
-- [ ] **Step 3: Create the workspace manifests and package markers**
+- [ ] **Step 3: Generate the Nest applications, then create the workspace packages**
+
+Run the pinned official generator directly in the existing repository. The repository has no `package.json` yet, and `--skip-git` preserves its existing Git history and documentation:
+
+```bash
+npx @nestjs/cli@11.0.24 new api --directory . --package-manager pnpm --strict --skip-git --skip-install
+npx @nestjs/cli@11.0.24 generate app worker
+```
+
+The second command converts the generated API into Nest monorepo mode and creates `apps/api` and `apps/worker`. Retain `nest-cli.json`, both `main.ts` files, and both root modules. Remove generated demonstration controllers, services, and their tests; the following tasks replace them with health, Telegram, and worker lifecycle modules.
+
+Do not run `nest generate library` for `domain`, `application`, `contracts`, `config`, `persistence`, or `telegram`. Create those as plain pnpm workspace packages so `domain`, `application`, and `contracts` do not acquire NestJS dependencies or generated module/service boilerplate.
 
 Use this root manifest as the dependency baseline:
 
@@ -87,6 +100,8 @@ Use this root manifest as the dependency baseline:
     "format:check": "prettier --check ."
   },
   "devDependencies": {
+    "@nestjs/cli": "11.0.24",
+    "@nestjs/schematics": "11.1.0",
     "@nestjs/testing": "11.1.28",
     "@types/node": "24.13.3",
     "@types/supertest": "7.2.1",
@@ -110,7 +125,7 @@ Each package exports a marker from `src/index.ts`, for example:
 export const packageMarker = 'domain' as const;
 ```
 
-Configure `tsconfig.base.json` with strict mode, decorators, project references, `moduleResolution: "NodeNext"`, and explicit `paths` entries for every `@volley/*` package. Keep every package composite and declaration-enabled.
+Replace the generator's dependency and compiler defaults with the pinned manifest above. Configure `tsconfig.base.json` with strict mode, decorators, project references, `moduleResolution: "NodeNext"`, and explicit `paths` entries for every `@volley/*` package. Keep every package composite and declaration-enabled. Update `nest-cli.json` so its only application projects are `api` and `worker`, both using the `tsc` builder; shared `packages/*` remain outside Nest CLI project generation.
 
 Use exact runtime dependencies in the owning workspace package: API (`@nestjs/common`, `@nestjs/core`, `@nestjs/config`, `@nestjs/platform-fastify` 11.1.28/4.0.4 as applicable, `fastify` 5.11.0, `reflect-metadata` 0.2.2, `rxjs` 7.8.2); worker (`@nestjs/common` and `@nestjs/core` 11.1.28, `bullmq` 6.0.5, `ioredis` 6.0.0); config (`zod` 4.4.3); persistence (`drizzle-orm` 0.45.2 and `pg` 8.22.0); Telegram (`grammy` 1.45.1). Internal packages use `workspace:*` dependencies.
 
@@ -122,12 +137,14 @@ Run: `pnpm test -- tests/workspace.spec.ts`
 
 Run: `pnpm typecheck && pnpm lint && pnpm build`
 
-Expected: all commands exit 0 and the smoke test reports one passing test.
+Run: `pnpm exec nest info`
+
+Expected: all commands exit 0, the smoke test reports one passing test, and Nest CLI reports the pinned workspace without creating a nested Git repository.
 
 - [ ] **Step 5: Commit the workspace scaffold**
 
 ```bash
-git add package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc .nvmrc .gitignore .prettierrc.json eslint.config.mjs tsconfig.base.json vitest.config.ts apps packages tests/workspace.spec.ts
+git add package.json pnpm-lock.yaml pnpm-workspace.yaml nest-cli.json .npmrc .nvmrc .gitignore .prettierrc.json eslint.config.mjs tsconfig.base.json vitest.config.ts apps packages tests/workspace.spec.ts
 git commit -m "build: scaffold TypeScript workspace"
 ```
 
