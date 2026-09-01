@@ -1,5 +1,20 @@
 BEGIN;
 
+ALTER TABLE registrations
+  ADD COLUMN IF NOT EXISTS confirmation_revision INTEGER NOT NULL DEFAULT 0;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'registrations_confirmation_revision_check'
+  ) THEN
+    ALTER TABLE registrations
+      ADD CONSTRAINT registrations_confirmation_revision_check
+      CHECK (confirmation_revision >= 0);
+  END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS scheduled_jobs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,

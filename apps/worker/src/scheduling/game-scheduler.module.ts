@@ -5,11 +5,19 @@ import type { GameId } from '@volley/domain';
 import {
   createDatabase,
   GameRepository,
+  NotificationRepository,
   RegistrationRepository,
   ScheduledJobRepository,
 } from '@volley/persistence';
 import { Queue, Worker } from 'bullmq';
 import { Pool } from 'pg';
+import {
+  createTelegramBot,
+  GrammyTelegramGateway,
+  NotificationSender,
+  TelegramPrivateChatUnavailableError,
+} from '@volley/telegram';
+import { NotificationConsumer } from '../notifications/notification.consumer.js';
 import {
   BullMqDelayedJobScheduler,
   GameSchedulerConsumer,
@@ -28,12 +36,54 @@ export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
         const database = createDatabase(pool);
         const games = new GameRepository(database);
         const registrations = new RegistrationRepository(database);
+        const notifications = new NotificationRepository(database);
         const scheduledJobs = new ScheduledJobRepository(database);
         const connection = redisConnection(env.REDIS_URL);
         const queue = new Queue('volley-game-scheduler', { connection });
         const scheduler = new BullMqDelayedJobScheduler(queue);
         const reconciler = new ReconcileGameJobs(scheduledJobs, scheduler);
-        const consumer = new GameSchedulerConsumer(games);
+        const telegram = new GrammyTelegramGateway(
+          createTelegramBot(env.BOT_TOKEN),
+        );
+        const sender = new NotificationSender(
+          {
+            async sendPrivate(telegramUserId, text, buttons) {
+              try {
+                await telegram.sendMessage(telegramUserId, text, {
+                  parseMode: 'HTML',
+                  keyboard: [
+                    buttons.map((button) =>
+                      typeof button === 'string'
+                        ? { text: button, callbackData: 'noop' }
+                        : button,
+                    ),
+                  ],
+                });
+              } catch (error) {
+                const message =
+                  error instanceof Error ? error.message : String(error);
+                if (/forbidden|chat not found|bot was blocked/i.test(message)) {
+                  throw new TelegramPrivateChatUnavailableError(message);
+                }
+                throw error;
+              }
+            },
+            async sendGroupMessage(groupChatId, text) {
+              await telegram.sendMessage(groupChatId, text, {
+                parseMode: 'HTML',
+              });
+            },
+          },
+          notifications,
+        );
+        const notificationConsumer = new NotificationConsumer(
+          notifications,
+          sender,
+          registrations,
+        );
+        const consumer = new GameSchedulerConsumer(games, (job) =>
+          notificationConsumer.process(job),
+        );
         const worker = new Worker(
           'volley-game-scheduler',
           async (bullJob) => {

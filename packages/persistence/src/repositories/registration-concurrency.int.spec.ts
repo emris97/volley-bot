@@ -139,6 +139,47 @@ describe('RegistrationRepository concurrency', () => {
       'ROSTERED',
     );
   });
+
+  it('confirms once and makes the matching expiry revision harmless', async () => {
+    const groupId = await insertGroupWithChat(pool, '-2003');
+    const gameId = await insertOpenGame(pool, groupId, 1);
+    const userId = await insertUser(pool, '301');
+    const registrations = new RegistrationRepository(createDatabase(pool));
+    const tentative = await registrations.registerParticipant({
+      groupId,
+      gameId,
+      userId,
+      intent: 'TENTATIVE',
+      membershipPriority: 1,
+      idempotencyKey: 'callback:tentative-confirm',
+    });
+    const confirmedAt = new Date('2026-09-09T16:30:00.000Z');
+
+    const confirmed = await registrations.confirmTentative({
+      groupId,
+      gameId,
+      registrationId: tentative.registrationId,
+      actorUserId: userId,
+      confirmedAt,
+    });
+    const expiry = await registrations.expireTentative({
+      groupId,
+      gameId,
+      registrationId: tentative.registrationId,
+      expectedConfirmationRevision: 0,
+      expiredAt: new Date('2026-09-09T17:00:00.000Z'),
+    });
+
+    expect(confirmed).toMatchObject({
+      state: 'ROSTERED',
+      confirmedAt,
+      confirmationRevision: 1,
+    });
+    expect(expiry).toEqual({ expired: false });
+    expect(await registrationState(pool, tentative.registrationId)).toBe(
+      'ROSTERED',
+    );
+  });
 });
 
 const insertGroup = async (pool: Pool) => {

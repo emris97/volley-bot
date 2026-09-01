@@ -1,4 +1,5 @@
 import {
+  asGameId,
   asRegistrationId,
   asGroupId,
   asUserId,
@@ -72,6 +73,139 @@ export class RegistrationRepository {
     }));
   }
 
+  public async confirmTentative(input: {
+    groupId: GroupId;
+    gameId: GameId;
+    registrationId: RegistrationId;
+    actorUserId: UserId;
+    confirmedAt: Date;
+  }): Promise<{
+    registrationId: RegistrationId;
+    state: RegistrationState;
+    confirmedAt: Date | null;
+    confirmationRevision: number;
+  }> {
+    return this.database.transaction(async (transaction) => {
+      const game = await lockActiveGame(
+        transaction,
+        input.groupId,
+        input.gameId,
+      );
+      const [registration] = await transaction
+        .select()
+        .from(registrations)
+        .where(
+          and(
+            eq(registrations.groupId, input.groupId),
+            eq(registrations.gameId, input.gameId),
+            eq(registrations.id, input.registrationId),
+          ),
+        )
+        .for('update')
+        .limit(1);
+      if (registration === undefined) throw new Error('Registration not found');
+      if (registration.userId !== input.actorUserId) {
+        throw new Error('Tentative registration belongs to another user');
+      }
+      if (registration.state !== 'TENTATIVE') {
+        if (registration.confirmedAt !== null) {
+          return {
+            registrationId: asRegistrationId(registration.id),
+            state: registration.state,
+            confirmedAt: registration.confirmedAt,
+            confirmationRevision: registration.confirmationRevision,
+          };
+        }
+        throw new Error('Tentative registration is no longer active');
+      }
+
+      const confirmationRevision = registration.confirmationRevision + 1;
+      await transaction
+        .update(registrations)
+        .set({
+          state: 'WAITLISTED',
+          confirmedAt: input.confirmedAt,
+          confirmationRevision,
+          updatedAt: input.confirmedAt,
+        })
+        .where(eq(registrations.id, registration.id));
+      const placement = await recalculatePlacement(
+        transaction,
+        input,
+        game.capacity,
+        input.confirmedAt,
+      );
+      const state = placement.roster.some((item) => item.id === registration.id)
+        ? 'ROSTERED'
+        : 'WAITLISTED';
+      await recordChange(transaction, {
+        groupId: input.groupId,
+        gameId: input.gameId,
+        registrationId: registration.id,
+        actorUserId: input.actorUserId,
+        eventType: 'TENTATIVE_CONFIRMED',
+        payload: { state, confirmationRevision },
+      });
+      return {
+        registrationId: asRegistrationId(registration.id),
+        state,
+        confirmedAt: input.confirmedAt,
+        confirmationRevision,
+      };
+    });
+  }
+
+  public async expireTentative(input: {
+    groupId: GroupId;
+    gameId: GameId;
+    registrationId: RegistrationId;
+    expectedConfirmationRevision: number;
+    expiredAt: Date;
+  }): Promise<{ expired: boolean }> {
+    return this.database.transaction(async (transaction) => {
+      await lockActiveGame(transaction, input.groupId, input.gameId);
+      const [registration] = await transaction
+        .select()
+        .from(registrations)
+        .where(
+          and(
+            eq(registrations.groupId, input.groupId),
+            eq(registrations.gameId, input.gameId),
+            eq(registrations.id, input.registrationId),
+          ),
+        )
+        .for('update')
+        .limit(1);
+      if (
+        registration === undefined ||
+        registration.state !== 'TENTATIVE' ||
+        registration.confirmationRevision !== input.expectedConfirmationRevision
+      ) {
+        return { expired: false };
+      }
+      await transaction
+        .update(registrations)
+        .set({
+          state: 'CANCELLED',
+          cancelledAt: input.expiredAt,
+          cancellationReason: 'TENTATIVE_EXPIRED',
+          confirmationRevision: registration.confirmationRevision + 1,
+          updatedAt: input.expiredAt,
+        })
+        .where(eq(registrations.id, registration.id));
+      await recordChange(transaction, {
+        groupId: input.groupId,
+        gameId: input.gameId,
+        registrationId: registration.id,
+        eventType: 'TENTATIVE_EXPIRED',
+        payload: {
+          expectedConfirmationRevision: input.expectedConfirmationRevision,
+        },
+      });
+      return { expired: true };
+    });
+  }
+
   public async resolve(gameId: GameId, telegramUserId: TelegramId) {
     return this.database.transaction(async (transaction) => {
       const [game] = await transaction
@@ -108,6 +242,35 @@ export class RegistrationRepository {
           active === undefined ? null : asRegistrationId(active.id),
       };
     });
+  }
+
+  public async resolveTentativeActor(
+    registrationId: RegistrationId,
+    telegramUserId: TelegramId,
+  ): Promise<{ groupId: GroupId; gameId: GameId; userId: UserId }> {
+    const [row] = await this.database
+      .select({
+        groupId: registrations.groupId,
+        gameId: registrations.gameId,
+        userId: registrations.userId,
+        telegramUserId: users.telegramUserId,
+      })
+      .from(registrations)
+      .innerJoin(users, eq(users.id, registrations.userId))
+      .where(eq(registrations.id, registrationId))
+      .limit(1);
+    if (
+      row === undefined ||
+      row.userId === null ||
+      row.telegramUserId.toString() !== telegramUserId
+    ) {
+      throw new Error('Tentative registration identity mismatch');
+    }
+    return {
+      groupId: asGroupId(row.groupId),
+      gameId: asGameId(row.gameId),
+      userId: asUserId(row.userId),
+    };
   }
 
   public async registerParticipant(
@@ -503,6 +666,24 @@ const lockOpenGame = async (
   return game;
 };
 
+const lockActiveGame = async (
+  transaction: Transaction,
+  groupId: GroupId,
+  gameId: GameId,
+) => {
+  const [game] = await transaction
+    .select()
+    .from(games)
+    .where(and(eq(games.groupId, groupId), eq(games.id, gameId)))
+    .for('update')
+    .limit(1);
+  if (game === undefined) throw new Error('Game not found');
+  if (game.state === 'CANCELLED' || game.state === 'COMPLETED') {
+    throw new Error('Game is no longer active');
+  }
+  return game;
+};
+
 const recalculatePlacement = async (
   transaction: Transaction,
   input: { groupId: GroupId; gameId: GameId },
@@ -535,7 +716,7 @@ const recordChange = async (
     groupId: GroupId;
     gameId: GameId;
     registrationId: string;
-    actorUserId: UserId;
+    actorUserId?: UserId;
     eventType: string;
     payload: Record<string, unknown>;
   },

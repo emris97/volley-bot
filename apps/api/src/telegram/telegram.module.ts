@@ -6,6 +6,7 @@ import {
   type OnApplicationShutdown,
 } from '@nestjs/common';
 import {
+  ConfirmTentative,
   ConfigureGroup,
   OnboardGroup,
   RegisterGuest,
@@ -29,9 +30,11 @@ import {
   GroupOnboardingHandlers,
   RegistrationHandlers,
   registerRegistrationHandlers,
+  registerTentativeHandlers,
   registerGroupOnboardingHandlers,
   SignedStartToken,
   TelegramMembershipResolver,
+  TentativeHandlers,
   TELEGRAM_UPDATE_HANDLER,
   TELEGRAM_WEBHOOK_SECRET,
   WebhookController,
@@ -135,6 +138,20 @@ class TelegramRuntimeLifecycle implements OnApplicationShutdown {
                 return `https://t.me/${username}?start=${token}`;
               },
             },
+          ),
+        );
+        registerTentativeHandlers(
+          bot,
+          new TentativeHandlers(
+            {
+              resolve: (registrationId, telegramUserId) =>
+                registrations.resolveTentativeActor(
+                  registrationId,
+                  telegramUserId,
+                ),
+            },
+            new ConfirmTentative(registrations),
+            new WithdrawRegistration(registrations),
           ),
         );
         return { bot: createLazyTelegramUpdateHandler(bot), pool };
