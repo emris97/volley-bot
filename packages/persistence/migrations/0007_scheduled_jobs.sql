@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
   kind TEXT NOT NULL,
   schedule_revision INTEGER NOT NULL,
   run_at TIMESTAMPTZ NOT NULL,
+  completed_at TIMESTAMPTZ,
   payload JSONB NOT NULL DEFAULT '{}'::JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -45,7 +46,17 @@ CREATE INDEX IF NOT EXISTS scheduled_jobs_group_run_at_idx
   ON scheduled_jobs(group_id, run_at);
 
 CREATE INDEX IF NOT EXISTS scheduled_jobs_pending_idx
-  ON scheduled_jobs(run_at);
+  ON scheduled_jobs(run_at)
+  WHERE completed_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS notification_deliveries (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  deterministic_job_id TEXT NOT NULL,
+  registration_id UUID NOT NULL REFERENCES registrations(id) ON DELETE CASCADE,
+  delivered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT notification_deliveries_job_registration_unique
+    UNIQUE (deterministic_job_id, registration_id)
+);
 
 INSERT INTO volley_schema_migrations (name)
 VALUES ('0007_scheduled_jobs')

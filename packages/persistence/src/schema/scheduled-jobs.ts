@@ -34,6 +34,10 @@ export const scheduledJobs = pgTable(
     kind: text('kind').$type<ScheduledJobKind>().notNull(),
     scheduleRevision: integer('schedule_revision').notNull(),
     runAt: timestamp('run_at', { mode: 'date', withTimezone: true }).notNull(),
+    completedAt: timestamp('completed_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
     payload: jsonb('payload')
       .$type<Record<string, unknown>>()
       .default({})
@@ -51,7 +55,9 @@ export const scheduledJobs = pgTable(
       table.deterministicJobId,
     ),
     index('scheduled_jobs_group_run_at_idx').on(table.groupId, table.runAt),
-    index('scheduled_jobs_pending_idx').on(table.runAt),
+    index('scheduled_jobs_pending_idx')
+      .on(table.runAt)
+      .where(sql`${table.completedAt} is null`),
     check(
       'scheduled_jobs_schedule_revision_check',
       sql`${table.scheduleRevision} >= 0`,

@@ -10,6 +10,7 @@ export interface WithdrawRegistrationCommand {
   registrationId: RegistrationId;
   actorUserId: UserId;
   reason?: string;
+  expectedConfirmationRevision?: number;
 }
 
 export class WithdrawRegistration {

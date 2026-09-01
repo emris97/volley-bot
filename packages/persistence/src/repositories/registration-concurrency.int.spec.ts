@@ -138,6 +138,16 @@ describe('RegistrationRepository concurrency', () => {
     expect(await registrationState(pool, waiter.registrationId)).toBe(
       'ROSTERED',
     );
+    const promotion = await pool.query<{ payload: { registrationId: string } }>(
+      "SELECT payload FROM outbox_events WHERE event_type = 'WAITLIST_PROMOTED'",
+    );
+    expect(promotion.rows).toEqual([
+      {
+        payload: expect.objectContaining({
+          registrationId: waiter.registrationId,
+        }),
+      },
+    ]);
   });
 
   it('confirms once and makes the matching expiry revision harmless', async () => {
@@ -160,6 +170,7 @@ describe('RegistrationRepository concurrency', () => {
       gameId,
       registrationId: tentative.registrationId,
       actorUserId: userId,
+      expectedConfirmationRevision: 0,
       confirmedAt,
     });
     const expiry = await registrations.expireTentative({
@@ -176,6 +187,18 @@ describe('RegistrationRepository concurrency', () => {
       confirmationRevision: 1,
     });
     expect(expiry).toEqual({ expired: false });
+    expect(await registrationState(pool, tentative.registrationId)).toBe(
+      'ROSTERED',
+    );
+
+    await registrations.withdraw({
+      groupId,
+      gameId,
+      registrationId: tentative.registrationId,
+      actorUserId: userId,
+      reason: 'TENTATIVE_DECLINED',
+      expectedConfirmationRevision: 0,
+    });
     expect(await registrationState(pool, tentative.registrationId)).toBe(
       'ROSTERED',
     );

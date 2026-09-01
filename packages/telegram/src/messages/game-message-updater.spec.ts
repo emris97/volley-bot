@@ -52,6 +52,34 @@ describe('GameMessageUpdater', () => {
     ).rejects.toThrow('network down');
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
+
+  it('uses the repository distributed lock when available', async () => {
+    const current = view();
+    const lockedRepository = {
+      load: vi.fn().mockResolvedValue(current),
+      setCanonicalMessageId: vi.fn(),
+    };
+    const games = {
+      ...lockedRepository,
+      withLockedView: vi
+        .fn()
+        .mockImplementation(async (_groupId, _gameId, callback) =>
+          callback(lockedRepository),
+        ),
+    };
+    const telegram = {
+      editMessage: vi.fn().mockResolvedValue(undefined),
+      sendMessage: vi.fn(),
+    };
+
+    await new GameMessageUpdater(games, telegram).refresh(
+      current.groupId,
+      current.gameId,
+    );
+
+    expect(games.withLockedView).toHaveBeenCalledOnce();
+    expect(lockedRepository.load).toHaveBeenCalledOnce();
+  });
 });
 
 const view = (): GameMessageView => ({

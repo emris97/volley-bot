@@ -41,6 +41,7 @@ export class TentativeHandlers {
         ...actor,
         registrationId: callback.registrationId,
         actorUserId: actor.userId,
+        expectedConfirmationRevision: callback.confirmationRevision,
       });
       return;
     }
@@ -49,6 +50,7 @@ export class TentativeHandlers {
       registrationId: callback.registrationId,
       actorUserId: actor.userId,
       reason: 'TENTATIVE_DECLINED',
+      expectedConfirmationRevision: callback.confirmationRevision,
     });
   }
 }

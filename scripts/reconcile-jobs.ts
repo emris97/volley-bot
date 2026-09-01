@@ -5,20 +5,34 @@ import type { GameId } from '@volley/domain';
 import {
   createDatabase,
   GameRepository,
+  OutboxRepository,
   RegistrationRepository,
   ScheduledJobRepository,
 } from '@volley/persistence';
 import { Queue } from 'bullmq';
 import { Pool } from 'pg';
 import { BullMqDelayedJobScheduler } from '../apps/worker/src/scheduling/game-scheduler.consumer.js';
+import { BullMqJobPublisher } from '../apps/worker/src/outbox/outbox.consumer.js';
 
 @Injectable()
 class ReconcileJobsCommand {
-  public async run(): Promise<{ pages: number; games: number; jobs: number }> {
+  public async run(): Promise<{
+    pages: number;
+    games: number;
+    jobs: number;
+    outboxEvents: number;
+  }> {
     const databaseUrl = requiredUrl('DATABASE_URL', 'postgresql:');
     const redisUrl = requiredUrl('REDIS_URL', 'redis:');
     const pool = new Pool({ connectionString: databaseUrl.toString() });
     const queue = new Queue('volley-game-scheduler', {
+      connection: {
+        host: redisUrl.hostname,
+        port: Number(redisUrl.port || 6379),
+        password: redisUrl.password || undefined,
+      },
+    });
+    const outboxQueue = new Queue('volley-outbox', {
       connection: {
         host: redisUrl.hostname,
         port: Number(redisUrl.port || 6379),
@@ -33,12 +47,14 @@ class ReconcileJobsCommand {
         new ScheduledJobRepository(database),
         new BullMqDelayedJobScheduler(queue),
       );
+      const outbox = new OutboxRepository(database);
+      const publisher = new BullMqJobPublisher(outboxQueue);
       let afterId: GameId | undefined;
       let pages = 0;
       let gameCount = 0;
       let jobs = 0;
       do {
-        const page = await games.listNonterminal(100, afterId);
+        const page = await games.listForReconciliation(100, afterId);
         if (page.length === 0) break;
         pages += 1;
         for (const game of page) {
@@ -53,8 +69,34 @@ class ReconcileJobsCommand {
         afterId = page.at(-1)?.id;
         if (page.length < 100) break;
       } while (afterId !== undefined);
-      return { pages, games: gameCount, jobs };
+      let outboxEvents = 0;
+      let outboxCursor: { occurredAt: Date; id: string } | undefined;
+      do {
+        const events = await outbox.listReplayBatch(100, outboxCursor);
+        for (const event of events) {
+          await publisher.publish({
+            id: `outbox:${event.id}`,
+            type: event.type,
+            payload: {
+              ...event.payload,
+              groupId: event.groupId,
+              aggregateType: event.aggregateType,
+              aggregateId: event.aggregateId,
+            },
+            occurredAt: event.occurredAt,
+          });
+          outboxEvents += 1;
+        }
+        const last = events.at(-1);
+        outboxCursor =
+          last === undefined
+            ? undefined
+            : { occurredAt: last.occurredAt, id: last.id };
+        if (events.length < 100) break;
+      } while (outboxCursor !== undefined);
+      return { pages, games: gameCount, jobs, outboxEvents };
     } finally {
+      await outboxQueue.close();
       await queue.close();
       await pool.end();
     }

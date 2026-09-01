@@ -3,7 +3,7 @@ import {
   type NotificationIntent,
   type RequiredJob,
 } from '@volley/application';
-import type { GameId, GroupId } from '@volley/domain';
+import type { GameId, GroupId, RegistrationId } from '@volley/domain';
 import type {
   NotificationRecipientRecord,
   RegistrationRepository,
@@ -19,6 +19,17 @@ export interface NotificationRecipientRepository {
     groupId: GroupId,
     gameId: GameId,
   ): Promise<readonly NotificationRecipientRecord[]>;
+  findByRegistration(
+    registrationId: RegistrationId,
+  ): Promise<NotificationRecipientRecord | null>;
+  wasDelivered(
+    deterministicJobId: string,
+    registrationId: RegistrationId,
+  ): Promise<boolean>;
+  markDelivered(
+    deterministicJobId: string,
+    registrationId: RegistrationId,
+  ): Promise<void>;
 }
 
 export class NotificationConsumer {
@@ -40,7 +51,9 @@ export class NotificationConsumer {
       );
       await Promise.all(
         recipients.map((recipient) =>
-          this.sender.send(
+          this.sendOnce(
+            job.id,
+            recipient,
             intentFor(recipient, {
               notificationType: 'TENTATIVE_CONFIRMATION',
               text: 'Подтвердите участие в игре',
@@ -92,7 +105,9 @@ export class NotificationConsumer {
       );
       await Promise.all(
         recipients.map((recipient) =>
-          this.sender.send(
+          this.sendOnce(
+            job.id,
+            recipient,
             intentFor(recipient, {
               notificationType: 'PARTICIPANT_REMINDER',
               text: 'Напоминание: игра скоро начнётся',
@@ -102,6 +117,43 @@ export class NotificationConsumer {
         ),
       );
     }
+  }
+
+  private async sendOnce(
+    deterministicJobId: string,
+    recipient: NotificationRecipientRecord,
+    intent: NotificationIntent,
+  ): Promise<void> {
+    if (
+      await this.recipients.wasDelivered(
+        deterministicJobId,
+        recipient.registrationId,
+      )
+    ) {
+      return;
+    }
+    await this.sender.send(intent);
+    await this.recipients.markDelivered(
+      deterministicJobId,
+      recipient.registrationId,
+    );
+  }
+
+  public async processWaitlistPromotion(
+    registrationId: RegistrationId,
+    deterministicEventId = `WAITLIST_PROMOTED:${registrationId}`,
+  ): Promise<void> {
+    const recipient = await this.recipients.findByRegistration(registrationId);
+    if (recipient === null) return;
+    await this.sendOnce(
+      deterministicEventId,
+      recipient,
+      intentFor(recipient, {
+        notificationType: 'WAITLIST_PROMOTED',
+        text: 'Вы перешли из листа ожидания в основной состав',
+        buttons: [],
+      }),
+    );
   }
 }
 

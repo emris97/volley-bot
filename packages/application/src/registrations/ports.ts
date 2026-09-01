@@ -40,6 +40,7 @@ export interface RegistrationCommandRepository {
     actorUserId: UserId;
     reason: string;
     allowOrganizerOverride?: boolean;
+    expectedConfirmationRevision?: number;
   }): Promise<RegistrationResult>;
   changeManualRank(input: {
     groupId: GroupId;

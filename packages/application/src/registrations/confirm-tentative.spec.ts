@@ -32,6 +32,7 @@ describe('ConfirmTentative', () => {
       gameId,
       registrationId,
       actorUserId,
+      expectedConfirmationRevision: 0,
     });
 
     expect(result.confirmedAt).toEqual(confirmedAt);
@@ -40,6 +41,7 @@ describe('ConfirmTentative', () => {
       gameId,
       registrationId,
       actorUserId,
+      expectedConfirmationRevision: 0,
       confirmedAt,
     });
   });

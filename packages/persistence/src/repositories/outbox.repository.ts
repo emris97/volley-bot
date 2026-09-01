@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, or, sql } from 'drizzle-orm';
 import type { Database } from '../client.js';
 import { outboxEvents } from '../schema/index.js';
 
@@ -85,5 +85,47 @@ export class OutboxRepository {
         attemptCount: sql`${outboxEvents.attemptCount} + 1`,
       })
       .where(eq(outboxEvents.id, id));
+  }
+
+  public async listReplayBatch(
+    limit: number,
+    after?: { occurredAt: Date; id: string },
+  ): Promise<
+    readonly {
+      id: string;
+      type: string;
+      payload: Record<string, unknown>;
+      occurredAt: Date;
+      groupId: string;
+      aggregateType: string;
+      aggregateId: string;
+    }[]
+  > {
+    if (!Number.isInteger(limit) || limit <= 0) return [];
+    const rows = await this.database
+      .select()
+      .from(outboxEvents)
+      .where(
+        after === undefined
+          ? undefined
+          : or(
+              gt(outboxEvents.occurredAt, after.occurredAt),
+              and(
+                eq(outboxEvents.occurredAt, after.occurredAt),
+                gt(outboxEvents.id, after.id),
+              ),
+            ),
+      )
+      .orderBy(asc(outboxEvents.occurredAt), asc(outboxEvents.id))
+      .limit(limit);
+    return rows.map((row) => ({
+      id: row.id,
+      type: row.eventType,
+      payload: row.payload,
+      occurredAt: row.occurredAt,
+      groupId: row.groupId,
+      aggregateType: row.aggregateType,
+      aggregateId: row.aggregateId,
+    }));
   }
 }

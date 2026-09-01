@@ -8,9 +8,9 @@ import {
   type RegistrationId,
   type TelegramId,
 } from '@volley/domain';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { Database } from '../client.js';
-import { users } from '../schema/index.js';
+import { notificationDeliveries, users } from '../schema/index.js';
 
 interface NotificationRow extends Record<string, unknown> {
   registration_id: string;
@@ -53,6 +53,16 @@ export class NotificationRepository {
     return this.listByState(groupId, gameId, 'ROSTERED');
   }
 
+  public async findByRegistration(
+    registrationId: RegistrationId,
+  ): Promise<NotificationRecipientRecord | null> {
+    const rows = await this.list(sql`
+      registration.id = ${registrationId}
+      AND registration.state = 'ROSTERED'
+    `);
+    return rows[0] ?? null;
+  }
+
   public async markUnavailable(telegramUserId: TelegramId): Promise<void> {
     await this.database
       .update(users)
@@ -60,10 +70,47 @@ export class NotificationRepository {
       .where(eq(users.telegramUserId, BigInt(telegramUserId)));
   }
 
+  public async wasDelivered(
+    deterministicJobId: string,
+    registrationId: RegistrationId,
+  ): Promise<boolean> {
+    const [row] = await this.database
+      .select({ id: notificationDeliveries.id })
+      .from(notificationDeliveries)
+      .where(
+        and(
+          eq(notificationDeliveries.deterministicJobId, deterministicJobId),
+          eq(notificationDeliveries.registrationId, registrationId),
+        ),
+      )
+      .limit(1);
+    return row !== undefined;
+  }
+
+  public async markDelivered(
+    deterministicJobId: string,
+    registrationId: RegistrationId,
+  ): Promise<void> {
+    await this.database
+      .insert(notificationDeliveries)
+      .values({ deterministicJobId, registrationId })
+      .onConflictDoNothing();
+  }
+
   private async listByState(
     groupId: GroupId,
     gameId: GameId,
     state: 'TENTATIVE' | 'ROSTERED',
+  ): Promise<readonly NotificationRecipientRecord[]> {
+    return this.list(sql`
+      registration.group_id = ${groupId}
+      AND registration.game_id = ${gameId}
+      AND registration.state = ${state}
+    `);
+  }
+
+  private async list(
+    predicate: ReturnType<typeof sql>,
   ): Promise<readonly NotificationRecipientRecord[]> {
     const result = await this.database.execute<NotificationRow>(sql`
       SELECT
@@ -84,9 +131,7 @@ export class NotificationRepository {
       INNER JOIN groups AS group_row ON group_row.id = registration.group_id
       LEFT JOIN users AS member ON member.id = registration.user_id
       LEFT JOIN users AS inviter ON inviter.id = registration.inviter_user_id
-      WHERE registration.group_id = ${groupId}
-        AND registration.game_id = ${gameId}
-        AND registration.state = ${state}
+      WHERE ${predicate}
       ORDER BY registration.created_at, registration.id
     `);
     return result.rows.map((row) => ({

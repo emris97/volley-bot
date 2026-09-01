@@ -5,7 +5,15 @@ import {
   type StartedTestContainer,
   Wait,
 } from 'testcontainers';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import {
   ReconcileGameJobs,
   requiredJobsForGame,
@@ -91,6 +99,41 @@ describe('game scheduling', () => {
     await consumer.process(openJob);
     expect(await stateOf(pool, game.id!)).toBe('OPEN');
     expect(await eventCount(pool, 'GAME_STATE_CHANGED')).toBe(1);
+  });
+
+  it('does not run notification jobs for stale or terminal games', async () => {
+    const game = await insertGame(pool, 1);
+    const handleNotification = vi.fn();
+    const consumer = new GameSchedulerConsumer(games, handleNotification);
+    const reminder = {
+      ...requiredJobsForGame(game, [rosteredCandidate()]).find(
+        (job) => job.kind === 'REMIND_PARTICIPANTS',
+      )!,
+    };
+
+    await consumer.process({ ...reminder, scheduleRevision: 0 });
+    await pool.query("UPDATE games SET state = 'CANCELLED' WHERE id = $1", [
+      game.id,
+    ]);
+    await consumer.process(reminder);
+
+    expect(handleNotification).not.toHaveBeenCalled();
+  });
+
+  it('lists terminal games while they still have scheduled jobs', async () => {
+    const game = await insertGame(pool, 1);
+    const reconciler = new ReconcileGameJobs(
+      scheduledJobs,
+      new FakeDelayedJobScheduler(),
+    );
+    await reconciler.execute(game, []);
+    await pool.query("UPDATE games SET state = 'CANCELLED' WHERE id = $1", [
+      game.id,
+    ]);
+
+    const page = await games.listForReconciliation(100);
+
+    expect(page.map((item) => item.id)).toContain(game.id);
   });
 });
 
@@ -184,3 +227,12 @@ const eventCount = async (pool: Pool, type: string): Promise<number> => {
   );
   return Number(result.rows[0]!.count);
 };
+
+const rosteredCandidate = () => ({
+  id: '018f6ba0-62d2-7bd1-8f13-12e0c8424699' as never,
+  kind: 'MEMBER' as const,
+  state: 'ROSTERED' as const,
+  manualRank: null,
+  membershipPriority: 0,
+  confirmedAt: new Date('2026-08-30T12:00:00.000Z'),
+});

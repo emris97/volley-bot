@@ -89,7 +89,7 @@ export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
           async (bullJob) => {
             const job = deserializeJob(bullJob.data);
             await consumer.process(job);
-            await scheduledJobs.remove(job.groupId, job.gameId, job.id);
+            await scheduledJobs.markCompleted(job.groupId, job.gameId, job.id);
           },
           { connection, autorun: false },
         );
@@ -97,7 +97,7 @@ export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
         const reconcileAll = async (): Promise<void> => {
           let afterId: GameId | undefined;
           do {
-            const page = await games.listNonterminal(100, afterId);
+            const page = await games.listForReconciliation(100, afterId);
             for (const game of page) {
               if (game.id === undefined || game.groupId === undefined) continue;
               await reconciler.execute(

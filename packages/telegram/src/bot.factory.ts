@@ -177,6 +177,7 @@ export class GrammyTelegramGateway implements TelegramGateway {
       if (/message (?:can't be edited|to edit not found)/i.test(description)) {
         throw new TelegramMessageNotEditableError(description);
       }
+      if (/message is not modified/i.test(description)) return;
       throw error;
     }
   }

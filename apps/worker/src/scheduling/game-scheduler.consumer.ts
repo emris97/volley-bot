@@ -15,12 +15,16 @@ interface LockedChanges {
 }
 
 export interface SchedulerGameRepository {
+  findById(groupId: GroupId, gameId: GameId): Promise<Game | null>;
   withLockedGame<T>(
     groupId: GroupId,
     gameId: GameId,
     callback: (game: Game, changes: LockedChanges) => Promise<T>,
   ): Promise<T>;
-  listNonterminal(limit: number, afterId?: GameId): Promise<readonly Game[]>;
+  listForReconciliation(
+    limit: number,
+    afterId?: GameId,
+  ): Promise<readonly Game[]>;
 }
 
 export interface SchedulerRegistrationRepository {
@@ -32,7 +36,10 @@ export interface SchedulerRegistrationRepository {
 
 export class GameSchedulerConsumer {
   public constructor(
-    private readonly games: Pick<SchedulerGameRepository, 'withLockedGame'>,
+    private readonly games: Pick<
+      SchedulerGameRepository,
+      'findById' | 'withLockedGame'
+    >,
     private readonly handleNotification: (
       job: RequiredJob,
     ) => Promise<void> = async () => undefined,
@@ -40,6 +47,16 @@ export class GameSchedulerConsumer {
 
   public async process(job: RequiredJob): Promise<void> {
     if (job.expectedState === undefined || job.targetState === undefined) {
+      const game = await this.games.findById(job.groupId, job.gameId);
+      if (
+        game === null ||
+        game.scheduleRevision !== job.scheduleRevision ||
+        game.state === 'DRAFT' ||
+        game.state === 'CANCELLED' ||
+        game.state === 'COMPLETED'
+      ) {
+        return;
+      }
       await this.handleNotification(job);
       return;
     }

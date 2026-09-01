@@ -19,6 +19,7 @@ export interface TentativeRegistrationRepository {
     gameId: GameId;
     registrationId: RegistrationId;
     actorUserId: UserId;
+    expectedConfirmationRevision: number;
     confirmedAt: Date;
   }): Promise<TentativeRegistrationResult>;
   expireTentative(input: {
@@ -44,6 +45,7 @@ export class ConfirmTentative {
     gameId: GameId;
     registrationId: RegistrationId;
     actorUserId: UserId;
+    expectedConfirmationRevision: number;
   }): Promise<TentativeRegistrationResult> {
     return this.registrations.confirmTentative({
       ...command,

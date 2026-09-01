@@ -29,6 +29,7 @@ export class ScheduledJobRepository {
       kind: ScheduledJobKind;
       runAt: Date;
       scheduleRevision: number;
+      completed: boolean;
     }[]
   > {
     const rows = await this.database
@@ -45,6 +46,7 @@ export class ScheduledJobRepository {
       kind: row.kind,
       runAt: row.runAt,
       scheduleRevision: row.scheduleRevision,
+      completed: row.completedAt !== null,
     }));
   }
 
@@ -79,6 +81,23 @@ export class ScheduledJobRepository {
   ): Promise<void> {
     await this.database
       .delete(scheduledJobs)
+      .where(
+        and(
+          eq(scheduledJobs.groupId, groupId),
+          eq(scheduledJobs.gameId, gameId),
+          eq(scheduledJobs.deterministicJobId, id),
+        ),
+      );
+  }
+
+  public async markCompleted(
+    groupId: GroupId,
+    gameId: GameId,
+    id: string,
+  ): Promise<void> {
+    await this.database
+      .update(scheduledJobs)
+      .set({ completedAt: new Date(), updatedAt: new Date() })
       .where(
         and(
           eq(scheduledJobs.groupId, groupId),

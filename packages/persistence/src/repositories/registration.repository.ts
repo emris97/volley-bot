@@ -78,6 +78,7 @@ export class RegistrationRepository {
     gameId: GameId;
     registrationId: RegistrationId;
     actorUserId: UserId;
+    expectedConfirmationRevision: number;
     confirmedAt: Date;
   }): Promise<{
     registrationId: RegistrationId;
@@ -107,6 +108,12 @@ export class RegistrationRepository {
       if (registration.userId !== input.actorUserId) {
         throw new Error('Tentative registration belongs to another user');
       }
+      if (
+        registration.state === 'TENTATIVE' &&
+        registration.confirmationRevision !== input.expectedConfirmationRevision
+      ) {
+        throw new Error('Stale tentative callback');
+      }
       if (registration.state !== 'TENTATIVE') {
         if (registration.confirmedAt !== null) {
           return {
@@ -134,6 +141,7 @@ export class RegistrationRepository {
         input,
         game.capacity,
         input.confirmedAt,
+        [registration.id],
       );
       const state = placement.roster.some((item) => item.id === registration.id)
         ? 'ROSTERED'
@@ -421,6 +429,7 @@ export class RegistrationRepository {
         input,
         game.capacity,
         now,
+        [created.id],
       );
       const state = placement.roster.some((item) => item.id === created.id)
         ? 'ROSTERED'
@@ -453,6 +462,7 @@ export class RegistrationRepository {
     actorUserId: UserId;
     reason: string;
     allowOrganizerOverride?: boolean;
+    expectedConfirmationRevision?: number;
   }): Promise<RegistrationResult> {
     return this.database.transaction(async (transaction) => {
       const game = await lockOpenGame(transaction, input.groupId, input.gameId);
@@ -476,6 +486,18 @@ export class RegistrationRepository {
       ) {
         throw new Error(
           'Participants may withdraw only their own registration',
+        );
+      }
+      if (
+        input.expectedConfirmationRevision !== undefined &&
+        (registration.state !== 'TENTATIVE' ||
+          registration.confirmationRevision !==
+            input.expectedConfirmationRevision)
+      ) {
+        return resultFor(
+          registration.id,
+          registration.state,
+          await activeCandidates(transaction, input),
         );
       }
       if (registration.state === 'CANCELLED') {
@@ -689,12 +711,14 @@ const recalculatePlacement = async (
   input: { groupId: GroupId; gameId: GameId },
   capacity: number,
   now: Date,
+  promotionExclusions: readonly string[] = [],
 ) => {
   const active = await activeCandidates(transaction, input);
   const placement = placeConfirmedRegistrations({
     capacity,
     registrations: active,
   });
+  const previousStates = new Map(active.map((item) => [item.id, item.state]));
   for (const item of placement.roster) {
     await transaction
       .update(registrations)
@@ -706,6 +730,22 @@ const recalculatePlacement = async (
       .update(registrations)
       .set({ state: 'WAITLISTED', updatedAt: now })
       .where(eq(registrations.id, item.id));
+  }
+  const promoted = placement.roster.filter(
+    (item) =>
+      previousStates.get(item.id) === 'WAITLISTED' &&
+      !promotionExclusions.includes(item.id),
+  );
+  if (promoted.length > 0) {
+    await transaction.insert(outboxEvents).values(
+      promoted.map((item) => ({
+        groupId: input.groupId,
+        eventType: 'WAITLIST_PROMOTED',
+        aggregateType: 'GAME',
+        aggregateId: input.gameId,
+        payload: { registrationId: item.id },
+      })),
+    );
   }
   return placement;
 };

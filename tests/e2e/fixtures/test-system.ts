@@ -163,7 +163,10 @@ class InMemoryScheduledJobStore implements ScheduledJobStore {
   private readonly jobs = new Map<string, RequiredJob>();
 
   public async listForGame(): Promise<readonly StoredScheduledJob[]> {
-    return [...this.jobs.values()];
+    return [...this.jobs.values()].map((job) => ({
+      ...job,
+      completed: false,
+    }));
   }
 
   public async upsert(job: RequiredJob): Promise<void> {

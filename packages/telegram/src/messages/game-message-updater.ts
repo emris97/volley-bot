@@ -19,6 +19,11 @@ export interface GameMessageViewRepository {
     gameId: GameId,
     messageId: bigint,
   ): Promise<void>;
+  withLockedView?<T>(
+    groupId: GroupId,
+    gameId: GameId,
+    callback: (repository: GameMessageViewRepository) => Promise<T>,
+  ): Promise<T>;
 }
 
 export interface GameMessageTelegramGateway {
@@ -56,7 +61,21 @@ export class GameMessageUpdater {
   }
 
   private async refreshNow(groupId: GroupId, gameId: GameId): Promise<void> {
-    const view = await this.games.load(groupId, gameId);
+    if (this.games.withLockedView !== undefined) {
+      await this.games.withLockedView(groupId, gameId, (repository) =>
+        this.refreshLocked(repository, groupId, gameId),
+      );
+      return;
+    }
+    await this.refreshLocked(this.games, groupId, gameId);
+  }
+
+  private async refreshLocked(
+    games: GameMessageViewRepository,
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<void> {
+    const view = await games.load(groupId, gameId);
     if (view === null) return;
     const rendered = renderGameMessage(view);
     if (view.canonicalMessageId !== null) {
@@ -74,7 +93,7 @@ export class GameMessageUpdater {
 
     const sent = await this.telegram.sendMessage(view.telegramChatId, rendered);
     const messageId = BigInt(sent.messageId);
-    await this.games.setCanonicalMessageId(groupId, gameId, messageId);
+    await games.setCanonicalMessageId(groupId, gameId, messageId);
     if (view.pinMessage) {
       await this.telegram.pinMessage?.(view.telegramChatId, messageId);
     }

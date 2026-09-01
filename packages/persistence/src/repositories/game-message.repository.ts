@@ -36,7 +36,59 @@ export class GameMessageRepository {
     groupId: GroupId,
     gameId: GameId,
   ): Promise<StoredGameMessageView | null> {
-    const [game] = await this.database
+    return this.loadWith(this.database, groupId, gameId);
+  }
+
+  public async setCanonicalMessageId(
+    groupId: GroupId,
+    gameId: GameId,
+    messageId: bigint,
+  ): Promise<void> {
+    await this.setCanonicalWith(this.database, groupId, gameId, messageId);
+  }
+
+  public async withLockedView<T>(
+    groupId: GroupId,
+    gameId: GameId,
+    callback: (repository: {
+      load(
+        groupId: GroupId,
+        gameId: GameId,
+      ): Promise<StoredGameMessageView | null>;
+      setCanonicalMessageId(
+        groupId: GroupId,
+        gameId: GameId,
+        messageId: bigint,
+      ): Promise<void>;
+    }) => Promise<T>,
+  ): Promise<T> {
+    return this.database.transaction(async (transaction) => {
+      await transaction
+        .select({ id: games.id })
+        .from(games)
+        .where(and(eq(games.groupId, groupId), eq(games.id, gameId)))
+        .for('update')
+        .limit(1);
+      return callback({
+        load: (lockedGroupId, lockedGameId) =>
+          this.loadWith(transaction, lockedGroupId, lockedGameId),
+        setCanonicalMessageId: (lockedGroupId, lockedGameId, messageId) =>
+          this.setCanonicalWith(
+            transaction,
+            lockedGroupId,
+            lockedGameId,
+            messageId,
+          ),
+      });
+    });
+  }
+
+  private async loadWith(
+    database: QueryDatabase,
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<StoredGameMessageView | null> {
+    const [game] = await database
       .select({
         groupId: games.groupId,
         gameId: games.id,
@@ -57,7 +109,7 @@ export class GameMessageRepository {
       .limit(1);
     if (game === undefined) return null;
 
-    const rows = await this.database
+    const rows = await database
       .select({
         state: registrations.state,
         kind: registrations.kind,
@@ -99,14 +151,18 @@ export class GameMessageRepository {
     };
   }
 
-  public async setCanonicalMessageId(
+  private async setCanonicalWith(
+    database: QueryDatabase,
     groupId: GroupId,
     gameId: GameId,
     messageId: bigint,
   ): Promise<void> {
-    await this.database
+    await database
       .update(games)
       .set({ canonicalTelegramMessageId: messageId, updatedAt: new Date() })
       .where(and(eq(games.groupId, groupId), eq(games.id, gameId)));
   }
 }
+
+type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
+type QueryDatabase = Database | Transaction;

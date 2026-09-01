@@ -8,9 +8,14 @@ import {
   type GroupId,
   type UserId,
 } from '@volley/domain';
-import { and, asc, eq, gt, inArray } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, or, sql } from 'drizzle-orm';
 import type { Database } from '../client.js';
-import { auditEvents, games, outboxEvents } from '../schema/index.js';
+import {
+  auditEvents,
+  games,
+  outboxEvents,
+  scheduledJobs,
+} from '../schema/index.js';
 
 const toGame = (row: typeof games.$inferSelect): Game => ({
   id: asGameId(row.id),
@@ -105,12 +110,18 @@ export class GameRepository {
     return row === undefined ? null : toGame(row);
   }
 
-  public async listNonterminal(
+  public async listForReconciliation(
     limit: number,
     afterId?: GameId,
   ): Promise<readonly Game[]> {
     const conditions = [
-      inArray(games.state, ['SCHEDULED', 'OPEN', 'CLOSED']),
+      or(
+        inArray(games.state, ['SCHEDULED', 'OPEN', 'CLOSED']),
+        sql`EXISTS (
+          SELECT 1 FROM ${scheduledJobs}
+          WHERE ${scheduledJobs.gameId} = ${games.id}
+        )`,
+      )!,
       ...(afterId === undefined ? [] : [gt(games.id, afterId)]),
     ];
     const rows = await this.database

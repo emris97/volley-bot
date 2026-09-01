@@ -15,6 +15,7 @@ export interface StoredScheduledJob {
   kind: ScheduledJobKind;
   runAt: Date;
   scheduleRevision: number;
+  completed: boolean;
 }
 
 export interface ScheduledJobStore {
@@ -47,8 +48,10 @@ export class ReconcileGameJobs {
     const desired = requiredJobsForGame(game, registrations);
     const desiredIds = new Set(desired.map((job) => job.id));
     const existing = await this.store.listForGame(game.groupId, game.id);
+    const existingById = new Map(existing.map((job) => [job.id, job]));
 
     for (const job of desired) {
+      if (existingById.get(job.id)?.completed === true) continue;
       await this.store.upsert(job);
       await this.scheduler.ensure(job);
     }
