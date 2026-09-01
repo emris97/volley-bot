@@ -21,6 +21,7 @@ import {
   AttendanceRepository,
   GuestRegistrationDraftRepository,
   GroupRepository,
+  ManagementRepository,
   PaymentRepository,
   RegistrationRepository,
 } from '@volley/persistence';
@@ -32,13 +33,16 @@ import {
   GrammyTelegramGateway,
   GuestFlowHandlers,
   GroupOnboardingHandlers,
+  ManagementEntryHandlers,
   PaymentHandlers,
   RegistrationHandlers,
   registerRegistrationHandlers,
   registerAttendanceHandlers,
+  registerManagementEntryHandlers,
   registerTentativeHandlers,
   registerGroupOnboardingHandlers,
   registerPaymentHandlers,
+  registerPrivateChatLinking,
   SignedStartToken,
   TelegramMembershipResolver,
   TentativeHandlers,
@@ -67,6 +71,7 @@ interface TelegramRuntime {
         const attendance = new AttendanceRepository(database);
         const guestDrafts = new GuestRegistrationDraftRepository(database);
         const payments = new PaymentRepository(database);
+        const management = new ManagementRepository(database);
         const authorization = new AuthorizationService({
           findMembership: (groupId, userId) =>
             groups.findMembershipByUserId(groupId, userId),
@@ -74,6 +79,7 @@ interface TelegramRuntime {
             groups.findMembership(groupId, telegramUserId),
         });
         const bot = createTelegramBot(env.BOT_TOKEN);
+        registerPrivateChatLinking(bot, management);
         const telegram = new GrammyTelegramGateway(bot);
         const signer = new SignedStartToken(
           createHash('sha256')
@@ -109,25 +115,27 @@ interface TelegramRuntime {
           registrations,
           new RegisterGuest(registrations),
         );
-        registerPaymentHandlers(
-          bot,
-          new PaymentHandlers(
-            registrations,
-            new PreviewSettlement(authorization, payments),
-            new FinalizeSettlement(authorization, payments),
-            new ChangeChargeStatus(authorization, payments),
-            new SendPaymentReminders(authorization, payments),
-            payments,
-            authorization,
-          ),
+        const paymentHandlers = new PaymentHandlers(
+          registrations,
+          new PreviewSettlement(authorization, payments),
+          new FinalizeSettlement(authorization, payments),
+          new ChangeChargeStatus(authorization, payments),
+          new SendPaymentReminders(authorization, payments),
+          payments,
+          authorization,
         );
-        registerAttendanceHandlers(
+        const attendanceHandlers = new AttendanceHandlers(
+          registrations,
+          new ConfirmAttendance(authorization, attendance),
+          attendance,
+        );
+        registerPaymentHandlers(bot, paymentHandlers);
+        registerAttendanceHandlers(bot, attendanceHandlers);
+        registerManagementEntryHandlers(
           bot,
-          new AttendanceHandlers(
-            registrations,
-            new ConfirmAttendance(authorization, attendance),
-            attendance,
-          ),
+          new ManagementEntryHandlers(management, authorization),
+          attendanceHandlers,
+          paymentHandlers,
         );
         registerGroupOnboardingHandlers(bot, handlers, guestHandlers);
         registerRegistrationHandlers(

@@ -12,6 +12,7 @@ import type {
 } from '@volley/application';
 import {
   asGameId,
+  StalePaymentDraftError,
   type GameId,
   type GroupId,
   type TelegramId,
@@ -152,6 +153,7 @@ export class PaymentHandlers {
   public async sendReminders(
     input: PrivatePaymentInput & {
       chargeIds: readonly string[];
+      idempotencyKey: string;
     },
   ): Promise<{ enqueued: number }> {
     requirePrivateChat(input.privateChat);
@@ -160,12 +162,14 @@ export class PaymentHandlers {
       groupId: actor.groupId,
       actorUserId: actor.userId,
       chargeIds: input.chargeIds,
+      idempotencyKey: input.idempotencyKey,
     });
   }
 
   public async handleCallback(input: {
     telegramUserId: TelegramId;
     privateChat: boolean;
+    updateId: number;
     data: string;
   }): Promise<PaymentView> {
     requirePrivateChat(input.privateChat);
@@ -187,18 +191,29 @@ export class PaymentHandlers {
       ) {
         throw new Error('Payment preview not found');
       }
-      const settlement = await this.finalizeSettlement.execute({
-        groupId: actor.groupId,
-        gameId: actor.gameId,
-        actorUserId: actor.userId,
-        attendanceRevision: draft.attendanceRevision,
-        totalAmount: draft.totalAmount,
-        currency: draft.currency,
-        roundingMode: draft.roundingMode,
-        draftId: draft.id,
-      });
-      void settlement;
-      return this.renderActiveSettlement(actor.groupId, actor.gameId);
+      try {
+        await this.finalizeSettlement.execute({
+          groupId: actor.groupId,
+          gameId: actor.gameId,
+          actorUserId: actor.userId,
+          attendanceRevision: draft.attendanceRevision,
+          totalAmount: draft.totalAmount,
+          currency: draft.currency,
+          roundingMode: draft.roundingMode,
+          draftId: draft.id,
+        });
+        return this.renderActiveSettlement(actor.groupId, actor.gameId);
+      } catch (error) {
+        if (!(error instanceof StalePaymentDraftError)) throw error;
+        const current = await this.renderActiveSettlement(
+          actor.groupId,
+          actor.gameId,
+        );
+        return {
+          ...current,
+          text: `Предпросмотр устарел. Показан текущий расчёт.\n${current.text}`,
+        };
+      }
     }
     if (callback.action === 'status') {
       await this.changeChargeStatus.execute({
@@ -213,6 +228,7 @@ export class PaymentHandlers {
       groupId: actor.groupId,
       actorUserId: actor.userId,
       chargeIds: [callback.chargeId],
+      idempotencyKey: `telegram-update:${input.updateId}`,
     });
     const view = await this.renderActiveSettlement(actor.groupId, actor.gameId);
     return {
@@ -428,30 +444,31 @@ export const registerPaymentHandlers = (
       return;
     }
     await context.reply(view.text, {
-      reply_markup: {
-        inline_keyboard: view.buttons.map((button) => [
-          { text: button.text, callback_data: button.callbackData },
-        ]),
-      },
+      ...paymentReplyMarkup(view),
     });
   });
   bot.callbackQuery(/^pay:/, async (context) => {
     const view = await handlers.handleCallback({
       telegramUserId: toTelegramId(context.callbackQuery.from.id),
       privateChat: context.callbackQuery.message?.chat.type === 'private',
+      updateId: context.update.update_id,
       data: context.callbackQuery.data,
     });
     await context.editMessageText(view.text, {
-      reply_markup: {
-        inline_keyboard: view.buttons.map((button) => [
-          { text: button.text, callback_data: button.callbackData },
-        ]),
-      },
+      ...paymentReplyMarkup(view),
     });
     await context.answerCallbackQuery({ text: 'payment:updated' });
   });
   return bot;
 };
+
+export const paymentReplyMarkup = (view: PaymentView) => ({
+  reply_markup: {
+    inline_keyboard: view.buttons.map((button) => [
+      { text: button.text, callback_data: button.callbackData },
+    ]),
+  },
+});
 
 const parseGameId = (value: string): GameId => {
   const trimmed = value.trim();

@@ -7,6 +7,7 @@ import type {
 import { OutboxDispatcher } from '@volley/application';
 import { Queue } from 'bullmq';
 import type { ManagedWorker } from '../worker-lifecycle.service.js';
+import type { WorkerRunStateRegistry } from '../observability/worker-run-state.js';
 
 export class BullMqJobPublisher implements JobPublisher {
   public constructor(
@@ -68,22 +69,27 @@ export class OutboxConsumer implements ManagedWorker {
     private readonly intervalMs = 1_000,
     private readonly purgeExpiredPaymentState: () => Promise<unknown> = async () =>
       undefined,
+    private readonly runState?: WorkerRunStateRegistry,
   ) {}
 
   public async start(): Promise<void> {
+    this.runState?.markStarting('volley-outbox-dispatcher');
     this.stopping = false;
     await this.tick();
     if (this.stopping) return;
     this.timer = setInterval(() => void this.tick(), this.intervalMs);
     this.timer.unref();
+    this.runState?.markRunning('volley-outbox-dispatcher');
   }
 
   public async stop(): Promise<void> {
+    this.runState?.markStopping('volley-outbox-dispatcher');
     this.stopping = true;
     if (this.timer !== undefined) clearInterval(this.timer);
     this.timer = undefined;
     await this.inFlight;
     await this.closeResources();
+    this.runState?.markStopped('volley-outbox-dispatcher');
   }
 
   private tick(): Promise<void> {

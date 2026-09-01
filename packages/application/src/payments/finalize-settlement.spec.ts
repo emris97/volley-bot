@@ -75,6 +75,46 @@ it('keeps a manual billable attendee in preview and final charges', async () => 
   );
 });
 
+it('keeps a manual nonbillable attendee in attendance but excludes its charge', async () => {
+  const original = finalizedAttendance(1, true);
+  const snapshot: AttendanceSnapshot = {
+    ...original,
+    entries: original.entries.map((entry) =>
+      entry.addedManually ? { ...entry, billable: false } : entry,
+    ),
+  };
+  const payments = memoryPayments(snapshot, []);
+  const command = {
+    groupId,
+    gameId,
+    actorUserId: organizer,
+    attendanceRevision: 1,
+    totalAmount: '100.00',
+    currency: 'RUB' as const,
+    roundingMode: 'EXACT' as const,
+  };
+
+  const preview = await new PreviewSettlement(allowOrganizer, payments).execute(
+    command,
+  );
+  const settlement = await new FinalizeSettlement(
+    allowOrganizer,
+    payments,
+  ).execute(command);
+
+  expect(snapshot.entries).toContainEqual(
+    expect.objectContaining({
+      participantRef: 'manual:late-player',
+      billable: false,
+    }),
+  );
+  expect(preview.charges).toHaveLength(1);
+  expect(settlement.charges).toHaveLength(1);
+  expect(
+    settlement.charges.map((charge) => charge.participantRef),
+  ).not.toContain('manual:late-player');
+});
+
 it('rejects an attendance revision that is not finalized', async () => {
   const snapshot = { ...finalizedAttendance(1), finalized: false };
   const finalize = new FinalizeSettlement(

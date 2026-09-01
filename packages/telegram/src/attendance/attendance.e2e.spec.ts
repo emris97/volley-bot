@@ -197,7 +197,9 @@ it('adds a named manual participant through the registered private Telegram flow
             addedManually: false,
           },
           ...command.manualParticipants.map((participant, index) => ({
-            participantRef: `manual:${index}`,
+            participantRef:
+              participant.participantRef ??
+              `manual:018f6ba0-62d2-7bd1-8f13-12e0c84246${index.toString().padStart(2, '0')}`,
             displayName: participant.displayName,
             billable: participant.billable,
             addedManually: true,
@@ -284,16 +286,57 @@ it('adds a named manual participant through the registered private Telegram flow
   const updatedPreview = apiCalls.at(-1)!;
   expect(updatedPreview).toMatchObject({
     method: 'sendMessage',
-    payload: { text: expect.stringContaining('attendance:preview:2') },
+    payload: {
+      text: expect.stringMatching(
+        /attendance:preview:2[\s\S]*Roster player[\s\S]*Late player/,
+      ),
+    },
   });
-  expect([...snapshots.values()].at(-1)!.entries).toContainEqual(
+  const addedSnapshot = [...snapshots.values()].at(-1)!;
+  const addedManual = addedSnapshot.entries.find(
+    (entry) => entry.addedManually,
+  )!;
+  expect(addedManual).toEqual(
     expect.objectContaining({
+      participantRef: expect.stringMatching(/^manual:/),
       displayName: 'Late player',
       billable: true,
       addedManually: true,
     }),
   );
+
+  const billableCallback = buttonsFrom(updatedPreview).find(
+    (button) => button.text === 'Взнос: да — Late player',
+  )!.callback_data;
+  await updates.handleUpdate(attendanceCallbackUpdate(4, billableCallback));
+  const toggledPreview = apiCalls.at(-2)!;
+  const toggledManual = [...snapshots.values()]
+    .at(-1)!
+    .entries.find((entry) => entry.addedManually)!;
+  expect(toggledManual).toMatchObject({
+    participantRef: addedManual.participantRef,
+    billable: false,
+  });
+
+  const removeCallback = buttonsFrom(toggledPreview).find(
+    (button) => button.text === 'Удалить — Late player',
+  )!.callback_data;
+  await updates.handleUpdate(attendanceCallbackUpdate(5, removeCallback));
+  expect(
+    [...snapshots.values()]
+      .at(-1)!
+      .entries.some((entry) => entry.addedManually),
+  ).toBe(false);
 });
+
+const buttonsFrom = (call: {
+  payload: Record<string, unknown>;
+}): Array<{ text: string; callback_data: string }> =>
+  (
+    call.payload.reply_markup as {
+      inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+    }
+  ).inline_keyboard.flat();
 
 const compactUuid = (value: string): string =>
   Buffer.from(value.replaceAll('-', ''), 'hex').toString('base64url');

@@ -1,6 +1,13 @@
 import type { RoundingMode } from '../games/game-template.js';
 import type { Money } from './money.js';
 
+export class StalePaymentDraftError extends Error {
+  public constructor(message = 'Payment preview is stale') {
+    super(message);
+    this.name = 'StalePaymentDraftError';
+  }
+}
+
 export type { RoundingMode } from '../games/game-template.js';
 
 export interface SettlementInput {

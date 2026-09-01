@@ -267,6 +267,11 @@ describe('volleyball bot MVP acceptance', () => {
       '1300.00',
       'EXACT',
     );
+    const reminder = await system.requestAndRecoverPaymentReminder(
+      fixture,
+      settlement.charges.find((charge) => !charge.addedManually)!.id,
+      'criterion-10-payment-reminder',
+    );
     const paid = await system.markChargePaid(
       fixture,
       settlement.charges[0]!.id,
@@ -287,32 +292,40 @@ describe('volleyball bot MVP acceptance', () => {
       settlement.charges.reduce((sum, charge) => sum + charge.amountMinor, 0n),
     ).toBe(130000n);
     expect(paid.status).toBe('PAID');
+    expect(reminder).toEqual({
+      outboxIntents: 1,
+      privateDeliveries: 1,
+      groupFallbacks: 0,
+    });
   });
 
   it('Redis loss and duplicate updates preserve authoritative state', async () => {
-    const fixture = await system.createOpenGame({ capacity: 1 });
-    const first = await system.registerMember(
+    const fixture = await system.createCompletedGameWithRoster('1101');
+    const attendance = await system.confirmAttendanceWithManualParticipant(
       fixture,
-      '1101',
-      'duplicate-update',
+      'Recovery player',
     );
-    const duplicate = await system.registerMember(
+    const settlement = await system.finalizeSettlement(
       fixture,
-      '1101',
-      'duplicate-update',
+      attendance.revision,
+      '1000.00',
+      'EXACT',
+    );
+    const replay = await system.replayDuplicatePaymentUpdateAcrossRedisLoss(
+      fixture,
+      settlement.charges[0]!.id,
+      'criterion-11-duplicate-payment-update',
     );
 
-    await system.reconcileGameJobs(fixture);
-    await system.flushRedis();
-    await system.reconcileGameJobs(fixture);
-
-    expect(duplicate.registrationId).toBe(first.registrationId);
-    expect(await system.registrationCounts(fixture.game.id!)).toEqual({
-      roster: 1,
-      waitlist: 0,
-      tentative: 0,
+    expect(replay.after).toEqual(replay.before);
+    expect(replay.after).toMatchObject({
+      settlements: expect.arrayContaining([
+        expect.objectContaining({ status: 'PAID' }),
+      ]),
+      statusEvents: expect.arrayContaining([
+        expect.objectContaining({ count: '2' }),
+      ]),
     });
-    expect(await system.redisJobCount()).toBeGreaterThan(0);
   });
 
   it('Mini App API calls the same authorized application services', async () => {

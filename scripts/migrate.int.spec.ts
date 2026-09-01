@@ -58,10 +58,10 @@ describe('safe PostgreSQL migration runner', () => {
     const firstJournal = await journal();
     const second = await applyMigrations(pool, migrationsDirectory);
 
-    expect(first).toHaveLength(10);
+    expect(first).toHaveLength(11);
     expect(second).toEqual([]);
     expect(await journal()).toEqual(firstJournal);
-    expect(firstJournal).toHaveLength(10);
+    expect(firstJournal).toHaveLength(11);
     expect(
       firstJournal.every(({ checksum }) => /^[a-f\d]{64}$/.test(checksum)),
     ).toBe(true);

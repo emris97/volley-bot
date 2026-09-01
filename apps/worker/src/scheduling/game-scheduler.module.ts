@@ -31,6 +31,10 @@ import {
   GameSchedulerConsumer,
   GameSchedulerRuntime,
 } from './game-scheduler.consumer.js';
+import {
+  WORKER_RUN_STATE,
+  type WorkerRunStateRegistry,
+} from '../observability/worker-run-state.js';
 
 export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
 
@@ -38,11 +42,17 @@ export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
   providers: [
     {
       provide: GAME_SCHEDULER_WORKER,
-      inject: [WORKER_DEPENDENCIES, MetricsRegistry, JsonLogger],
+      inject: [
+        WORKER_DEPENDENCIES,
+        MetricsRegistry,
+        JsonLogger,
+        WORKER_RUN_STATE,
+      ],
       useFactory: (
         dependencies: WorkerDependencies,
         metrics: MetricsRegistry,
         logger: JsonLogger,
+        runState: WorkerRunStateRegistry,
       ) => {
         const env = parseEnv(process.env);
         const database = createDatabase(dependencies.pool);
@@ -131,9 +141,15 @@ export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
           } while (afterId !== undefined);
         };
 
-        return new GameSchedulerRuntime(worker, reconcileAll, async () => {
-          await queue.close();
-        });
+        return new GameSchedulerRuntime(
+          worker,
+          reconcileAll,
+          async () => {
+            await queue.close();
+          },
+          60_000,
+          runState,
+        );
       },
     },
   ],

@@ -14,9 +14,11 @@ import {
   GetGame,
   OnboardGroup,
   OutboxDispatcher,
+  PreviewSettlement,
   ReconcileGameJobs,
   RegisterGuest,
   RegisterParticipant,
+  SendPaymentReminders,
   type RequiredJob,
   type TelegramGateway,
   WithdrawRegistration,
@@ -43,9 +45,11 @@ import {
   GameRepository,
   GuestRegistrationDraftRepository,
   GroupRepository,
+  ManagementRepository,
   NotificationRepository,
   OutboxRepository,
   PaymentRepository,
+  PaymentReminderRepository,
   RegistrationRepository,
   ScheduledJobRepository,
   TemplateRepository,
@@ -59,8 +63,17 @@ import {
   GameMessageUpdater,
   GroupOnboardingHandlers,
   GuestFlowHandlers,
+  ManagementEntryHandlers,
   NotificationSender,
+  PaymentHandlers,
+  PaymentReminderSender,
   RegistrationHandlers,
+  registerAttendanceHandlers,
+  registerGroupOnboardingHandlers,
+  registerManagementEntryHandlers,
+  registerPaymentHandlers,
+  registerPrivateChatLinking,
+  registerRegistrationHandlers,
   renderGameMessage,
   SignedStartToken,
   TelegramMembershipResolver,
@@ -74,6 +87,7 @@ import {
 } from 'testcontainers';
 import { AppModule } from '../../../apps/api/src/app.module.js';
 import { NotificationConsumer } from '../../../apps/worker/src/notifications/notification.consumer.js';
+import { PaymentReminderConsumer } from '../../../apps/worker/src/payments/payment-reminder.consumer.js';
 import { BullMqJobPublisher } from '../../../apps/worker/src/outbox/outbox.consumer.js';
 import {
   BullMqDelayedJobScheduler,
@@ -126,6 +140,11 @@ interface RedisLike {
 interface HttpResponseLike {
   statusCode: number;
   json(): unknown;
+}
+
+interface BotApiCall {
+  method: string;
+  payload: Record<string, unknown>;
 }
 
 interface ProductionAppLike {
@@ -259,6 +278,7 @@ const gameIdFromMessage = (message: RenderedTelegramMessage): GameId => {
 export class MvpAcceptanceSystem {
   public readonly telegram = new FakeTelegramGateway();
   private readonly registrationResponses: string[] = [];
+  private readonly botApiCalls: BotApiCall[] = [];
   private readonly updateIdsByIdempotencyKey = new Map<string, number>();
 
   private readonly canonicalTelegram = new CanonicalTelegramGateway();
@@ -277,8 +297,6 @@ export class MvpAcceptanceSystem {
   private readonly registerGuestUseCase: RegisterGuest;
   private readonly withdrawRegistration: WithdrawRegistration;
   private readonly changeRegistrationOrder: ChangeRegistrationOrder;
-  private readonly finalizeSettlementUseCase: FinalizeSettlement;
-  private readonly changeChargeStatus: ChangeChargeStatus;
   private readonly messageRepository: GameMessageRepository;
   private readonly reconciler: ReconcileGameJobs;
   private readonly sender: NotificationSender;
@@ -290,6 +308,7 @@ export class MvpAcceptanceSystem {
   private readonly outboxDispatcher: OutboxDispatcher;
   private readonly outboxRouter: OutboxEventRouter;
   private readonly waitlistPromotions: WaitlistPromotionConsumer;
+  private readonly paymentReminderConsumer: PaymentReminderConsumer;
   private apiApp?: ProductionAppLike;
   private previousApiEnv?: NodeJS.ProcessEnv;
   private groupSequence = 20_000;
@@ -305,6 +324,7 @@ export class MvpAcceptanceSystem {
     private readonly outboxQueue: QueueLike,
     private readonly canonicalQueue: QueueLike,
     private readonly notificationQueue: QueueLike,
+    private readonly paymentReminderQueue: QueueLike,
     private readonly databaseUrl: string,
     private readonly redisUrl: string,
   ) {
@@ -341,14 +361,6 @@ export class MvpAcceptanceSystem {
     this.changeRegistrationOrder = new ChangeRegistrationOrder(
       this.authorization,
       this.registrations,
-    );
-    this.finalizeSettlementUseCase = new FinalizeSettlement(
-      this.authorization,
-      this.payments,
-    );
-    this.changeChargeStatus = new ChangeChargeStatus(
-      this.authorization,
-      this.payments,
     );
     this.messageRepository = new GameMessageRepository(database, pool as never);
     this.reconciler = new ReconcileGameJobs(
@@ -388,12 +400,6 @@ export class MvpAcceptanceSystem {
       this.signer,
       telegramGateway,
     );
-    this.webhook = new WebhookController(
-      createLazyTelegramUpdateHandler(
-        createTelegramBot(BOT_TOKEN, BOT_INFO as never, onboardingHandlers),
-      ),
-      WEBHOOK_SECRET,
-    );
     this.registrationHandlers = new RegistrationHandlers(
       new CallbackCodec(),
       this.registrations,
@@ -408,6 +414,72 @@ export class MvpAcceptanceSystem {
       new GuestRegistrationDraftRepository(database),
       this.registrations,
       this.registerGuestUseCase,
+    );
+    const paymentHandlers = new PaymentHandlers(
+      this.registrations,
+      new PreviewSettlement(this.authorization, this.payments),
+      new FinalizeSettlement(this.authorization, this.payments),
+      new ChangeChargeStatus(this.authorization, this.payments),
+      new SendPaymentReminders(this.authorization, this.payments),
+      this.payments,
+      this.authorization,
+    );
+    const attendanceHandlers = new AttendanceHandlers(
+      this.registrations,
+      new ConfirmAttendance(this.authorization, this.attendance),
+      this.attendance,
+    );
+    const management = new ManagementRepository(database);
+    const bot = createTelegramBot(BOT_TOKEN, BOT_INFO as never);
+    bot.api.config.use(async (_previous, method, payload) => {
+      const record = { method, payload: payload as Record<string, unknown> };
+      this.botApiCalls.push(record);
+      if (method === 'answerCallbackQuery') {
+        return { ok: true, result: true } as never;
+      }
+      const chatId = asTelegramId(String(record.payload.chat_id ?? '0'));
+      const text = String(record.payload.text ?? '');
+      const buttons = botApiButtons(record);
+      if (chatId.startsWith('-')) {
+        await this.telegram.sendGroupMessage(chatId, text);
+      } else {
+        await this.telegram.sendPrivate(
+          chatId,
+          text,
+          buttons.map((button) => ({
+            text: button.text,
+            callbackData: button.callback_data,
+          })),
+        );
+      }
+      return {
+        ok: true,
+        result: {
+          message_id: this.botApiCalls.length,
+          date: Math.floor(Date.now() / 1_000),
+          chat: { id: Number(chatId), type: 'private' },
+          text,
+        },
+      } as never;
+    });
+    registerPrivateChatLinking(bot, management);
+    registerPaymentHandlers(bot, paymentHandlers);
+    registerAttendanceHandlers(bot, attendanceHandlers);
+    registerManagementEntryHandlers(
+      bot,
+      new ManagementEntryHandlers(management, this.authorization),
+      attendanceHandlers,
+      paymentHandlers,
+    );
+    registerGroupOnboardingHandlers(
+      bot,
+      onboardingHandlers,
+      this.guestFlowHandlers,
+    );
+    registerRegistrationHandlers(bot, this.registrationHandlers);
+    this.webhook = new WebhookController(
+      createLazyTelegramUpdateHandler(bot),
+      WEBHOOK_SECRET,
     );
     const notificationConsumer = new NotificationConsumer(
       this.notifications,
@@ -424,9 +496,17 @@ export class MvpAcceptanceSystem {
     this.outboxRouter = new OutboxEventRouter(
       canonicalQueue as never,
       notificationQueue as never,
+      paymentReminderQueue as never,
     );
     this.waitlistPromotions = new WaitlistPromotionConsumer(
       notificationConsumer,
+    );
+    this.paymentReminderConsumer = new PaymentReminderConsumer(
+      new PaymentReminderRepository(database),
+      new PaymentReminderSender({
+        sendPrivate: (telegramUserId, text) =>
+          this.telegram.sendPrivate(telegramUserId, text, []),
+      }),
     );
   }
 
@@ -471,6 +551,9 @@ export class MvpAcceptanceSystem {
     const notificationQueue = new Queue(`${queueBase}-notifications`, {
       connection,
     });
+    const paymentReminderQueue = new Queue(`${queueBase}-payment-reminders`, {
+      connection,
+    });
     return new MvpAcceptanceSystem(
       postgres,
       redisContainer,
@@ -481,6 +564,7 @@ export class MvpAcceptanceSystem {
       outboxQueue,
       canonicalQueue,
       notificationQueue,
+      paymentReminderQueue,
       databaseUrl,
       redisUrl,
     );
@@ -492,6 +576,7 @@ export class MvpAcceptanceSystem {
     await this.pool.query('TRUNCATE groups, users CASCADE');
     this.telegram.clear();
     this.registrationResponses.length = 0;
+    this.botApiCalls.length = 0;
     this.updateIdsByIdempotencyKey.clear();
     this.updateSequence = 1;
     this.canonicalTelegram.clear();
@@ -504,6 +589,7 @@ export class MvpAcceptanceSystem {
       this.outboxQueue.close(),
       this.canonicalQueue.close(),
       this.notificationQueue.close(),
+      this.paymentReminderQueue.close(),
       this.redis.quit(),
       this.pool.end(),
     ]);
@@ -1005,67 +1091,294 @@ export class MvpAcceptanceSystem {
     const organizerTelegramId = await this.telegramIdForUser(
       fixture.organizerUserId,
     );
-    const preview = await this.createFreshAttendanceHandlers().start({
-      telegramUserId: organizerTelegramId,
-      gameId: fixture.game.id!,
-    });
-    const addButton = preview.buttons.find(
-      (button) => button.text === 'Добавить участника',
-    );
-    if (addButton === undefined)
-      throw new Error('Attendance add button missing');
-    const prompt = await this.createFreshAttendanceHandlers().handleCallback({
-      telegramUserId: organizerTelegramId,
-      data: addButton.callbackData,
-    });
-    if (prompt.manualParticipantPrompt === undefined) {
-      throw new Error('Manual attendance prompt missing');
-    }
-    const withManual =
-      await this.createFreshAttendanceHandlers().addManualParticipant({
+    const group = await this.groups.findById(fixture.groupId);
+    if (group === null) throw new Error('Acceptance group missing');
+    await this.webhook.handle(
+      WEBHOOK_SECRET,
+      gameCallbackUpdate({
+        updateId: this.nextUpdateId(),
         telegramUserId: organizerTelegramId,
-        token: prompt.manualParticipantPrompt.token,
-        displayName,
-      });
-    const confirmButton = withManual.buttons.find(
-      (button) => button.text === 'Confirm attendance',
+        chatId: group.telegramChatId,
+        chatType: 'supergroup',
+        data: new CallbackCodec().encode({
+          version: 1,
+          action: 'MANAGE',
+          gameId: fixture.game.id!,
+        }),
+      }) as never,
     );
-    if (confirmButton === undefined) {
-      throw new Error('Attendance confirmation button missing');
-    }
-    const finalized = await this.createFreshAttendanceHandlers().handleCallback(
-      {
+    const menu = this.requiredBotCall('sendMessage', 'Управление игрой');
+    await this.webhook.handle(
+      WEBHOOK_SECRET,
+      gameCallbackUpdate({
+        updateId: this.nextUpdateId(),
         telegramUserId: organizerTelegramId,
-        data: confirmButton.callbackData,
-      },
+        chatId: organizerTelegramId,
+        chatType: 'private',
+        data: requiredButton(menu, 'Посещаемость').callback_data,
+      }) as never,
     );
-    return finalized.snapshot;
+    const preview = this.requiredBotCall(
+      'editMessageText',
+      'attendance:preview:',
+    );
+    await this.webhook.handle(
+      WEBHOOK_SECRET,
+      gameCallbackUpdate({
+        updateId: this.nextUpdateId(),
+        telegramUserId: organizerTelegramId,
+        chatId: organizerTelegramId,
+        chatType: 'private',
+        data: requiredButton(preview, 'Добавить участника').callback_data,
+      }) as never,
+    );
+    const prompt = this.requiredBotCall('sendMessage', 'Введите имя участника');
+    await this.webhook.handle(
+      WEBHOOK_SECRET,
+      privateTextUpdate({
+        updateId: this.nextUpdateId(),
+        telegramUserId: organizerTelegramId,
+        text: displayName,
+        replyToText: String(prompt.payload.text),
+      }) as never,
+    );
+    const withManual = this.requiredBotCall(
+      'sendMessage',
+      'attendance:preview:',
+    );
+    await this.webhook.handle(
+      WEBHOOK_SECRET,
+      gameCallbackUpdate({
+        updateId: this.nextUpdateId(),
+        telegramUserId: organizerTelegramId,
+        chatId: organizerTelegramId,
+        chatType: 'private',
+        data: requiredButton(withManual, 'Confirm attendance').callback_data,
+      }) as never,
+    );
+    const stored = await this.pool.query<{ id: string }>(
+      `SELECT id FROM attendance_snapshots
+       WHERE group_id = $1 AND game_id = $2 AND finalized = TRUE
+       ORDER BY revision DESC LIMIT 1`,
+      [fixture.groupId, fixture.game.id!],
+    );
+    const snapshotId = stored.rows[0]?.id;
+    if (snapshotId === undefined)
+      throw new Error('Finalized attendance missing');
+    const finalized = await this.attendance.findSnapshot(
+      fixture.groupId,
+      snapshotId as never,
+    );
+    if (finalized === null) throw new Error('Finalized attendance missing');
+    return finalized;
   }
 
-  public finalizeSettlement(
+  public async finalizeSettlement(
     fixture: AcceptanceFixture,
-    attendanceRevision: number,
+    _attendanceRevision: number,
     totalAmount: string,
     roundingMode: 'EXACT',
   ) {
-    return this.finalizeSettlementUseCase.execute({
-      groupId: fixture.groupId,
-      gameId: fixture.game.id!,
-      actorUserId: fixture.organizerUserId,
-      attendanceRevision,
-      totalAmount,
-      currency: 'RUB',
-      roundingMode,
-    });
+    if (roundingMode !== 'EXACT')
+      throw new Error('Unsupported acceptance mode');
+    const telegramUserId = await this.telegramIdForUser(
+      fixture.organizerUserId,
+    );
+    await this.webhook.handle(
+      WEBHOOK_SECRET,
+      privateCommandUpdate(
+        this.nextUpdateId(),
+        telegramUserId,
+        'manage',
+        fixture.game.id!,
+      ) as never,
+    );
+    const menu = this.requiredBotCall('sendMessage', 'Управление игрой');
+    await this.webhook.handle(
+      WEBHOOK_SECRET,
+      gameCallbackUpdate({
+        updateId: this.nextUpdateId(),
+        telegramUserId,
+        chatId: telegramUserId,
+        chatType: 'private',
+        data: requiredButton(menu, 'Расчёт оплат').callback_data,
+      }) as never,
+    );
+    await this.webhook.handle(
+      WEBHOOK_SECRET,
+      privateTextUpdate({
+        updateId: this.nextUpdateId(),
+        telegramUserId,
+        text: totalAmount,
+      }) as never,
+    );
+    const preview = this.requiredBotCall('sendMessage', 'Предпросмотр:');
+    await this.webhook.handle(
+      WEBHOOK_SECRET,
+      gameCallbackUpdate({
+        updateId: this.nextUpdateId(),
+        telegramUserId,
+        chatId: telegramUserId,
+        chatType: 'private',
+        data: requiredButton(preview, 'Подтвердить').callback_data,
+      }) as never,
+    );
+    const settlement = await this.payments.findActiveSettlement(
+      fixture.groupId,
+      fixture.game.id!,
+    );
+    if (settlement === null) throw new Error('Finalized settlement missing');
+    return settlement;
   }
 
-  public markChargePaid(fixture: AcceptanceFixture, chargeId: string) {
-    return this.changeChargeStatus.execute({
-      groupId: fixture.groupId,
-      actorUserId: fixture.organizerUserId,
-      chargeId,
-      status: 'PAID',
+  public async markChargePaid(fixture: AcceptanceFixture, chargeId: string) {
+    const telegramUserId = await this.telegramIdForUser(
+      fixture.organizerUserId,
+    );
+    const view = this.requiredBotCall('editMessageText', 'Расчёт #');
+    const callback = botApiButtons(view).find(
+      (button) =>
+        button.text === 'Оплачено' &&
+        button.callback_data.endsWith(compactUuid(chargeId)),
+    );
+    if (callback === undefined)
+      throw new Error('Payment status button missing');
+    await this.webhook.handle(
+      WEBHOOK_SECRET,
+      gameCallbackUpdate({
+        updateId: this.nextUpdateId(),
+        telegramUserId,
+        chatId: telegramUserId,
+        chatType: 'private',
+        data: callback.callback_data,
+      }) as never,
+    );
+    const settlement = await this.payments.findActiveSettlement(
+      fixture.groupId,
+      fixture.game.id!,
+    );
+    const charge = settlement?.charges.find(
+      (candidate) => candidate.id === chargeId,
+    );
+    if (charge === undefined) throw new Error('Updated charge missing');
+    return charge;
+  }
+
+  public async requestAndRecoverPaymentReminder(
+    fixture: AcceptanceFixture,
+    chargeId: string,
+    idempotencyKey: string,
+  ): Promise<{
+    outboxIntents: number;
+    privateDeliveries: number;
+    groupFallbacks: number;
+  }> {
+    const telegramUserId = await this.telegramIdForUser(
+      fixture.organizerUserId,
+    );
+    const view = this.requiredBotCall('editMessageText', 'Расчёт #');
+    const reminder = botApiButtons(view).find(
+      (button) =>
+        button.text === 'Напомнить' &&
+        button.callback_data.endsWith(compactUuid(chargeId)),
+    );
+    if (reminder === undefined)
+      throw new Error('Payment reminder button missing');
+    const updateId = this.updateIdFor(idempotencyKey);
+    const update = gameCallbackUpdate({
+      updateId,
+      telegramUserId,
+      chatId: telegramUserId,
+      chatType: 'private',
+      data: reminder.callback_data,
     });
+    await this.webhook.handle(WEBHOOK_SECRET, update as never);
+    await this.webhook.handle(WEBHOOK_SECRET, update as never);
+
+    const eventRows = await this.pool.query<{ id: string }>(
+      `SELECT id FROM outbox_events
+       WHERE event_type = 'PAYMENT_REMINDER_REQUESTED' AND aggregate_id = $1`,
+      [chargeId],
+    );
+    const eventId = eventRows.rows[0]?.id;
+    if (eventId === undefined)
+      throw new Error('Payment reminder outbox missing');
+    await this.outboxDispatcher.dispatchOnce();
+    await this.flushRedis();
+
+    const recovery = (
+      await new OutboxRepository(this.database).listRecoveryBatch(1_000)
+    ).find((event) => event.id === eventId);
+    if (recovery === undefined) {
+      throw new Error('Payment reminder recovery event missing');
+    }
+    await new BullMqJobPublisher(this.outboxQueue as never).publish({
+      id: `outbox:${recovery.id}`,
+      type: recovery.type,
+      payload: {
+        ...recovery.payload,
+        groupId: recovery.groupId,
+        aggregateType: recovery.aggregateType,
+        aggregateId: recovery.aggregateId,
+      },
+      occurredAt: recovery.occurredAt,
+    });
+    const parentJobId = `outbox:${eventId}:event`;
+    const parentJob = await this.outboxQueue.getJob(parentJobId);
+    if (parentJob === undefined)
+      throw new Error('Recovered reminder job missing');
+    await this.outboxRouter.process(
+      parentJob.name,
+      parentJob.data,
+      parentJobId,
+      parentJob.attemptsMade,
+    );
+    const childJobId = `outbox:${eventId}:payment-reminder`;
+    const child = await this.paymentReminderQueue.getJob(childJobId);
+    if (child === undefined)
+      throw new Error('Payment reminder child job missing');
+    const groupMessagesBefore = this.telegram.groupMessages.length;
+    const privateMessagesBefore =
+      this.telegram.privateMessagesFor(telegramUserId).length;
+    await this.paymentReminderConsumer.process(child.data, childJobId);
+    await this.paymentReminderConsumer.process(child.data, childJobId);
+    return {
+      outboxIntents: eventRows.rows.length,
+      privateDeliveries:
+        this.telegram.privateMessagesFor(telegramUserId).length -
+        privateMessagesBefore,
+      groupFallbacks: this.telegram.groupMessages.length - groupMessagesBefore,
+    };
+  }
+
+  public async replayDuplicatePaymentUpdateAcrossRedisLoss(
+    fixture: AcceptanceFixture,
+    chargeId: string,
+    idempotencyKey: string,
+  ): Promise<{ before: unknown; after: unknown }> {
+    const telegramUserId = await this.telegramIdForUser(
+      fixture.organizerUserId,
+    );
+    const view = this.requiredBotCall('editMessageText', 'Расчёт #');
+    const paid = botApiButtons(view).find(
+      (button) =>
+        button.text === 'Оплачено' &&
+        button.callback_data.endsWith(compactUuid(chargeId)),
+    );
+    if (paid === undefined) throw new Error('Payment status button missing');
+    const update = gameCallbackUpdate({
+      updateId: this.updateIdFor(idempotencyKey),
+      telegramUserId,
+      chatId: telegramUserId,
+      chatType: 'private',
+      data: paid.callback_data,
+    });
+    await this.webhook.handle(WEBHOOK_SECRET, update as never);
+    const before = await this.authoritativePaymentState(fixture.game.id!);
+    await this.flushRedis();
+    await this.webhook.handle(WEBHOOK_SECRET, update as never);
+    const after = await this.authoritativePaymentState(fixture.game.id!);
+    return { before, after };
   }
 
   public async reconcileGameJobs(fixture: AcceptanceFixture): Promise<void> {
@@ -1176,20 +1489,54 @@ export class MvpAcceptanceSystem {
     } as unknown as RequiredJob;
   }
 
-  private createFreshAttendanceHandlers(): AttendanceHandlers {
-    const groups = new GroupRepository(this.database);
-    const authorization = new AuthorizationService({
-      findMembership: (groupId, userId) =>
-        groups.findMembershipByUserId(groupId, userId),
-      findMembershipByTelegramUserId: (groupId, telegramUserId) =>
-        groups.findMembership(groupId, telegramUserId),
-    });
-    const attendance = new AttendanceRepository(this.database);
-    return new AttendanceHandlers(
-      new RegistrationRepository(this.database),
-      new ConfirmAttendance(authorization, attendance),
-      attendance,
+  private requiredBotCall(method: string, text: string): BotApiCall {
+    const call = this.botApiCalls.findLast(
+      (candidate) =>
+        candidate.method === method &&
+        String(candidate.payload.text ?? '').includes(text),
     );
+    if (call === undefined) {
+      throw new Error(`Telegram ${method} call containing ${text} missing`);
+    }
+    return call;
+  }
+
+  private async authoritativePaymentState(gameId: GameId): Promise<unknown> {
+    const settlements = await this.pool.query<{
+      settlement_id: string;
+      revision: number;
+      total_minor: string;
+      charge_id: string;
+      amount_minor: string;
+      status: string;
+    }>(
+      `SELECT
+         settlement.id AS settlement_id,
+         settlement.revision,
+         settlement.total_minor::text AS total_minor,
+         charge.id AS charge_id,
+         charge.amount_minor::text AS amount_minor,
+         charge.status
+       FROM settlements AS settlement
+       JOIN settlement_charges AS charge ON charge.settlement_id = settlement.id
+       WHERE settlement.game_id = $1
+       ORDER BY settlement.revision, charge.id`,
+      [gameId],
+    );
+    const events = await this.pool.query<{
+      charge_id: string;
+      count: string;
+    }>(
+      `SELECT event.charge_id, count(*)::text AS count
+       FROM charge_status_events AS event
+       JOIN settlement_charges AS charge ON charge.id = event.charge_id
+       JOIN settlements AS settlement ON settlement.id = charge.settlement_id
+       WHERE settlement.game_id = $1
+       GROUP BY event.charge_id
+       ORDER BY event.charge_id`,
+      [gameId],
+    );
+    return { settlements: settlements.rows, statusEvents: events.rows };
   }
 
   private updateIdFor(idempotencyKey: string): number {
@@ -1273,6 +1620,131 @@ const membershipUpdate = (
     date: Math.floor(Date.now() / 1_000),
     old_chat_member: { user: BOT_INFO, status: 'left' as const },
     new_chat_member: { user: BOT_INFO, status: 'member' as const },
+  },
+});
+
+const botApiButtons = (
+  call: BotApiCall,
+): Array<{ text: string; callback_data: string }> => {
+  const markup = call.payload.reply_markup as
+    | {
+        inline_keyboard?: Array<Array<{ text: string; callback_data: string }>>;
+      }
+    | undefined;
+  return markup?.inline_keyboard?.flat() ?? [];
+};
+
+const requiredButton = (call: BotApiCall, text: string) => {
+  const button = botApiButtons(call).find(
+    (candidate) => candidate.text === text,
+  );
+  if (button === undefined) throw new Error(`Telegram button ${text} missing`);
+  return button;
+};
+
+const compactUuid = (value: string): string =>
+  Buffer.from(value.replaceAll('-', ''), 'hex').toString('base64url');
+
+const gameCallbackUpdate = (input: {
+  updateId: number;
+  telegramUserId: ReturnType<typeof asTelegramId>;
+  chatId: ReturnType<typeof asTelegramId>;
+  chatType: 'private' | 'supergroup';
+  data: string;
+}) => ({
+  update_id: input.updateId,
+  callback_query: {
+    id: `acceptance-callback-${input.updateId}`,
+    chat_instance: 'acceptance-management',
+    from: {
+      id: Number(input.telegramUserId),
+      is_bot: false,
+      first_name: 'Admin',
+    },
+    data: input.data,
+    message: {
+      message_id: input.updateId,
+      date: Math.floor(Date.now() / 1_000),
+      chat:
+        input.chatType === 'private'
+          ? {
+              id: Number(input.chatId),
+              type: 'private' as const,
+              first_name: 'Admin',
+            }
+          : {
+              id: Number(input.chatId),
+              type: 'supergroup' as const,
+              title: 'Acceptance group',
+            },
+      text: 'acceptance callback',
+    },
+  },
+});
+
+const privateCommandUpdate = (
+  updateId: number,
+  telegramUserId: ReturnType<typeof asTelegramId>,
+  command: string,
+  argument: string,
+) => ({
+  update_id: updateId,
+  message: {
+    message_id: updateId,
+    date: Math.floor(Date.now() / 1_000),
+    chat: {
+      id: Number(telegramUserId),
+      type: 'private' as const,
+      first_name: 'Admin',
+    },
+    from: {
+      id: Number(telegramUserId),
+      is_bot: false,
+      first_name: 'Admin',
+    },
+    text: `/${command} ${argument}`,
+    entities: [
+      { offset: 0, length: command.length + 1, type: 'bot_command' as const },
+    ],
+  },
+});
+
+const privateTextUpdate = (input: {
+  updateId: number;
+  telegramUserId: ReturnType<typeof asTelegramId>;
+  text: string;
+  replyToText?: string;
+}) => ({
+  update_id: input.updateId,
+  message: {
+    message_id: input.updateId,
+    date: Math.floor(Date.now() / 1_000),
+    chat: {
+      id: Number(input.telegramUserId),
+      type: 'private' as const,
+      first_name: 'Admin',
+    },
+    from: {
+      id: Number(input.telegramUserId),
+      is_bot: false,
+      first_name: 'Admin',
+    },
+    text: input.text,
+    ...(input.replyToText === undefined
+      ? {}
+      : {
+          reply_to_message: {
+            message_id: input.updateId - 1,
+            date: Math.floor(Date.now() / 1_000),
+            chat: {
+              id: Number(input.telegramUserId),
+              type: 'private' as const,
+              first_name: 'Admin',
+            },
+            from: { id: BOT_INFO.id, is_bot: true, first_name: 'Volley' },
+            text: input.replyToText,
+          },
+        }),
   },
 });
 

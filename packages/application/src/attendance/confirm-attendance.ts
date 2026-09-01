@@ -14,7 +14,11 @@ export interface ConfirmAttendanceCommand {
   actorUserId: UserId;
   expectedRevision: number;
   excludedRegistrationIds: RegistrationId[];
-  manualParticipants: Array<{ displayName: string; billable: boolean }>;
+  manualParticipants: Array<{
+    participantRef?: string;
+    displayName: string;
+    billable: boolean;
+  }>;
   finalize: boolean;
 }
 

@@ -4,6 +4,7 @@ import {
   asGroupId,
   asRegistrationId,
   asUserId,
+  StalePaymentDraftError,
   type AttendanceEntry,
   type AttendanceSnapshot,
   type GameId,
@@ -12,7 +13,17 @@ import {
   type TelegramId,
   type UserId,
 } from '@volley/domain';
-import { and, asc, desc, eq, gt, inArray, isNull, lte } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+} from 'drizzle-orm';
 import type { Database } from '../client.js';
 import {
   attendanceEntries,
@@ -23,6 +34,7 @@ import {
   outboxEvents,
   paymentDrafts,
   paymentInputSessions,
+  paymentReminderRequests,
   registrations,
   settlementCharges,
   settlements,
@@ -42,6 +54,8 @@ export interface StoredPaymentDraft {
   roundingMode: RoundingMode;
   expiresAt: Date;
   finalizedSettlementId: string | null;
+  expectedActiveSettlementId: string | null;
+  expectedActiveSettlementRevision: number | null;
 }
 
 export interface StoredPaymentInputSession {
@@ -113,16 +127,32 @@ export class PaymentRepository {
     currency: 'RUB';
     roundingMode: RoundingMode;
   }): Promise<StoredPaymentDraft> {
-    const [draft] = await this.database
-      .insert(paymentDrafts)
-      .values({
-        ...input,
-        expiresAt: new Date(Date.now() + 30 * 60_000),
-      })
-      .returning();
-    if (draft === undefined)
-      throw new Error('Payment draft insert returned no row');
-    return toStoredPaymentDraft(draft);
+    return this.database.transaction(async (transaction) => {
+      await lockGame(transaction, input.groupId, input.gameId);
+      const [active] = await transaction
+        .select({ id: settlements.id, revision: settlements.revision })
+        .from(settlements)
+        .where(
+          and(
+            eq(settlements.groupId, input.groupId),
+            eq(settlements.gameId, input.gameId),
+            isNull(settlements.supersededAt),
+          ),
+        )
+        .limit(1);
+      const [draft] = await transaction
+        .insert(paymentDrafts)
+        .values({
+          ...input,
+          expectedActiveSettlementId: active?.id ?? null,
+          expectedActiveSettlementRevision: active?.revision ?? null,
+          expiresAt: new Date(Date.now() + 30 * 60_000),
+        })
+        .returning();
+      if (draft === undefined)
+        throw new Error('Payment draft insert returned no row');
+      return toStoredPaymentDraft(draft);
+    });
   }
 
   public async findDraft(
@@ -452,6 +482,26 @@ export class PaymentRepository {
         }
         return readStoredSettlement(transaction, finalized);
       }
+      if (lockedDraft !== null) {
+        const [active] = await transaction
+          .select({ id: settlements.id, revision: settlements.revision })
+          .from(settlements)
+          .where(
+            and(
+              eq(settlements.groupId, groupId),
+              eq(settlements.gameId, gameId),
+              isNull(settlements.supersededAt),
+            ),
+          )
+          .limit(1);
+        if (
+          (active?.id ?? null) !== lockedDraft.expectedActiveSettlementId ||
+          (active?.revision ?? null) !==
+            lockedDraft.expectedActiveSettlementRevision
+        ) {
+          throw new StalePaymentDraftError();
+        }
+      }
       let revisionCreated = false;
       return callback(snapshot, {
         createRevision: async (input) => {
@@ -672,12 +722,51 @@ export class PaymentRepository {
     groupId: GroupId;
     actorUserId: UserId;
     chargeIds: readonly string[];
+    idempotencyKey: string;
   }): Promise<{ enqueued: number }> {
-    const chargeIds = [...new Set(input.chargeIds)];
+    const chargeIds = [...new Set(input.chargeIds)].sort();
     if (chargeIds.length === 0 || chargeIds.length !== input.chargeIds.length) {
       throw new Error('Selected charges must be unique and nonempty');
     }
     return this.database.transaction(async (transaction) => {
+      const insertedRequest = await transaction
+        .insert(paymentReminderRequests)
+        .values({
+          groupId: input.groupId,
+          actorUserId: input.actorUserId,
+          idempotencyKey: input.idempotencyKey,
+          chargeIds,
+        })
+        .onConflictDoNothing({
+          target: [
+            paymentReminderRequests.groupId,
+            paymentReminderRequests.idempotencyKey,
+          ],
+        })
+        .returning({ id: paymentReminderRequests.id });
+      if (insertedRequest.length === 0) {
+        const [existing] = await transaction
+          .select({
+            actorUserId: paymentReminderRequests.actorUserId,
+            chargeIds: paymentReminderRequests.chargeIds,
+          })
+          .from(paymentReminderRequests)
+          .where(
+            and(
+              eq(paymentReminderRequests.groupId, input.groupId),
+              eq(paymentReminderRequests.idempotencyKey, input.idempotencyKey),
+            ),
+          )
+          .limit(1);
+        if (
+          existing === undefined ||
+          existing.actorUserId !== input.actorUserId ||
+          JSON.stringify(existing.chargeIds) !== JSON.stringify(chargeIds)
+        ) {
+          throw new Error('Payment reminder idempotency key was reused');
+        }
+        return { enqueued: existing.chargeIds.length };
+      }
       const contexts = await transaction
         .select({
           chargeId: settlementCharges.id,
@@ -732,6 +821,7 @@ export class PaymentRepository {
         .select({
           charge: settlementCharges,
           currency: settlements.currency,
+          gameId: settlements.gameId,
         })
         .from(settlementCharges)
         .innerJoin(
@@ -763,10 +853,12 @@ export class PaymentRepository {
         const [registration] = await transaction
           .select({ userId: registrations.userId })
           .from(registrations)
+          .innerJoin(users, eq(users.id, registrations.userId))
           .where(
             and(
               eq(registrations.groupId, input.groupId),
               eq(registrations.id, registrationId),
+              isNotNull(users.dmAvailableAt),
             ),
           )
           .limit(1);
@@ -782,6 +874,7 @@ export class PaymentRepository {
             channel: 'PRIVATE',
             chargeId: selectedCharge.charge.id,
             settlementId: selectedCharge.charge.settlementId,
+            gameId: selectedCharge.gameId,
             recipientUserId: registration.userId,
             amountMinor: selectedCharge.charge.amountMinor.toString(),
             currency: selectedCharge.currency,
@@ -843,7 +936,8 @@ const readAttendanceSnapshot = async (
         eq(attendanceEntries.groupId, snapshot.groupId),
         eq(attendanceEntries.snapshotId, snapshot.id),
       ),
-    );
+    )
+    .orderBy(asc(attendanceEntries.participantRef));
   return {
     id: asAttendanceSnapshotId(snapshot.id),
     groupId: asGroupId(snapshot.groupId),
@@ -1010,9 +1104,11 @@ const privateReminderAvailability = async (
   const linked = await database
     .select({ id: registrations.id, userId: registrations.userId })
     .from(registrations)
+    .innerJoin(users, eq(users.id, registrations.userId))
     .where(
       and(
         eq(registrations.groupId, groupId),
+        isNotNull(users.dmAvailableAt),
         inArray(
           registrations.id,
           chargeRegistrations.map((item) => item.registrationId),
@@ -1053,6 +1149,8 @@ const toStoredPaymentDraft = (
   roundingMode: draft.roundingMode,
   expiresAt: draft.expiresAt,
   finalizedSettlementId: draft.finalizedSettlementId,
+  expectedActiveSettlementId: draft.expectedActiveSettlementId,
+  expectedActiveSettlementRevision: draft.expectedActiveSettlementRevision,
 });
 
 const toStoredPaymentInputSession = (

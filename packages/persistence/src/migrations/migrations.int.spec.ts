@@ -59,6 +59,8 @@ describe('foundation migration', () => {
       'outbox_events',
       'payment_drafts',
       'payment_input_sessions',
+      'payment_reminder_deliveries',
+      'payment_reminder_requests',
       'registrations',
       'scheduled_jobs',
       'settlement_charges',

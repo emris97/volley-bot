@@ -6,10 +6,32 @@ import {
 } from '@volley/application';
 import {
   GameMessageConsumer,
+  GameMessageWorkerRuntime,
   OutboxEventRouter,
 } from './game-message.consumer.js';
+import { WorkerRunStateRegistry } from '../observability/worker-run-state.js';
 
 describe('GameMessageConsumer', () => {
+  it('marks an unexpectedly resolved BullMQ consumer non-ready', async () => {
+    const state = new WorkerRunStateRegistry(['volley-test']);
+    const runtime = new GameMessageWorkerRuntime(
+      [
+        {
+          name: 'volley-test',
+          run: vi.fn().mockResolvedValue(undefined),
+          close: vi.fn().mockResolvedValue(undefined),
+        } as never,
+      ],
+      vi.fn().mockResolvedValue(undefined),
+      state,
+    );
+
+    await runtime.start();
+    await vi.waitFor(() => expect(state.status('volley-test')).toBe('FAILED'));
+
+    expect(state.isReady()).toBe(false);
+  });
+
   it('refreshes a canonical game message', async () => {
     const updater = { refresh: vi.fn() };
     const consumer = new GameMessageConsumer(updater as never);
@@ -30,6 +52,7 @@ describe('GameMessageConsumer', () => {
     const router = new OutboxEventRouter(
       canonicalQueue as never,
       notificationQueue as never,
+      { getJob: vi.fn(), add: vi.fn() } as never,
     );
 
     await router.process(
@@ -50,6 +73,31 @@ describe('GameMessageConsumer', () => {
     );
   });
 
+  it('routes payment reminders to their dedicated private-delivery queue', async () => {
+    const canonicalQueue = { getJob: vi.fn(), add: vi.fn() };
+    const notificationQueue = { getJob: vi.fn(), add: vi.fn() };
+    const paymentReminderQueue = { getJob: vi.fn(), add: vi.fn() };
+    const router = new OutboxEventRouter(
+      canonicalQueue as never,
+      notificationQueue as never,
+      paymentReminderQueue as never,
+    );
+
+    await router.process(
+      'PAYMENT_REMINDER_REQUESTED',
+      { chargeId: 'charge', channel: 'PRIVATE' },
+      'outbox:event:event',
+    );
+
+    expect(paymentReminderQueue.add).toHaveBeenCalledWith(
+      'PAYMENT_REMINDER_REQUESTED',
+      expect.objectContaining({ chargeId: 'charge', channel: 'PRIVATE' }),
+      expect.objectContaining({ jobId: 'outbox:event:payment-reminder' }),
+    );
+    expect(canonicalQueue.add).not.toHaveBeenCalled();
+    expect(notificationQueue.add).not.toHaveBeenCalled();
+  });
+
   it('records retry and correlation through the production outbox router', async () => {
     const canonicalQueue = { getJob: vi.fn(), add: vi.fn() };
     const notificationQueue = { getJob: vi.fn(), add: vi.fn() };
@@ -58,6 +106,7 @@ describe('GameMessageConsumer', () => {
     const router = new OutboxEventRouter(
       canonicalQueue as never,
       notificationQueue as never,
+      { getJob: vi.fn(), add: vi.fn() } as never,
       metrics,
       new JsonLogger({
         output: (line: LogOutput) => output.push(line),

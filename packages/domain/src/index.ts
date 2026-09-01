@@ -57,6 +57,7 @@ export {
 export { rubles, type Money } from './payments/money.js';
 export {
   calculateSettlement,
+  StalePaymentDraftError,
   type SettlementCalculation,
   type SettlementCharge,
   type SettlementInput,

@@ -15,6 +15,7 @@ import type {
 import { Queue, Worker } from 'bullmq';
 import type { ManagedWorker } from '../worker-lifecycle.service.js';
 import { observeWorkerJob } from '../observability/worker-job-observability.js';
+import type { WorkerRunStateRegistry } from '../observability/worker-run-state.js';
 
 interface LockedChanges {
   updateState(state: GameState): Promise<Game>;
@@ -159,16 +160,28 @@ export class GameSchedulerRuntime implements ManagedWorker {
     private readonly reconcile: () => Promise<void>,
     private readonly closeResources: () => Promise<void>,
     private readonly intervalMs = 60_000,
+    private readonly runState?: WorkerRunStateRegistry,
   ) {}
 
   public async start(): Promise<void> {
     this.stopping = false;
-    void this.worker.run().catch((error: unknown) => {
+    this.runState?.markStarting(this.worker.name);
+    const run = this.worker.run();
+    this.runState?.observeRun(this.worker.name, run, (error) => {
       this.logger.error(
         'Game scheduler worker stopped unexpectedly',
-        error instanceof Error ? error.stack : String(error),
+        error.stack,
       );
     });
+    this.runState?.markRunning(this.worker.name);
+    if (this.runState === undefined) {
+      void run.catch((error: unknown) => {
+        this.logger.error(
+          'Game scheduler worker stopped unexpectedly',
+          error instanceof Error ? error.stack : String(error),
+        );
+      });
+    }
     await this.reconcileOnce();
     if (this.stopping) return;
     this.timer = setInterval(() => void this.reconcileOnce(), this.intervalMs);
@@ -177,11 +190,13 @@ export class GameSchedulerRuntime implements ManagedWorker {
 
   public async stop(): Promise<void> {
     this.stopping = true;
+    this.runState?.markStopping(this.worker.name);
     if (this.timer !== undefined) clearInterval(this.timer);
     this.timer = undefined;
     await this.reconciliation;
     await this.worker.close();
     await this.closeResources();
+    this.runState?.markStopped(this.worker.name);
   }
 
   private reconcileOnce(): Promise<void> {

@@ -10,7 +10,7 @@ import {
   type RegistrationId,
   type UserId,
 } from '@volley/domain';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import type { Database } from '../client.js';
 import {
   attendanceEntries,
@@ -76,6 +76,26 @@ export class AttendanceRepository {
           asRegistrationId(candidate.sourceRegistrationId),
         ),
       }));
+      const manualParticipants = input.manualParticipants.map(
+        (participant) => ({
+          ...participant,
+          participantRef:
+            participant.participantRef ?? `manual:${randomUUID()}`,
+        }),
+      );
+      if (
+        manualParticipants.some(
+          (participant) =>
+            !/^manual:[0-9A-Za-z][0-9A-Za-z._-]{0,127}$/.test(
+              participant.participantRef,
+            ),
+        ) ||
+        new Set(
+          manualParticipants.map((participant) => participant.participantRef),
+        ).size !== manualParticipants.length
+      ) {
+        throw new Error('Manual attendance participant identity is invalid');
+      }
       const [snapshot] = await transaction
         .insert(attendanceSnapshots)
         .values({
@@ -102,10 +122,10 @@ export class AttendanceRepository {
             billable: candidate.billable,
             addedManually: false,
           })),
-        ...input.manualParticipants.map((participant) => ({
+        ...manualParticipants.map((participant) => ({
           snapshotId: snapshot.id,
           groupId: input.groupId,
-          participantRef: `manual:${randomUUID()}`,
+          participantRef: participant.participantRef,
           displayName: participant.displayName,
           billable: participant.billable,
           addedManually: true,
@@ -167,7 +187,11 @@ interface ConfirmAttendanceInput {
   actorUserId: UserId;
   expectedRevision: number;
   excludedRegistrationIds: RegistrationId[];
-  manualParticipants: Array<{ displayName: string; billable: boolean }>;
+  manualParticipants: Array<{
+    participantRef?: string;
+    displayName: string;
+    billable: boolean;
+  }>;
   finalize: boolean;
 }
 
@@ -217,7 +241,8 @@ const readSnapshot = async (
         eq(attendanceEntries.groupId, groupId),
         eq(attendanceEntries.snapshotId, snapshot.id),
       ),
-    );
+    )
+    .orderBy(asc(attendanceEntries.participantRef));
   return {
     id: asAttendanceSnapshotId(snapshot.id),
     groupId,

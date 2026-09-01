@@ -13,6 +13,11 @@ import {
   WORKER_DEPENDENCIES,
   type WorkerDependencies,
 } from '../infrastructure/worker-dependencies.module.js';
+import {
+  WORKER_RUN_STATE,
+  WorkerRunStateRegistry,
+  type WorkerRunState,
+} from './worker-run-state.js';
 
 @Controller()
 class WorkerObservabilityController {
@@ -20,6 +25,8 @@ class WorkerObservabilityController {
     private readonly metrics: MetricsRegistry,
     @Inject(WORKER_DEPENDENCIES)
     private readonly dependencies: WorkerDependencies,
+    @Inject(WORKER_RUN_STATE)
+    private readonly runState: WorkerRunState,
   ) {}
 
   @Get('health/live')
@@ -30,6 +37,9 @@ class WorkerObservabilityController {
   @Get('health/ready')
   public async ready(): Promise<{ status: 'ok' }> {
     try {
+      if (!this.runState.isReady()) {
+        throw new Error('A required worker consumer is not running');
+      }
       if (this.dependencies.redis.status !== 'ready') {
         throw new Error('Redis is not ready');
       }
@@ -57,6 +67,10 @@ class WorkerObservabilityController {
   providers: [
     MetricsRegistry,
     {
+      provide: WORKER_RUN_STATE,
+      useFactory: (): WorkerRunStateRegistry => new WorkerRunStateRegistry(),
+    },
+    {
       provide: JsonLogger,
       useFactory: (): JsonLogger => {
         const env = parseEnv(process.env);
@@ -72,6 +86,6 @@ class WorkerObservabilityController {
       },
     },
   ],
-  exports: [MetricsRegistry, JsonLogger],
+  exports: [MetricsRegistry, JsonLogger, WORKER_RUN_STATE],
 })
 export class WorkerObservabilityModule {}

@@ -10,6 +10,7 @@ import {
   GameSchedulerConsumer,
   GameSchedulerRuntime,
 } from './game-scheduler.consumer.js';
+import { WorkerRunStateRegistry } from '../observability/worker-run-state.js';
 
 describe('GameSchedulerConsumer', () => {
   it.each([
@@ -112,6 +113,29 @@ describe('BullMqDelayedJobScheduler', () => {
 });
 
 describe('GameSchedulerRuntime shutdown', () => {
+  it('marks an unexpected BullMQ run rejection non-ready without leaking the rejection', async () => {
+    const state = new WorkerRunStateRegistry(['game-scheduler']);
+    const worker = {
+      name: 'game-scheduler',
+      run: vi.fn().mockRejectedValue(new Error('consumer failed')),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const runtime = new GameSchedulerRuntime(
+      worker as never,
+      vi.fn().mockResolvedValue(undefined),
+      vi.fn().mockResolvedValue(undefined),
+      60_000,
+      state,
+    );
+
+    await runtime.start();
+    await vi.waitFor(() =>
+      expect(state.status('game-scheduler')).toBe('FAILED'),
+    );
+
+    expect(state.isReady()).toBe(false);
+  });
+
   it('awaits a held reconciliation before closing worker resources', async () => {
     let releaseReconciliation!: () => void;
     const heldReconciliation = new Promise<void>((resolve) => {

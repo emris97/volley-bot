@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type {
   AttendanceSnapshotReader,
   ConfirmAttendance,
@@ -44,7 +45,11 @@ export class AttendanceHandlers {
     gameId: GameId;
     expectedRevision: number;
     excludedRegistrationIds: RegistrationId[];
-    manualParticipants: Array<{ displayName: string; billable: boolean }>;
+    manualParticipants: Array<{
+      participantRef?: string;
+      displayName: string;
+      billable: boolean;
+    }>;
   }): Promise<AttendanceSnapshot> {
     return this.execute(input, false);
   }
@@ -54,7 +59,11 @@ export class AttendanceHandlers {
     gameId: GameId;
     expectedRevision: number;
     excludedRegistrationIds: RegistrationId[];
-    manualParticipants: Array<{ displayName: string; billable: boolean }>;
+    manualParticipants: Array<{
+      participantRef?: string;
+      displayName: string;
+      billable: boolean;
+    }>;
   }): Promise<AttendanceSnapshot> {
     return this.execute(input, true);
   }
@@ -75,9 +84,15 @@ export class AttendanceHandlers {
 
   public render(snapshot: AttendanceSnapshot): AttendancePreview {
     return {
-      text: snapshot.finalized
-        ? `attendance:confirmed:${snapshot.revision}`
-        : `attendance:preview:${snapshot.revision}`,
+      text: [
+        snapshot.finalized
+          ? `attendance:confirmed:${snapshot.revision}`
+          : `attendance:preview:${snapshot.revision}`,
+        ...snapshot.entries.map(
+          (entry) =>
+            `${entry.billable ? '✓' : '○'} ${entry.displayName} — ${entry.billable ? 'с взносом' : 'без взноса'}`,
+        ),
+      ].join('\n'),
       snapshot,
       buttons: snapshot.finalized
         ? []
@@ -91,6 +106,28 @@ export class AttendanceHandlers {
                 index,
               ),
             })),
+            ...snapshot.entries
+              .filter((entry) => entry.addedManually)
+              .flatMap((entry, index) => [
+                {
+                  text: `Взнос: ${entry.billable ? 'да' : 'нет'} — ${entry.displayName}`,
+                  callbackData: attendanceCallback(
+                    'billable',
+                    snapshot.groupId,
+                    snapshot.id,
+                    index,
+                  ),
+                },
+                {
+                  text: `Удалить — ${entry.displayName}`,
+                  callbackData: attendanceCallback(
+                    'remove',
+                    snapshot.groupId,
+                    snapshot.id,
+                    index,
+                  ),
+                },
+              ]),
             {
               text: 'Добавить участника',
               callbackData: attendanceCallback(
@@ -140,11 +177,19 @@ export class AttendanceHandlers {
         },
       };
     }
+    if (callback.action === 'toggle') {
+      if (snapshot.rosterCandidates[callback.candidateIndex] === undefined) {
+        throw new Error('Attendance candidate not found');
+      }
+    }
+    const currentManual = snapshot.entries.filter(
+      (entry) => entry.addedManually,
+    );
     if (
-      callback.action === 'toggle' &&
-      snapshot.rosterCandidates[callback.candidateIndex] === undefined
+      (callback.action === 'billable' || callback.action === 'remove') &&
+      currentManual[callback.candidateIndex] === undefined
     ) {
-      throw new Error('Attendance candidate not found');
+      throw new Error('Manual attendance participant not found');
     }
     const excludedRegistrationIds = snapshot.rosterCandidates
       .filter((candidate, index) =>
@@ -153,11 +198,18 @@ export class AttendanceHandlers {
           : !candidate.included,
       )
       .map((candidate) => candidate.sourceRegistrationId);
-    const manualParticipants = snapshot.entries
-      .filter((entry) => entry.addedManually)
-      .map((entry) => ({
+    const manualParticipants = currentManual
+      .filter(
+        (_entry, index) =>
+          callback.action !== 'remove' || index !== callback.candidateIndex,
+      )
+      .map((entry, index) => ({
+        participantRef: entry.participantRef,
         displayName: entry.displayName,
-        billable: entry.billable,
+        billable:
+          callback.action === 'billable' && index === callback.candidateIndex
+            ? !entry.billable
+            : entry.billable,
       }));
     const result = await this.attendance.execute({
       groupId: actor.groupId,
@@ -213,10 +265,15 @@ export class AttendanceHandlers {
         ...snapshot.entries
           .filter((entry) => entry.addedManually)
           .map((entry) => ({
+            participantRef: entry.participantRef,
             displayName: entry.displayName,
             billable: entry.billable,
           })),
-        { displayName, billable: true },
+        {
+          participantRef: `manual:${randomUUID()}`,
+          displayName,
+          billable: true,
+        },
       ],
       finalize: false,
     });
@@ -263,6 +320,12 @@ type AttendanceCallback =
       groupId: GroupId;
       snapshotId: AttendanceSnapshotId;
       candidateIndex?: never;
+    }
+  | {
+      action: 'billable' | 'remove';
+      groupId: GroupId;
+      snapshotId: AttendanceSnapshotId;
+      candidateIndex: number;
     };
 
 export const attendanceCallback = (
@@ -272,17 +335,27 @@ export const attendanceCallback = (
   candidateIndex?: number,
 ): string => {
   if (
-    action === 'toggle' &&
+    (action === 'toggle' || action === 'billable' || action === 'remove') &&
     (candidateIndex === undefined ||
       !Number.isSafeInteger(candidateIndex) ||
       candidateIndex < 0)
   ) {
     throw new Error('Invalid attendance callback');
   }
-  const callback =
+  const actionCode =
     action === 'toggle'
-      ? `at:t:${compactUuid(groupId)}:${compactUuid(snapshotId)}:${candidateIndex?.toString(36)}`
-      : `at:${action === 'confirm' ? 'c' : 'a'}:${compactUuid(groupId)}:${compactUuid(snapshotId)}`;
+      ? 't'
+      : action === 'billable'
+        ? 'b'
+        : action === 'remove'
+          ? 'r'
+          : action === 'confirm'
+            ? 'c'
+            : 'a';
+  const callback =
+    candidateIndex === undefined
+      ? `at:${actionCode}:${compactUuid(groupId)}:${compactUuid(snapshotId)}`
+      : `at:${actionCode}:${compactUuid(groupId)}:${compactUuid(snapshotId)}:${candidateIndex.toString(36)}`;
   if (Buffer.byteLength(callback, 'utf8') > 64) {
     throw new Error('Telegram callback payload exceeds 64 bytes');
   }
@@ -294,21 +367,22 @@ const parseAttendanceCallback = (value: string): AttendanceCallback => {
     value.split(':');
   if (
     prefix !== 'at' ||
-    (action !== 't' && action !== 'c' && action !== 'a') ||
+    !['t', 'b', 'r', 'c', 'a'].includes(action ?? '') ||
     groupId === undefined ||
     snapshotId === undefined ||
     rest.length > 0 ||
-    (action === 't' &&
+    (['t', 'b', 'r'].includes(action ?? '') &&
       (candidateIndex === undefined || !/^[0-9a-z]+$/i.test(candidateIndex))) ||
-    (action !== 't' && candidateIndex !== undefined)
+    (!['t', 'b', 'r'].includes(action ?? '') && candidateIndex !== undefined)
   ) {
     throw new Error('Invalid attendance callback');
   }
   const decodedGroupId = decodeCompactUuid(groupId);
   const decodedSnapshotId = decodeCompactUuid(snapshotId);
-  if (action === 't') {
+  if (action === 't' || action === 'b' || action === 'r') {
     return {
-      action: 'toggle',
+      action:
+        action === 't' ? 'toggle' : action === 'b' ? 'billable' : 'remove',
       groupId: asGroupId(decodedGroupId),
       snapshotId: asAttendanceSnapshotId(decodedSnapshotId),
       candidateIndex: Number.parseInt(candidateIndex!, 36),
@@ -346,7 +420,7 @@ export const registerAttendanceHandlers = (
       telegramUserId: toTelegramId(context.from.id),
       gameId: parseGameId(context.match ?? ''),
     });
-    await context.reply(preview.text, replyMarkup(preview));
+    await context.reply(preview.text, attendanceReplyMarkup(preview));
   });
   bot.on('message:text', async (context, next) => {
     const prompt = context.message.reply_to_message?.text?.split('\n')[0];
@@ -364,7 +438,7 @@ export const registerAttendanceHandlers = (
       token: prompt,
       displayName: context.message.text,
     });
-    await context.reply(preview.text, replyMarkup(preview));
+    await context.reply(preview.text, attendanceReplyMarkup(preview));
   });
   bot.callbackQuery(/^at:/, async (context) => {
     if (context.callbackQuery.message?.chat.type !== 'private') {
@@ -375,7 +449,10 @@ export const registerAttendanceHandlers = (
       data: context.callbackQuery.data,
     });
     if (preview.manualParticipantPrompt === undefined) {
-      await context.editMessageText(preview.text, replyMarkup(preview));
+      await context.editMessageText(
+        preview.text,
+        attendanceReplyMarkup(preview),
+      );
     } else {
       await context.reply(preview.manualParticipantPrompt.text, {
         reply_markup: { force_reply: true, selective: true },
@@ -386,7 +463,7 @@ export const registerAttendanceHandlers = (
   return bot;
 };
 
-const replyMarkup = (preview: AttendancePreview) => ({
+export const attendanceReplyMarkup = (preview: AttendancePreview) => ({
   reply_markup: {
     inline_keyboard: preview.buttons.map((button) => [
       { text: button.text, callback_data: button.callbackData },

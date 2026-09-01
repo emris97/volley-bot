@@ -81,6 +81,9 @@ describe('AttendanceRepository', () => {
         included: false,
       }),
     );
+    const manualParticipant = preview.entries.find(
+      (entry) => entry.addedManually,
+    )!;
     const laterRegistrationId = await insertRosteredRegistration(
       pool,
       groupId,
@@ -116,9 +119,22 @@ describe('AttendanceRepository', () => {
       actorUserId,
       expectedRevision: preview.revision,
       excludedRegistrationIds: [registrationId],
-      manualParticipants: [{ displayName: 'Late player', billable: true }],
+      manualParticipants: [
+        {
+          participantRef: manualParticipant.participantRef,
+          displayName: 'Late player',
+          billable: false,
+        },
+      ],
       finalize: true,
     });
+    expect(finalized.entries).toContainEqual(
+      expect.objectContaining({
+        participantRef: manualParticipant.participantRef,
+        displayName: 'Late player',
+        billable: false,
+      }),
+    );
     const afterFinalization = await repository.confirm({
       groupId,
       gameId: completedGameId,

@@ -179,6 +179,15 @@ describe('PaymentRepository', () => {
         groupId: fixture.groupId,
         actorUserId: fixture.actorUserId,
         chargeIds: [registeredCharge.id],
+        idempotencyKey: 'telegram-update:1',
+      }),
+    ).resolves.toEqual({ enqueued: 1 });
+    await expect(
+      repository.enqueueReminders({
+        groupId: fixture.groupId,
+        actorUserId: fixture.actorUserId,
+        chargeIds: [registeredCharge.id],
+        idempotencyKey: 'telegram-update:1',
       }),
     ).resolves.toEqual({ enqueued: 1 });
     const intent = await pool.query<{
@@ -200,12 +209,20 @@ describe('PaymentRepository', () => {
         }),
       },
     ]);
+    await expect(
+      pool.query(
+        `SELECT id FROM payment_reminder_requests
+         WHERE group_id = $1 AND idempotency_key = 'telegram-update:1'`,
+        [fixture.groupId],
+      ),
+    ).resolves.toMatchObject({ rowCount: 1 });
 
     await expect(
       repository.enqueueReminders({
         groupId: fixture.groupId,
         actorUserId: fixture.actorUserId,
         chargeIds: [manualCharge.id],
+        idempotencyKey: 'telegram-update:2',
       }),
     ).rejects.toThrow(/private reminder recipient/i);
   });
@@ -262,6 +279,7 @@ describe('PaymentRepository', () => {
         groupId: fixture.groupId,
         actorUserId: fixture.actorUserId,
         chargeIds: [charge.id],
+        idempotencyKey: 'telegram-update:3',
       })
       .finally(() => {
         completed = true;
@@ -392,6 +410,52 @@ describe('PaymentRepository', () => {
     });
   });
 
+  it('rejects a distinct stale draft without superseding the active settlement or resetting charges', async () => {
+    const fixture = await insertFixture(pool);
+    const draftInput = {
+      groupId: fixture.groupId,
+      gameId: fixture.gameId,
+      actorUserId: fixture.actorUserId,
+      attendanceRevision: 1,
+      totalAmount: '100.00',
+      currency: 'RUB' as const,
+      roundingMode: 'EXACT' as const,
+    };
+    const [draftA, draftB] = await Promise.all([
+      repository.saveDraft(draftInput),
+      repository.saveDraft(draftInput),
+    ]);
+
+    expect(draftA.expectedActiveSettlementId).toBeNull();
+    expect(draftA.expectedActiveSettlementRevision).toBeNull();
+    const first = await confirmDraft(repository, fixture, draftA.id, 10000n);
+    const paidCharge = await repository.changeChargeStatus({
+      groupId: fixture.groupId,
+      actorUserId: fixture.actorUserId,
+      chargeId: first.charges[0]!.id,
+      status: 'PAID',
+    });
+
+    await expect(
+      confirmDraft(repository, fixture, draftB.id, 12000n),
+    ).rejects.toThrow(/payment preview is stale/i);
+    await expect(
+      confirmDraft(repository, fixture, draftA.id, 10000n),
+    ).resolves.toMatchObject({ id: first.id, revision: 1 });
+
+    const active = await repository.findActiveSettlement(
+      fixture.groupId,
+      fixture.gameId,
+    );
+    expect(active).toMatchObject({ id: first.id, revision: 1 });
+    expect(
+      active?.charges.find((charge) => charge.id === paidCharge.id)?.status,
+    ).toBe('PAID');
+    await expect(
+      pool.query('SELECT id FROM settlements'),
+    ).resolves.toMatchObject({ rowCount: 1 });
+  });
+
   it('purges expired payment drafts and input sessions in bounded batches', async () => {
     const fixture = await insertFixture(pool);
     const expiredDraft = await repository.saveDraft({
@@ -500,6 +564,45 @@ const createRevision = async (
       }),
   );
 
+const confirmDraft = async (
+  repository: PaymentRepository,
+  fixture: Awaited<ReturnType<typeof insertFixture>>,
+  draftId: string,
+  totalMinor: bigint,
+) =>
+  repository.finalizeDraft(
+    {
+      groupId: fixture.groupId,
+      gameId: fixture.gameId,
+      attendanceRevision: 1,
+      draftId,
+      actorUserId: fixture.actorUserId,
+    },
+    async (snapshot, changes) => {
+      const billable = snapshot.entries
+        .filter((entry) => entry.billable)
+        .toSorted((left, right) =>
+          left.participantRef.localeCompare(right.participantRef),
+        );
+      const amountMinor = totalMinor / BigInt(billable.length);
+      return changes.createRevision({
+        actorUserId: fixture.actorUserId,
+        totalMinor,
+        currency: 'RUB',
+        roundingMode: 'EXACT',
+        allocationOrder: billable.map((entry) => entry.participantRef),
+        collectedMinor: amountMinor * BigInt(billable.length),
+        surplusMinor: 0n,
+        charges: billable.map((entry) => ({
+          participantRef: entry.participantRef,
+          displayName: entry.displayName,
+          addedManually: entry.addedManually,
+          amountMinor,
+        })),
+      });
+    },
+  );
+
 const insertFixture = async (pool: Pool) => {
   const groupId = await insertGroup(pool, '-1001');
   const otherGroupId = await insertGroup(pool, '-1002');
@@ -557,7 +660,7 @@ const insertUser = async (
   displayName: string,
 ) => {
   const result = await pool.query<{ id: string }>(
-    'INSERT INTO users (telegram_user_id, display_name) VALUES ($1, $2) RETURNING id',
+    'INSERT INTO users (telegram_user_id, display_name, dm_available_at) VALUES ($1, $2, NOW()) RETURNING id',
     [telegramUserId, displayName],
   );
   return asUserId(result.rows[0]!.id);

@@ -9,6 +9,8 @@ export {
   chargeStatusEvents,
   paymentDrafts,
   paymentInputSessions,
+  paymentReminderDeliveries,
+  paymentReminderRequests,
   settlementCharges,
   settlements,
 } from './payments.js';

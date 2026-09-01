@@ -14,6 +14,7 @@ import { OUTBOX_WORKER } from '../outbox/outbox.module.js';
 import { GAME_SCHEDULER_WORKER } from '../scheduling/game-scheduler.module.js';
 import { GAME_MESSAGE_WORKER } from '../telegram/game-message.consumer.js';
 import { WorkerModule } from '../worker.module.js';
+import { WORKER_RUN_STATE, type WorkerRunState } from './worker-run-state.js';
 
 const apiRequire = createRequire(
   new URL('../../../api/package.json', import.meta.url),
@@ -139,6 +140,22 @@ it('reports unavailable when the worker Redis dependency fails', async () => {
   expect(response.body).not.toContain('redis-secret');
 });
 
+it('reports unavailable when a required production consumer terminates unexpectedly', async () => {
+  const runState = healthyRunState();
+  runState.isReady.mockReturnValue(false);
+  await createProductionWorkerApp(healthyDependencies(), {}, runState);
+
+  const live = await app!.getHttpAdapter().getInstance().inject({
+    method: 'GET',
+    url: '/health/live',
+  });
+  const ready = await injectReady();
+
+  expect(live.statusCode).toBe(200);
+  expect(ready.statusCode).toBe(503);
+  expect(ready.json()).toEqual({ status: 'unavailable' });
+});
+
 it('keeps the worker live and non-ready after an idle PostgreSQL client error', async () => {
   const pool = Object.assign(new EventEmitter(), {
     query: vi.fn().mockRejectedValue(new Error('database unavailable')),
@@ -209,6 +226,7 @@ const createProductionWorkerApp = async (
     scheduler?: TestWorker;
     gameMessages?: TestWorker;
   } = {},
+  runState: WorkerRunState = healthyRunState(),
 ) => {
   const idleWorker = {
     start: vi.fn().mockResolvedValue(undefined),
@@ -223,12 +241,18 @@ const createProductionWorkerApp = async (
     .useValue(workers.scheduler ?? idleWorker)
     .overrideProvider(GAME_MESSAGE_WORKER)
     .useValue(workers.gameMessages ?? idleWorker)
+    .overrideProvider(WORKER_RUN_STATE)
+    .useValue(runState)
     .compile();
   app = module.createNestApplication(new FastifyAdapter() as never);
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
   return module;
 };
+
+const healthyRunState = () => ({
+  isReady: vi.fn().mockReturnValue(true),
+});
 
 const injectReady = () =>
   app!.getHttpAdapter().getInstance().inject({

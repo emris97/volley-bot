@@ -6,7 +6,12 @@ import {
 } from '@volley/application';
 
 interface WorkerJobContext {
-  queue: 'outbox' | 'game-scheduler' | 'game-messages' | 'notifications';
+  queue:
+    | 'outbox'
+    | 'game-scheduler'
+    | 'game-messages'
+    | 'notifications'
+    | 'payment-reminders';
   jobId: string;
   groupId?: string;
   gameId?: string;

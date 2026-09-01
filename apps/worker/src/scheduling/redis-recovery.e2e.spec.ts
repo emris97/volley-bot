@@ -134,7 +134,15 @@ describe('Redis recovery with durable Postgres metadata', () => {
     const notificationQueue = new Queue('volley-notifications-recovery', {
       connection,
     });
-    const router = new OutboxEventRouter(canonicalQueue, notificationQueue);
+    const paymentReminderQueue = new Queue(
+      'volley-payment-reminders-recovery',
+      { connection },
+    );
+    const router = new OutboxEventRouter(
+      canonicalQueue,
+      notificationQueue,
+      paymentReminderQueue,
+    );
     const routerWorker = new Worker(
       outboxQueue.name,
       async (job) => router.process(job.name, job.data, job.id!),
@@ -153,6 +161,7 @@ describe('Redis recovery with durable Postgres metadata', () => {
     await routerWorker.close();
     await canonicalQueue.close();
     await notificationQueue.close();
+    await paymentReminderQueue.close();
 
     const notifications = new NotificationRepository(database);
     const sender = { send: vi.fn() };

@@ -7,12 +7,21 @@ export {
 export { GameRepository } from './repositories/game.repository.js';
 export { AttendanceRepository } from './repositories/attendance.repository.js';
 export {
+  ManagementRepository,
+  type ManagementContextRecord,
+} from './repositories/management.repository.js';
+export {
   PaymentRepository,
   type StoredPaymentDraft,
   type StoredPaymentInputSession,
   type StoredSettlement,
   type StoredSettlementCharge,
 } from './repositories/payment.repository.js';
+export {
+  PaymentReminderRepository,
+  type PaymentReminderTerminalFailure,
+  type StoredPaymentReminderRecipient,
+} from './repositories/payment-reminder.repository.js';
 export {
   GameMessageRepository,
   type StoredGameMessageView,

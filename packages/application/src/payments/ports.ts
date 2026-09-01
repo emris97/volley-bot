@@ -75,6 +75,7 @@ export interface EnqueuePaymentRemindersInput {
   groupId: GroupId;
   actorUserId: UserId;
   chargeIds: readonly string[];
+  idempotencyKey: string;
 }
 
 export interface PaymentDraft {
@@ -88,11 +89,17 @@ export interface PaymentDraft {
   roundingMode: RoundingMode;
   expiresAt: Date;
   finalizedSettlementId: string | null;
+  expectedActiveSettlementId: string | null;
+  expectedActiveSettlementRevision: number | null;
 }
 
 export type SavePaymentDraftInput = Omit<
   PaymentDraft,
-  'id' | 'expiresAt' | 'finalizedSettlementId'
+  | 'id'
+  | 'expiresAt'
+  | 'finalizedSettlementId'
+  | 'expectedActiveSettlementId'
+  | 'expectedActiveSettlementRevision'
 >;
 
 export interface PaymentDraftRepository {

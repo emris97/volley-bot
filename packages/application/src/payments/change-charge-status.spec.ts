@@ -69,6 +69,7 @@ it('enqueues selected private reminders only after organizer authorization', asy
       groupId,
       actorUserId: organizer,
       chargeIds: ['charge-2', 'charge-1'],
+      idempotencyKey: 'telegram-update:1',
     }),
   ).resolves.toEqual({ enqueued: 2 });
   expect(calls).toEqual([
@@ -76,6 +77,7 @@ it('enqueues selected private reminders only after organizer authorization', asy
       groupId,
       actorUserId: organizer,
       chargeIds: ['charge-2', 'charge-1'],
+      idempotencyKey: 'telegram-update:1',
     },
   ]);
 });

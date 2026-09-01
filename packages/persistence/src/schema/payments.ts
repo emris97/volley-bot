@@ -36,6 +36,12 @@ export const paymentDrafts = pgTable(
     currency: text('currency').$type<'RUB'>().notNull(),
     roundingMode: text('rounding_mode').$type<RoundingMode>().notNull(),
     finalizedSettlementId: uuid('finalized_settlement_id'),
+    expectedActiveSettlementId: uuid(
+      'expected_active_settlement_id',
+    ).references(() => settlements.id, { onDelete: 'restrict' }),
+    expectedActiveSettlementRevision: integer(
+      'expected_active_settlement_revision',
+    ),
     expiresAt: timestamp('expires_at', {
       mode: 'date',
       withTimezone: true,
@@ -61,6 +67,10 @@ export const paymentDrafts = pgTable(
     check(
       'payment_drafts_rounding_mode_check',
       sql`${table.roundingMode} in ('EXACT', 'UP_1', 'UP_10', 'UP_50')`,
+    ),
+    check(
+      'payment_drafts_expected_active_pair_check',
+      sql`(${table.expectedActiveSettlementId} is null and ${table.expectedActiveSettlementRevision} is null) or (${table.expectedActiveSettlementId} is not null and ${table.expectedActiveSettlementRevision} is not null)`,
     ),
   ],
 );
@@ -244,6 +254,67 @@ export const chargeStatusEvents = pgTable(
     check(
       'charge_status_events_status_check',
       sql`${table.status} in ('UNPAID', 'PAID', 'WAIVED')`,
+    ),
+  ],
+);
+
+export const paymentReminderRequests = pgTable(
+  'payment_reminder_requests',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    groupId: uuid('group_id')
+      .notNull()
+      .references(() => groups.id, { onDelete: 'restrict' }),
+    actorUserId: uuid('actor_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    idempotencyKey: text('idempotency_key').notNull(),
+    chargeIds: jsonb('charge_ids').$type<string[]>().notNull(),
+    createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('payment_reminder_requests_group_key_unique').on(
+      table.groupId,
+      table.idempotencyKey,
+    ),
+  ],
+);
+
+export const paymentReminderDeliveries = pgTable(
+  'payment_reminder_deliveries',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    deterministicJobId: text('deterministic_job_id').notNull(),
+    chargeId: uuid('charge_id')
+      .notNull()
+      .references(() => settlementCharges.id, { onDelete: 'restrict' }),
+    claimToken: uuid('claim_token'),
+    claimedAt: timestamp('claimed_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    claimExpiresAt: timestamp('claim_expires_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    deliveredAt: timestamp('delivered_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    terminalFailure: text('terminal_failure').$type<
+      'NO_PRIVATE_RECIPIENT' | 'PRIVATE_CHAT_UNAVAILABLE'
+    >(),
+  },
+  (table) => [
+    uniqueIndex('payment_reminder_deliveries_job_charge_unique').on(
+      table.deterministicJobId,
+      table.chargeId,
+    ),
+    check(
+      'payment_reminder_deliveries_terminal_failure_check',
+      sql`${table.terminalFailure} is null or ${table.terminalFailure} in ('NO_PRIVATE_RECIPIENT', 'PRIVATE_CHAT_UNAVAILABLE')`,
     ),
   ],
 );

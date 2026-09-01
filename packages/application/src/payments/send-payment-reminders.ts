@@ -20,6 +20,9 @@ export class SendPaymentReminders {
     if (command.chargeIds.length === 0) {
       throw new Error('At least one charge must be selected');
     }
+    if (command.idempotencyKey.trim().length === 0) {
+      throw new Error('Payment reminder idempotency key is required');
+    }
     return this.payments.enqueueReminders(command);
   }
 }
