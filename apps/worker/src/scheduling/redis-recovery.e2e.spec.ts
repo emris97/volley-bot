@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { Redis } from 'ioredis';
-import { Queue } from 'bullmq';
+import { Queue, Worker } from 'bullmq';
 import {
   GenericContainer,
   type StartedTestContainer,
@@ -21,6 +21,7 @@ import {
 import { applyTestMigrations } from '../../../../packages/persistence/src/migrations/migration-test-helper.js';
 import { NotificationConsumer } from '../notifications/notification.consumer.js';
 import { BullMqJobPublisher } from '../outbox/outbox.consumer.js';
+import { OutboxEventRouter } from '../telegram/game-message.consumer.js';
 import {
   BullMqDelayedJobScheduler,
   GameSchedulerConsumer,
@@ -33,6 +34,7 @@ describe('Redis recovery with durable Postgres metadata', () => {
   let redis: Redis;
   let schedulerQueue: Queue;
   let outboxQueue: Queue;
+  let connection: { host: string; port: number };
 
   beforeAll(async () => {
     [postgres, redisContainer] = await Promise.all([
@@ -59,7 +61,7 @@ describe('Redis recovery with durable Postgres metadata', () => {
       connectionString: `postgresql://postgres:postgres@${postgres.getHost()}:${postgres.getMappedPort(5432)}/volley`,
     });
     await applyTestMigrations(pool);
-    const connection = {
+    connection = {
       host: redisContainer.getHost(),
       port: redisContainer.getMappedPort(6379),
     };
@@ -120,8 +122,33 @@ describe('Redis recovery with durable Postgres metadata', () => {
     await replayOutbox(outbox, new BullMqJobPublisher(outboxQueue));
 
     expect(await schedulerQueue.getJob(prompt.id)).toBeDefined();
-    const [event] = await outbox.listReplayBatch(1);
-    expect(await outboxQueue.getJob(`outbox:${event!.id}:event`)).toBeDefined();
+    const [event] = await outbox.listRecoveryBatch(1);
+    const outboxJobId = `outbox:${event!.id}:event`;
+    expect(await outboxQueue.getJob(outboxJobId)).toBeDefined();
+
+    const canonicalQueue = new Queue('volley-game-messages-recovery', {
+      connection,
+    });
+    const notificationQueue = new Queue('volley-notifications-recovery', {
+      connection,
+    });
+    const router = new OutboxEventRouter(canonicalQueue, notificationQueue);
+    const routerWorker = new Worker(
+      outboxQueue.name,
+      async (job) => router.process(job.name, job.data, job.id!),
+      { connection },
+    );
+    await vi.waitFor(
+      async () => {
+        expect(
+          await canonicalQueue.getJob(`${outboxJobId}:canonical`),
+        ).toBeDefined();
+      },
+      { timeout: 10_000 },
+    );
+    await routerWorker.close();
+    await canonicalQueue.close();
+    await notificationQueue.close();
 
     const notifications = new NotificationRepository(database);
     const sender = { send: vi.fn() };
@@ -130,10 +157,25 @@ describe('Redis recovery with durable Postgres metadata', () => {
       sender as never,
       registrations,
     );
-    await new GameSchedulerConsumer(games, (job) =>
+    const schedulerConsumer = new GameSchedulerConsumer(games, (job) =>
       notificationConsumer.process(job),
-    ).process(prompt);
-    await scheduledJobs.markCompleted(groupId, gameId, prompt.id);
+    );
+    const schedulerWorker = new Worker(
+      schedulerQueue.name,
+      async (bullJob) => {
+        const job = {
+          ...bullJob.data,
+          runAt: new Date(bullJob.data.runAt),
+        };
+        await schedulerConsumer.process(job);
+        await scheduledJobs.markCompleted(job.groupId, job.gameId, job.id);
+      },
+      { connection },
+    );
+    await vi.waitFor(() => expect(sender.send).toHaveBeenCalledOnce(), {
+      timeout: 10_000,
+    });
+    await schedulerWorker.close();
     await redis.flushdb();
     await reconciler.execute(storedGame, candidates);
 
@@ -151,7 +193,7 @@ const replayOutbox = async (
   repository: OutboxRepository,
   publisher: BullMqJobPublisher,
 ): Promise<void> => {
-  for (const event of await repository.listReplayBatch(100)) {
+  for (const event of await repository.listRecoveryBatch(100)) {
     await publisher.publish({
       id: `outbox:${event.id}`,
       type: event.type,
@@ -182,7 +224,7 @@ const game = (
   timeZone: 'UTC',
   registrationOpensAt: new Date('2026-09-02T16:00:00.000Z'),
   registrationClosesAt: new Date('2026-09-10T15:00:00.000Z'),
-  tentativePromptAt: new Date('2026-09-09T16:00:00.000Z'),
+  tentativePromptAt: new Date('2026-08-31T16:00:00.000Z'),
   tentativeResponseDeadline: new Date('2026-09-09T17:00:00.000Z'),
   reminderAt: new Date('2026-09-10T14:00:00.000Z'),
   memberPriorityEnabled: true,

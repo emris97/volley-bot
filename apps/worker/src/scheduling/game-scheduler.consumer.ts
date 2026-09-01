@@ -83,6 +83,11 @@ export class BullMqDelayedJobScheduler implements DelayedJobScheduler {
   ) {}
 
   public async ensure(job: RequiredJob): Promise<void> {
+    const existing = await this.queue.getJob(job.id);
+    if (existing !== undefined) {
+      if ((await existing.getState()) === 'failed') await existing.retry();
+      return;
+    }
     await this.queue.add(job.kind, job, {
       jobId: job.id,
       delay: Math.max(0, job.runAt.getTime() - this.now().getTime()),

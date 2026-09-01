@@ -128,4 +128,74 @@ export class OutboxRepository {
       aggregateId: row.aggregateId,
     }));
   }
+
+  public async listRecoveryBatch(
+    limit: number,
+    after?: { occurredAt: Date; id: string },
+  ): Promise<
+    readonly {
+      id: string;
+      type: string;
+      payload: Record<string, unknown>;
+      occurredAt: Date;
+      groupId: string;
+      aggregateType: string;
+      aggregateId: string;
+    }[]
+  > {
+    if (!Number.isInteger(limit) || limit <= 0) return [];
+    const result = await this.database.execute<ClaimedRow>(sql`
+      WITH latest_game_refresh AS (
+        SELECT DISTINCT ON (aggregate_id)
+          id || ':canonical-recovery' AS id,
+          'GAME_RECOVERY_REFRESH' AS event_type,
+          payload,
+          occurred_at,
+          group_id,
+          aggregate_type,
+          aggregate_id
+        FROM outbox_events
+        WHERE aggregate_type = 'GAME'
+          AND event_type IN (
+            'GAME_CREATED',
+            'GAME_UPDATED',
+            'GAME_STATE_CHANGED',
+            'REGISTRATION_CHANGED',
+            'WAITLIST_PROMOTED'
+          )
+        ORDER BY aggregate_id, occurred_at DESC, id DESC
+      ), recovery_events AS (
+        SELECT * FROM latest_game_refresh
+        UNION ALL
+        SELECT
+          id::text,
+          event_type,
+          payload,
+          occurred_at,
+          group_id,
+          aggregate_type,
+          aggregate_id
+        FROM outbox_events
+        WHERE event_type = 'WAITLIST_PROMOTED'
+      )
+      SELECT *
+      FROM recovery_events
+      ${
+        after === undefined
+          ? sql``
+          : sql`WHERE (occurred_at, id) > (${after.occurredAt}, ${after.id})`
+      }
+      ORDER BY occurred_at, id
+      LIMIT ${limit}
+    `);
+    return result.rows.map((row) => ({
+      id: row.id,
+      type: row.event_type,
+      payload: row.payload,
+      occurredAt: row.occurred_at,
+      groupId: row.group_id,
+      aggregateType: row.aggregate_type,
+      aggregateId: row.aggregate_id,
+    }));
+  }
 }

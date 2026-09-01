@@ -15,12 +15,18 @@ export const notificationDeliveries = pgTable(
     registrationId: uuid('registration_id')
       .notNull()
       .references(() => registrations.id, { onDelete: 'cascade' }),
+    claimedAt: timestamp('claimed_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    claimExpiresAt: timestamp('claim_expires_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
     deliveredAt: timestamp('delivered_at', {
       mode: 'date',
       withTimezone: true,
-    })
-      .defaultNow()
-      .notNull(),
+    }),
   },
   (table) => [
     uniqueIndex('notification_deliveries_job_registration_unique').on(

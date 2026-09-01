@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { asGameId, asGroupId, type Game } from '@volley/domain';
-import { GameSchedulerConsumer } from './game-scheduler.consumer.js';
+import {
+  BullMqDelayedJobScheduler,
+  GameSchedulerConsumer,
+} from './game-scheduler.consumer.js';
 
 describe('GameSchedulerConsumer', () => {
   it.each([
@@ -28,6 +31,30 @@ describe('GameSchedulerConsumer', () => {
     });
 
     expect(notify).not.toHaveBeenCalled();
+  });
+});
+
+describe('BullMqDelayedJobScheduler', () => {
+  it('revives an existing failed deterministic job', async () => {
+    const failed = {
+      getState: vi.fn().mockResolvedValue('failed'),
+      retry: vi.fn(),
+    };
+    const queue = { getJob: vi.fn().mockResolvedValue(failed), add: vi.fn() };
+    const current = game();
+    const scheduler = new BullMqDelayedJobScheduler(queue as never);
+
+    await scheduler.ensure({
+      id: `REMIND_PARTICIPANTS:${current.id}:1`,
+      kind: 'REMIND_PARTICIPANTS',
+      groupId: current.groupId!,
+      gameId: current.id!,
+      scheduleRevision: 1,
+      runAt: current.reminderAt,
+    });
+
+    expect(failed.retry).toHaveBeenCalledOnce();
+    expect(queue.add).not.toHaveBeenCalled();
   });
 });
 

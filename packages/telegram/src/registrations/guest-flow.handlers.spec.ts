@@ -66,12 +66,14 @@ it('resumes a signed guest-name flow and requires a nonblank name', async () => 
       telegramUserId: inviterTelegramId,
       text: '   ',
       updateId: 10,
+      now: new Date('2026-09-01T12:05:00Z'),
     }),
   ).rejects.toThrow(/guest name/i);
   await createHandlers().handleName({
     telegramUserId: inviterTelegramId,
     text: ' Alice ',
     updateId: 11,
+    now: new Date('2026-09-01T12:05:00Z'),
   });
 
   expect(calls).toEqual([

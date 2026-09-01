@@ -72,7 +72,7 @@ class ReconcileJobsCommand {
       let outboxEvents = 0;
       let outboxCursor: { occurredAt: Date; id: string } | undefined;
       do {
-        const events = await outbox.listReplayBatch(100, outboxCursor);
+        const events = await outbox.listRecoveryBatch(100, outboxCursor);
         for (const event of events) {
           await publisher.publish({
             id: `outbox:${event.id}`,

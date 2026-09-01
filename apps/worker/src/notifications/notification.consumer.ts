@@ -14,19 +14,25 @@ export interface NotificationRecipientRepository {
   listTentative(
     groupId: GroupId,
     gameId: GameId,
+    scheduleRevision: number,
   ): Promise<readonly NotificationRecipientRecord[]>;
   listRostered(
     groupId: GroupId,
     gameId: GameId,
+    scheduleRevision: number,
   ): Promise<readonly NotificationRecipientRecord[]>;
   findByRegistration(
     registrationId: RegistrationId,
   ): Promise<NotificationRecipientRecord | null>;
-  wasDelivered(
+  claimDelivery(
     deterministicJobId: string,
     registrationId: RegistrationId,
-  ): Promise<boolean>;
+  ): Promise<'CLAIMED' | 'DELIVERED' | 'BUSY'>;
   markDelivered(
+    deterministicJobId: string,
+    registrationId: RegistrationId,
+  ): Promise<void>;
+  releaseDelivery(
     deterministicJobId: string,
     registrationId: RegistrationId,
   ): Promise<void>;
@@ -48,6 +54,7 @@ export class NotificationConsumer {
       const recipients = await this.recipients.listTentative(
         job.groupId,
         job.gameId,
+        job.scheduleRevision,
       );
       await Promise.all(
         recipients.map((recipient) =>
@@ -85,6 +92,7 @@ export class NotificationConsumer {
       const recipients = await this.recipients.listTentative(
         job.groupId,
         job.gameId,
+        job.scheduleRevision,
       );
       await Promise.all(
         recipients.map((recipient) =>
@@ -102,6 +110,7 @@ export class NotificationConsumer {
       const recipients = await this.recipients.listRostered(
         job.groupId,
         job.gameId,
+        job.scheduleRevision,
       );
       await Promise.all(
         recipients.map((recipient) =>
@@ -124,19 +133,27 @@ export class NotificationConsumer {
     recipient: NotificationRecipientRecord,
     intent: NotificationIntent,
   ): Promise<void> {
-    if (
-      await this.recipients.wasDelivered(
-        deterministicJobId,
-        recipient.registrationId,
-      )
-    ) {
-      return;
-    }
-    await this.sender.send(intent);
-    await this.recipients.markDelivered(
+    const claim = await this.recipients.claimDelivery(
       deterministicJobId,
       recipient.registrationId,
     );
+    if (claim === 'DELIVERED') return;
+    if (claim === 'BUSY') {
+      throw new Error('Notification delivery is already claimed');
+    }
+    try {
+      await this.sender.send(intent);
+      await this.recipients.markDelivered(
+        deterministicJobId,
+        recipient.registrationId,
+      );
+    } catch (error) {
+      await this.recipients.releaseDelivery(
+        deterministicJobId,
+        recipient.registrationId,
+      );
+      throw error;
+    }
   }
 
   public async processWaitlistPromotion(

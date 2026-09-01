@@ -80,6 +80,43 @@ describe('GameMessageUpdater', () => {
     expect(games.withLockedView).toHaveBeenCalledOnce();
     expect(lockedRepository.load).toHaveBeenCalledOnce();
   });
+
+  it('persists a replacement before pinning and retries pinning the canonical message', async () => {
+    const current = view();
+    const games = {
+      load: vi
+        .fn()
+        .mockResolvedValueOnce(current)
+        .mockResolvedValueOnce({ ...current, canonicalMessageId: 9001n }),
+      setCanonicalMessageId: vi.fn().mockResolvedValue(undefined),
+    };
+    const telegram = {
+      editMessage: vi
+        .fn()
+        .mockRejectedValueOnce(new TelegramMessageNotEditableError())
+        .mockResolvedValueOnce(undefined),
+      sendMessage: vi.fn().mockResolvedValue({ messageId: 9001n }),
+      pinMessage: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('pin failed'))
+        .mockResolvedValueOnce(undefined),
+    };
+    const updater = new GameMessageUpdater(games, telegram);
+
+    await expect(
+      updater.refresh(current.groupId, current.gameId),
+    ).rejects.toThrow('pin failed');
+    expect(games.setCanonicalMessageId).toHaveBeenCalledWith(
+      current.groupId,
+      current.gameId,
+      9001n,
+    );
+
+    await updater.refresh(current.groupId, current.gameId);
+
+    expect(telegram.sendMessage).toHaveBeenCalledOnce();
+    expect(telegram.pinMessage).toHaveBeenCalledTimes(2);
+  });
 });
 
 const view = (): GameMessageView => ({

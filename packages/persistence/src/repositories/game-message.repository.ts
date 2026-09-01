@@ -8,6 +8,7 @@ import {
   type TelegramId,
 } from '@volley/domain';
 import { and, eq, ne } from 'drizzle-orm';
+import type { Pool } from 'pg';
 import type { Database } from '../client.js';
 import { games, groups, registrations, users } from '../schema/index.js';
 
@@ -30,7 +31,10 @@ export interface StoredGameMessageView {
 }
 
 export class GameMessageRepository {
-  public constructor(private readonly database: Database) {}
+  public constructor(
+    private readonly database: Database,
+    private readonly pool?: Pool,
+  ) {}
 
   public async load(
     groupId: GroupId,
@@ -62,25 +66,34 @@ export class GameMessageRepository {
       ): Promise<void>;
     }) => Promise<T>,
   ): Promise<T> {
-    return this.database.transaction(async (transaction) => {
-      await transaction
-        .select({ id: games.id })
-        .from(games)
-        .where(and(eq(games.groupId, groupId), eq(games.id, gameId)))
-        .for('update')
-        .limit(1);
-      return callback({
-        load: (lockedGroupId, lockedGameId) =>
-          this.loadWith(transaction, lockedGroupId, lockedGameId),
-        setCanonicalMessageId: (lockedGroupId, lockedGameId, messageId) =>
-          this.setCanonicalWith(
-            transaction,
-            lockedGroupId,
-            lockedGameId,
-            messageId,
-          ),
-      });
-    });
+    const repository = {
+      load: (lockedGroupId: GroupId, lockedGameId: GameId) =>
+        this.load(lockedGroupId, lockedGameId),
+      setCanonicalMessageId: (
+        lockedGroupId: GroupId,
+        lockedGameId: GameId,
+        messageId: bigint,
+      ) => this.setCanonicalMessageId(lockedGroupId, lockedGameId, messageId),
+    };
+    if (this.pool === undefined) return callback(repository);
+
+    const client = await this.pool.connect();
+    const lockIdentity = `${groupId}:${gameId}`;
+    try {
+      await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [
+        lockIdentity,
+      ]);
+      return await callback(repository);
+    } finally {
+      try {
+        await client.query(
+          'SELECT pg_advisory_unlock(hashtextextended($1, 0))',
+          [lockIdentity],
+        );
+      } finally {
+        client.release();
+      }
+    }
   }
 
   private async loadWith(
@@ -164,5 +177,4 @@ export class GameMessageRepository {
   }
 }
 
-type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
-type QueryDatabase = Database | Transaction;
+type QueryDatabase = Database;

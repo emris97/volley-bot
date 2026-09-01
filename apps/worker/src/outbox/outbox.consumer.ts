@@ -8,10 +8,16 @@ export class BullMqJobPublisher implements JobPublisher {
   public constructor(private readonly queue: Queue) {}
 
   public async publish(job: PublishedJob): Promise<void> {
+    const jobId = `${job.id}:event`;
+    const existing = await this.queue.getJob(jobId);
+    if (existing !== undefined) {
+      if ((await existing.getState()) === 'failed') await existing.retry();
+      return;
+    }
     await this.queue.add(job.type, job.payload, {
       // BullMQ 6 reserves two-segment colon IDs; three segments remain valid
       // for backwards-compatible repeatable-job keys.
-      jobId: `${job.id}:event`,
+      jobId,
       attempts: 8,
       backoff: { type: 'exponential', delay: 1_000 },
       removeOnComplete: { age: 86_400, count: 10_000 },

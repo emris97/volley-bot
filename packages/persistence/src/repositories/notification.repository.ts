@@ -42,15 +42,17 @@ export class NotificationRepository {
   public listTentative(
     groupId: GroupId,
     gameId: GameId,
+    scheduleRevision: number,
   ): Promise<readonly NotificationRecipientRecord[]> {
-    return this.listByState(groupId, gameId, 'TENTATIVE');
+    return this.listByState(groupId, gameId, scheduleRevision, 'TENTATIVE');
   }
 
   public listRostered(
     groupId: GroupId,
     gameId: GameId,
+    scheduleRevision: number,
   ): Promise<readonly NotificationRecipientRecord[]> {
-    return this.listByState(groupId, gameId, 'ROSTERED');
+    return this.listByState(groupId, gameId, scheduleRevision, 'ROSTERED');
   }
 
   public async findByRegistration(
@@ -70,12 +72,39 @@ export class NotificationRepository {
       .where(eq(users.telegramUserId, BigInt(telegramUserId)));
   }
 
-  public async wasDelivered(
+  public async claimDelivery(
     deterministicJobId: string,
     registrationId: RegistrationId,
-  ): Promise<boolean> {
-    const [row] = await this.database
-      .select({ id: notificationDeliveries.id })
+    now = new Date(),
+    leaseMs = 60_000,
+  ): Promise<'CLAIMED' | 'DELIVERED' | 'BUSY'> {
+    const leaseUntil = new Date(now.getTime() + leaseMs);
+    const result = await this.database.execute<{ id: string }>(sql`
+      INSERT INTO notification_deliveries (
+        deterministic_job_id,
+        registration_id,
+        claimed_at,
+        claim_expires_at
+      ) VALUES (
+        ${deterministicJobId},
+        ${registrationId},
+        ${now},
+        ${leaseUntil}
+      )
+      ON CONFLICT (deterministic_job_id, registration_id)
+      DO UPDATE SET
+        claimed_at = EXCLUDED.claimed_at,
+        claim_expires_at = EXCLUDED.claim_expires_at
+      WHERE notification_deliveries.delivered_at IS NULL
+        AND (
+          notification_deliveries.claim_expires_at IS NULL
+          OR notification_deliveries.claim_expires_at <= ${now}
+        )
+      RETURNING id
+    `);
+    if (result.rows.length === 1) return 'CLAIMED';
+    const [current] = await this.database
+      .select({ deliveredAt: notificationDeliveries.deliveredAt })
       .from(notificationDeliveries)
       .where(
         and(
@@ -84,7 +113,7 @@ export class NotificationRepository {
         ),
       )
       .limit(1);
-    return row !== undefined;
+    return current?.deliveredAt === null ? 'BUSY' : 'DELIVERED';
   }
 
   public async markDelivered(
@@ -92,20 +121,47 @@ export class NotificationRepository {
     registrationId: RegistrationId,
   ): Promise<void> {
     await this.database
-      .insert(notificationDeliveries)
-      .values({ deterministicJobId, registrationId })
-      .onConflictDoNothing();
+      .update(notificationDeliveries)
+      .set({
+        deliveredAt: new Date(),
+        claimedAt: null,
+        claimExpiresAt: null,
+      })
+      .where(
+        and(
+          eq(notificationDeliveries.deterministicJobId, deterministicJobId),
+          eq(notificationDeliveries.registrationId, registrationId),
+        ),
+      );
+  }
+
+  public async releaseDelivery(
+    deterministicJobId: string,
+    registrationId: RegistrationId,
+  ): Promise<void> {
+    await this.database
+      .update(notificationDeliveries)
+      .set({ claimedAt: null, claimExpiresAt: null })
+      .where(
+        and(
+          eq(notificationDeliveries.deterministicJobId, deterministicJobId),
+          eq(notificationDeliveries.registrationId, registrationId),
+        ),
+      );
   }
 
   private async listByState(
     groupId: GroupId,
     gameId: GameId,
+    scheduleRevision: number,
     state: 'TENTATIVE' | 'ROSTERED',
   ): Promise<readonly NotificationRecipientRecord[]> {
     return this.list(sql`
       registration.group_id = ${groupId}
       AND registration.game_id = ${gameId}
       AND registration.state = ${state}
+      AND game_row.schedule_revision = ${scheduleRevision}
+      AND game_row.state IN ('SCHEDULED', 'OPEN', 'CLOSED')
     `);
   }
 
@@ -129,6 +185,7 @@ export class NotificationRepository {
         registration.confirmation_revision
       FROM registrations AS registration
       INNER JOIN groups AS group_row ON group_row.id = registration.group_id
+      INNER JOIN games AS game_row ON game_row.id = registration.game_id
       LEFT JOIN users AS member ON member.id = registration.user_id
       LEFT JOIN users AS inviter ON inviter.id = registration.inviter_user_id
       WHERE ${predicate}

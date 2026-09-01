@@ -26,8 +26,9 @@ describe('NotificationConsumer', () => {
         listTentative: vi.fn(),
         listRostered: vi.fn(),
         findByRegistration: vi.fn().mockResolvedValue(recipient),
-        wasDelivered: vi.fn(),
+        claimDelivery: vi.fn().mockResolvedValue('CLAIMED'),
         markDelivered: vi.fn(),
+        releaseDelivery: vi.fn(),
       },
       sender as never,
       { expireTentative: vi.fn() } as never,
@@ -47,6 +48,7 @@ describe('NotificationConsumer', () => {
     const first = recipient('20');
     const second = recipient('21');
     const delivered = new Set<string>();
+    const claimed = new Set<string>();
     const sender = {
       send: vi.fn().mockImplementation(async (intent) => {
         if (
@@ -63,15 +65,26 @@ describe('NotificationConsumer', () => {
       listTentative: vi.fn().mockResolvedValue([first, second]),
       listRostered: vi.fn(),
       findByRegistration: vi.fn(),
-      wasDelivered: vi
+      claimDelivery: vi
         .fn()
-        .mockImplementation(async (jobId, registrationId) =>
-          delivered.has(`${jobId}:${registrationId}`),
-        ),
+        .mockImplementation(async (jobId, registrationId) => {
+          const key = `${jobId}:${registrationId}`;
+          if (delivered.has(key)) return 'DELIVERED';
+          if (claimed.has(key)) return 'BUSY';
+          claimed.add(key);
+          return 'CLAIMED';
+        }),
       markDelivered: vi
         .fn()
         .mockImplementation(async (jobId, registrationId) => {
-          delivered.add(`${jobId}:${registrationId}`);
+          const key = `${jobId}:${registrationId}`;
+          claimed.delete(key);
+          delivered.add(key);
+        }),
+      releaseDelivery: vi
+        .fn()
+        .mockImplementation(async (jobId, registrationId) => {
+          claimed.delete(`${jobId}:${registrationId}`);
         }),
     };
     const consumer = new NotificationConsumer(
@@ -101,6 +114,35 @@ describe('NotificationConsumer', () => {
         ([intent]) => intent.recipient.telegramUserId === '21',
       ),
     ).toHaveLength(2);
+  });
+
+  it('retries a job while another worker holds the delivery lease', async () => {
+    const current = recipient('22');
+    const sender = { send: vi.fn() };
+    const consumer = new NotificationConsumer(
+      {
+        listTentative: vi.fn().mockResolvedValue([current]),
+        listRostered: vi.fn(),
+        findByRegistration: vi.fn(),
+        claimDelivery: vi.fn().mockResolvedValue('BUSY'),
+        markDelivered: vi.fn(),
+        releaseDelivery: vi.fn(),
+      },
+      sender as never,
+      { expireTentative: vi.fn() } as never,
+    );
+
+    await expect(
+      consumer.process({
+        id: 'REQUEST_TENTATIVE_CONFIRMATION:game:1',
+        kind: 'REQUEST_TENTATIVE_CONFIRMATION',
+        groupId: current.groupId,
+        gameId: current.gameId,
+        scheduleRevision: 1,
+        runAt: new Date(),
+      }),
+    ).rejects.toThrow(/already claimed/i);
+    expect(sender.send).not.toHaveBeenCalled();
   });
 });
 

@@ -82,7 +82,10 @@ describe('OutboxDispatcher', () => {
 
 describe('BullMqJobPublisher', () => {
   it('uses a BullMQ-safe deterministic id for an outbox event', async () => {
-    const queue = { add: vi.fn().mockResolvedValue(undefined) };
+    const queue = {
+      getJob: vi.fn().mockResolvedValue(undefined),
+      add: vi.fn().mockResolvedValue(undefined),
+    };
     const publisher = new BullMqJobPublisher(queue as unknown as Queue);
 
     await publisher.publish({
@@ -99,6 +102,25 @@ describe('BullMqJobPublisher', () => {
         jobId: 'outbox:018f6ba0-62d2-7bd1-8f13-12e0c8424610:event',
       }),
     );
+  });
+
+  it('revives a failed deterministic outbox job', async () => {
+    const failed = {
+      getState: vi.fn().mockResolvedValue('failed'),
+      retry: vi.fn(),
+    };
+    const queue = { getJob: vi.fn().mockResolvedValue(failed), add: vi.fn() };
+    const publisher = new BullMqJobPublisher(queue as unknown as Queue);
+
+    await publisher.publish({
+      id: 'outbox:018f6ba0-62d2-7bd1-8f13-12e0c8424610',
+      type: 'GAME_CREATED',
+      payload: {},
+      occurredAt: new Date(),
+    });
+
+    expect(failed.retry).toHaveBeenCalledOnce();
+    expect(queue.add).not.toHaveBeenCalled();
   });
 });
 

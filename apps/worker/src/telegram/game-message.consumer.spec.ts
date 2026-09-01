@@ -1,27 +1,47 @@
 import { describe, expect, it, vi } from 'vitest';
-import { asRegistrationId } from '@volley/domain';
-import { GameMessageConsumer } from './game-message.consumer.js';
+import {
+  GameMessageConsumer,
+  OutboxEventRouter,
+} from './game-message.consumer.js';
 
 describe('GameMessageConsumer', () => {
-  it('routes a waitlist promotion and refreshes the canonical message', async () => {
+  it('refreshes a canonical game message', async () => {
     const updater = { refresh: vi.fn() };
-    const promote = vi.fn();
-    const consumer = new GameMessageConsumer(updater as never, promote);
-    const registrationId = asRegistrationId(
-      '018f6ba0-62d2-7bd1-8f13-12e0c8424620',
-    );
+    const consumer = new GameMessageConsumer(updater as never);
 
     await consumer.process('WAITLIST_PROMOTED', {
       groupId: '018f6ba0-62d2-7bd1-8f13-12e0c8424611',
       aggregateType: 'GAME',
       aggregateId: '018f6ba0-62d2-7bd1-8f13-12e0c8424610',
-      registrationId,
+      registrationId: '018f6ba0-62d2-7bd1-8f13-12e0c8424620',
     });
 
     expect(updater.refresh).toHaveBeenCalledOnce();
-    expect(promote).toHaveBeenCalledWith(
-      registrationId,
-      `WAITLIST_PROMOTED:${registrationId}`,
+  });
+
+  it('fans promotion and canonical refresh into independent jobs', async () => {
+    const canonicalQueue = { getJob: vi.fn(), add: vi.fn() };
+    const notificationQueue = { getJob: vi.fn(), add: vi.fn() };
+    const router = new OutboxEventRouter(
+      canonicalQueue as never,
+      notificationQueue as never,
+    );
+
+    await router.process(
+      'WAITLIST_PROMOTED',
+      { registrationId: 'registration' },
+      'outbox:event:event',
+    );
+
+    expect(canonicalQueue.add).toHaveBeenCalledWith(
+      'WAITLIST_PROMOTED',
+      expect.anything(),
+      expect.objectContaining({ jobId: 'outbox:event:event:canonical' }),
+    );
+    expect(notificationQueue.add).toHaveBeenCalledWith(
+      'WAITLIST_PROMOTED',
+      expect.anything(),
+      expect.objectContaining({ jobId: 'outbox:event:event:notification' }),
     );
   });
 });

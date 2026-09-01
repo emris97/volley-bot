@@ -85,6 +85,12 @@ export class GameMessageUpdater {
           view.canonicalMessageId,
           rendered,
         );
+        if (view.pinMessage) {
+          await this.telegram.pinMessage?.(
+            view.telegramChatId,
+            view.canonicalMessageId,
+          );
+        }
         return;
       } catch (error) {
         if (!(error instanceof TelegramMessageNotEditableError)) throw error;
