@@ -61,31 +61,20 @@ export class AttendanceRepository {
         throw new Error('Attendance revision is stale');
       }
 
-      const roster = await transaction
-        .select({
-          id: registrations.id,
-          guestDisplayName: registrations.guestDisplayName,
-          memberDisplayName: users.displayName,
-        })
-        .from(registrations)
-        .leftJoin(users, eq(users.id, registrations.userId))
-        .where(
-          and(
-            eq(registrations.groupId, input.groupId),
-            eq(registrations.gameId, input.gameId),
-            eq(registrations.state, 'ROSTERED'),
-          ),
-        );
       const excluded = new Set(input.excludedRegistrationIds);
-      const rosterCandidates = roster.map((registration) => ({
-        participantRef: `registration:${registration.id}`,
-        sourceRegistrationId: registration.id,
-        displayName:
-          registration.guestDisplayName ??
-          registration.memberDisplayName ??
-          `Participant ${registration.id}`,
-        billable: true,
-        included: !excluded.has(asRegistrationId(registration.id)),
+      const sourceCandidates =
+        latest === undefined
+          ? await readFinalRosterCandidates(
+              transaction,
+              input.groupId,
+              input.gameId,
+            )
+          : latest.rosterCandidates;
+      const rosterCandidates = sourceCandidates.map((candidate) => ({
+        ...candidate,
+        included: !excluded.has(
+          asRegistrationId(candidate.sourceRegistrationId),
+        ),
       }));
       const [snapshot] = await transaction
         .insert(attendanceSnapshots)
@@ -181,6 +170,38 @@ interface ConfirmAttendanceInput {
   manualParticipants: Array<{ displayName: string; billable: boolean }>;
   finalize: boolean;
 }
+
+const readFinalRosterCandidates = async (
+  database: Database,
+  groupId: GroupId,
+  gameId: GameId,
+) => {
+  const roster = await database
+    .select({
+      id: registrations.id,
+      guestDisplayName: registrations.guestDisplayName,
+      memberDisplayName: users.displayName,
+    })
+    .from(registrations)
+    .leftJoin(users, eq(users.id, registrations.userId))
+    .where(
+      and(
+        eq(registrations.groupId, groupId),
+        eq(registrations.gameId, gameId),
+        eq(registrations.state, 'ROSTERED'),
+      ),
+    );
+  return roster.map((registration) => ({
+    participantRef: `registration:${registration.id}`,
+    sourceRegistrationId: registration.id,
+    displayName:
+      registration.guestDisplayName ??
+      registration.memberDisplayName ??
+      `Participant ${registration.id}`,
+    billable: true,
+    included: true,
+  }));
+};
 
 const readSnapshot = async (
   database: Database,
