@@ -19,7 +19,6 @@ export class PostgresHealthProbe implements HealthProbe {
   async check(): Promise<void> {
     await this.pool.query('select 1');
   }
-
 }
 
 export class RedisHealthProbe implements HealthProbe {
@@ -28,7 +27,6 @@ export class RedisHealthProbe implements HealthProbe {
   async check(): Promise<void> {
     await this.redis.ping();
   }
-
 }
 
 @Injectable()

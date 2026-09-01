@@ -171,7 +171,8 @@ it('adds a named manual participant through the registered private Telegram flow
     execute: async (
       command: ConfirmAttendanceCommand,
     ): Promise<AttendanceSnapshot> => {
-      const id = `018f6ba0-62d2-7bd1-8f13-12e0c84246${(command.expectedRevision + 1).toString().padStart(2, '0')}` as never;
+      const id =
+        `018f6ba0-62d2-7bd1-8f13-12e0c84246${(command.expectedRevision + 1).toString().padStart(2, '0')}` as never;
       const snapshot: AttendanceSnapshot = {
         id,
         groupId: command.groupId,
@@ -274,7 +275,11 @@ it('adds a named manual participant through the registered private Telegram flow
   expect(promptCall.payload.reply_markup).toMatchObject({ force_reply: true });
 
   await updates.handleUpdate(
-    attendanceNameReplyUpdate(3, String(promptCall.payload.text), 'Late player'),
+    attendanceNameReplyUpdate(
+      3,
+      String(promptCall.payload.text),
+      'Late player',
+    ),
   );
   const updatedPreview = apiCalls.at(-1)!;
   expect(updatedPreview).toMatchObject({

@@ -56,18 +56,12 @@ export const gameTemplates = pgTable(
   (table) => [
     index('game_templates_group_id_idx').on(table.groupId),
     check('game_templates_capacity_check', sql`${table.capacity} > 0`),
-    check(
-      'game_templates_duration_check',
-      sql`${table.durationMinutes} > 0`,
-    ),
+    check('game_templates_duration_check', sql`${table.durationMinutes} > 0`),
     check(
       'game_templates_timing_check',
       sql`${table.registrationOpensMinutesBefore} >= 0 and (${table.registrationClosesMinutesBefore} is null or ${table.registrationClosesMinutesBefore} >= 0) and ${table.tentativePromptMinutesBefore} >= 0 and ${table.tentativeResponseMinutes} >= 0 and ${table.reminderMinutesBefore} >= 0`,
     ),
-    check(
-      'game_templates_currency_check',
-      sql`${table.currency} in ('RUB')`,
-    ),
+    check('game_templates_currency_check', sql`${table.currency} in ('RUB')`),
     check(
       'game_templates_rounding_mode_check',
       sql`${table.roundingMode} in ('EXACT', 'UP_1', 'UP_10', 'UP_50')`,
@@ -93,8 +87,10 @@ export const games = pgTable(
     name: text('name').notNull(),
     venue: text('venue').notNull(),
     address: text('address'),
-    startsAt: timestamp('starts_at', { mode: 'date', withTimezone: true })
-      .notNull(),
+    startsAt: timestamp('starts_at', {
+      mode: 'date',
+      withTimezone: true,
+    }).notNull(),
     durationMinutes: integer('duration_minutes').notNull(),
     capacity: integer('capacity').notNull(),
     timeZone: text('time_zone').notNull(),

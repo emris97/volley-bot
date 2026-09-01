@@ -10,4 +10,5 @@ export const createDatabase = (pool: Pool): Database =>
 export const createPostgresPool = (
   connectionString: string,
   max?: number,
-): Pool => new Pool({ connectionString, ...(max === undefined ? {} : { max }) });
+): Pool =>
+  new Pool({ connectionString, ...(max === undefined ? {} : { max }) });

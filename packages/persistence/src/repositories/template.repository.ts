@@ -43,7 +43,10 @@ export class TemplateRepository {
       .select()
       .from(gameTemplates)
       .where(
-        and(eq(gameTemplates.groupId, groupId), eq(gameTemplates.id, templateId)),
+        and(
+          eq(gameTemplates.groupId, groupId),
+          eq(gameTemplates.id, templateId),
+        ),
       )
       .limit(1);
     return row === undefined ? null : toTemplate(row);

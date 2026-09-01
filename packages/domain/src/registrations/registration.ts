@@ -8,10 +8,7 @@ export type RegistrationId = string & {
 };
 
 export type RegistrationState =
-  | 'TENTATIVE'
-  | 'ROSTERED'
-  | 'WAITLISTED'
-  | 'CANCELLED';
+  'TENTATIVE' | 'ROSTERED' | 'WAITLISTED' | 'CANCELLED';
 
 export type RegistrationKind = 'MEMBER' | 'GUEST';
 

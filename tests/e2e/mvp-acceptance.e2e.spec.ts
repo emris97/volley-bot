@@ -45,10 +45,14 @@ describe('volleyball bot MVP acceptance', () => {
       administratorTelegramId: '1012',
       timeZone: 'Asia/Yekaterinburg',
     });
-    const gameA = await system.createScratchGame(groupA.id, groupA.ownerUserId, {
-      name: 'Group A game',
-      capacity: 6,
-    });
+    const gameA = await system.createScratchGame(
+      groupA.id,
+      groupA.ownerUserId,
+      {
+        name: 'Group A game',
+        capacity: 6,
+      },
+    );
 
     expect(await system.getGame(groupA.id, gameA.id!)).not.toBeNull();
     expect(await system.getGame(groupB.id, gameA.id!)).toBeNull();
@@ -68,10 +72,14 @@ describe('volleyball bot MVP acceptance', () => {
       group.ownerUserId,
       template.id!,
     );
-    const scratch = await system.createScratchGame(group.id, group.ownerUserId, {
-      name: 'One-off game',
-      capacity: 8,
-    });
+    const scratch = await system.createScratchGame(
+      group.id,
+      group.ownerUserId,
+      {
+        name: 'One-off game',
+        capacity: 8,
+      },
+    );
     await system.publishGame(group.id, templated.id!, group.ownerUserId);
     await system.publishGame(group.id, scratch.id!, group.ownerUserId);
 
@@ -253,10 +261,7 @@ describe('volleyball bot MVP acceptance', () => {
     );
     expect(settlement.charges).toHaveLength(2);
     expect(
-      settlement.charges.reduce(
-        (sum, charge) => sum + charge.amountMinor,
-        0n,
-      ),
+      settlement.charges.reduce((sum, charge) => sum + charge.amountMinor, 0n),
     ).toBe(130000n);
     expect(paid.status).toBe('PAID');
   });
@@ -289,10 +294,7 @@ describe('volleyball bot MVP acceptance', () => {
 
   it('Mini App API calls the same authorized application services', async () => {
     const fixture = await system.createOpenGame({ capacity: 3 });
-    const apiResult = await system.getGameThroughProductionApi(
-      fixture,
-      '1111',
-    );
+    const apiResult = await system.getGameThroughProductionApi(fixture, '1111');
     const applicationResult = await system.getGame(
       fixture.groupId,
       fixture.game.id!,
@@ -304,8 +306,8 @@ describe('volleyball bot MVP acceptance', () => {
       groupId: applicationResult!.groupId,
       state: applicationResult!.state,
     });
-    expect(await system.getForeignGameThroughProductionApi(fixture, '1111')).toBe(
-      404,
-    );
+    expect(
+      await system.getForeignGameThroughProductionApi(fixture, '1111'),
+    ).toBe(404);
   });
 });

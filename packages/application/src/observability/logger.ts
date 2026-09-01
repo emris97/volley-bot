@@ -1,10 +1,4 @@
-export type LogLevel =
-  | 'fatal'
-  | 'error'
-  | 'warn'
-  | 'info'
-  | 'debug'
-  | 'trace';
+export type LogLevel = 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
 
 export type LogOutput = string;
 
@@ -60,11 +54,15 @@ export class JsonLogger {
 
   public constructor(options: JsonLoggerOptions = {}) {
     this.minimumLevel = levels.indexOf(options.level ?? 'info');
-    this.secrets = [...(options.secrets ?? []), ...urlCredentials(options.secrets ?? [])]
+    this.secrets = [
+      ...(options.secrets ?? []),
+      ...urlCredentials(options.secrets ?? []),
+    ]
       .filter((secret) => secret.length > 0)
       .filter((secret, index, values) => values.indexOf(secret) === index)
       .toSorted((left, right) => right.length - left.length);
-    this.output = options.output ?? ((line) => process.stdout.write(`${line}\n`));
+    this.output =
+      options.output ?? ((line) => process.stdout.write(`${line}\n`));
     this.now = options.now ?? (() => new Date());
   }
 
@@ -107,7 +105,11 @@ export class JsonLogger {
       timestamp: this.now().toISOString(),
       level,
       message: redactString(formatMessage(message), this.secrets),
-      ...(isRecord(safeFields) ? safeFields : safeFields === undefined ? {} : { details: safeFields }),
+      ...(isRecord(safeFields)
+        ? safeFields
+        : safeFields === undefined
+          ? {}
+          : { details: safeFields }),
     };
     this.output(JSON.stringify(payload, jsonReplacer));
   }
@@ -144,7 +146,10 @@ const redactValue = (
     return {
       name: value.name,
       message: redactString(value.message, secrets),
-      stack: value.stack === undefined ? undefined : redactString(value.stack, secrets),
+      stack:
+        value.stack === undefined
+          ? undefined
+          : redactString(value.stack, secrets),
     };
   }
   if (Array.isArray(value)) {

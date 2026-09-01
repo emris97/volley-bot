@@ -159,7 +159,10 @@ class CanonicalTelegramGateway {
     message: RenderedTelegramMessage,
   ): Promise<{ messageId: bigint }> {
     const messageId = this.nextMessageId++;
-    this.gameByMessage.set(`${chatId}:${messageId}`, gameIdFromMessage(message));
+    this.gameByMessage.set(
+      `${chatId}:${messageId}`,
+      gameIdFromMessage(message),
+    );
     this.textByGame.set(gameIdFromMessage(message), message.text);
     return { messageId };
   }
@@ -191,10 +194,14 @@ class CanonicalTelegramGateway {
 }
 
 const gameIdFromMessage = (message: RenderedTelegramMessage): GameId => {
-  const callbacks = message.keyboard.flat().map((button) => button.callbackData);
-  const match = callbacks.join(':').match(
-    /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i,
-  );
+  const callbacks = message.keyboard
+    .flat()
+    .map((button) => button.callbackData);
+  const match = callbacks
+    .join(':')
+    .match(
+      /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i,
+    );
   if (match === null) throw new Error('Rendered game message has no game id');
   return asGameId(match[0]);
 };
@@ -286,10 +293,7 @@ export class MvpAcceptanceSystem {
       this.payments,
     );
     this.expireTentativeUseCase = new ExpireTentative(this.registrations);
-    this.messageRepository = new GameMessageRepository(
-      database,
-      pool as never,
-    );
+    this.messageRepository = new GameMessageRepository(database, pool as never);
     this.reconciler = new ReconcileGameJobs(
       new ScheduledJobRepository(database),
       new BullMqDelayedJobScheduler(queue as never),
@@ -307,7 +311,10 @@ export class MvpAcceptanceSystem {
         })
         .withExposedPorts(5432)
         .withWaitStrategy(
-          Wait.forLogMessage(/database system is ready to accept connections/, 2),
+          Wait.forLogMessage(
+            /database system is ready to accept connections/,
+            2,
+          ),
         )
         .start(),
       new GenericContainer('redis:8-alpine')
@@ -411,7 +418,9 @@ export class MvpAcceptanceSystem {
     return { ...group, ownerUserId: membership.userId };
   }
 
-  public createConfiguredGroup(ownerTelegramId: string): Promise<AcceptanceGroup> {
+  public createConfiguredGroup(
+    ownerTelegramId: string,
+  ): Promise<AcceptanceGroup> {
     this.groupSequence += 1;
     return this.onboardAndConfigureGroup({
       telegramChatId: `-${this.groupSequence}`,
@@ -595,14 +604,19 @@ export class MvpAcceptanceSystem {
     waitlist: number;
     tentative: number;
   }> {
-    const result = await this.pool.query<{ state: RegistrationState; count: string }>(
+    const result = await this.pool.query<{
+      state: RegistrationState;
+      count: string;
+    }>(
       `SELECT state, count(*)::text AS count
        FROM registrations
        WHERE game_id = $1 AND state <> 'CANCELLED'
        GROUP BY state`,
       [gameId],
     );
-    const counts = new Map(result.rows.map((row) => [row.state, Number(row.count)]));
+    const counts = new Map(
+      result.rows.map((row) => [row.state, Number(row.count)]),
+    );
     return {
       roster: counts.get('ROSTERED') ?? 0,
       waitlist: counts.get('WAITLISTED') ?? 0,
@@ -658,11 +672,19 @@ export class MvpAcceptanceSystem {
       buttons: [
         {
           text: 'Подтверждаю',
-          callbackData: tentativeCallback(registration.registrationId, 0, 'confirm'),
+          callbackData: tentativeCallback(
+            registration.registrationId,
+            0,
+            'confirm',
+          ),
         },
         {
           text: 'Снимаюсь',
-          callbackData: tentativeCallback(registration.registrationId, 0, 'withdraw'),
+          callbackData: tentativeCallback(
+            registration.registrationId,
+            0,
+            'withdraw',
+          ),
         },
       ],
     });
@@ -683,7 +705,8 @@ export class MvpAcceptanceSystem {
   public async deliverWaitlistPromotion(
     registrationId: RegistrationId,
   ): Promise<void> {
-    const recipient = await this.notifications.findByRegistration(registrationId);
+    const recipient =
+      await this.notifications.findByRegistration(registrationId);
     if (recipient === null) throw new Error('Promoted recipient missing');
     await this.sender.send({
       notificationType: 'WAITLIST_PROMOTED',
@@ -843,9 +866,8 @@ export class MvpAcceptanceSystem {
   ): Promise<number> {
     const otherGroup = await this.createConfiguredGroup(telegramId);
     await this.ensureApi();
-    return (
-      await this.injectApi(otherGroup.id, fixture.game.id!, telegramId)
-    ).statusCode;
+    return (await this.injectApi(otherGroup.id, fixture.game.id!, telegramId))
+      .statusCode;
   }
 
   private async ensureApi(): Promise<void> {
@@ -860,7 +882,9 @@ export class MvpAcceptanceSystem {
       PUBLIC_BASE_URL: 'https://localhost:3000',
       LOG_LEVEL: 'info',
     });
-    const module = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const module = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
     const app = module.createNestApplication(
       new FastifyAdapter() as never,
     ) as unknown as ProductionAppLike;
@@ -874,11 +898,13 @@ export class MvpAcceptanceSystem {
     gameId: GameId,
     telegramId: string,
   ): Promise<HttpResponseLike> {
-    return this.apiApp!.getHttpAdapter().getInstance().inject({
-      method: 'GET',
-      url: `/api/v1/groups/${groupId}/games/${gameId}`,
-      headers: { authorization: signAuthorization(telegramId) },
-    });
+    return this.apiApp!.getHttpAdapter()
+      .getInstance()
+      .inject({
+        method: 'GET',
+        url: `/api/v1/groups/${groupId}/games/${gameId}`,
+        headers: { authorization: signAuthorization(telegramId) },
+      });
   }
 
   private async closeApi(): Promise<void> {

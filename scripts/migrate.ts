@@ -27,10 +27,12 @@ export const applyMigrations = async (
   return files;
 };
 
-export const runMigrations = async (input: {
-  databaseUrl?: string;
-  migrationsDirectory?: string;
-} = {}): Promise<string[]> => {
+export const runMigrations = async (
+  input: {
+    databaseUrl?: string;
+    migrationsDirectory?: string;
+  } = {},
+): Promise<string[]> => {
   const databaseUrl = input.databaseUrl ?? process.env.DATABASE_URL;
   if (
     databaseUrl === undefined ||

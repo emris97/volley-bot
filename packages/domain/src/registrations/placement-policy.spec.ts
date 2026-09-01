@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { asRegistrationId, type RegistrationCandidate } from './registration.js';
+import {
+  asRegistrationId,
+  type RegistrationCandidate,
+} from './registration.js';
 import { placeConfirmedRegistrations } from './placement-policy.js';
 
 const candidate = (

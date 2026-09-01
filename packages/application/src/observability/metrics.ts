@@ -51,7 +51,11 @@ export class MetricsRegistry {
     return [
       '# HELP volley_webhook_requests_total Telegram webhook results.',
       '# TYPE volley_webhook_requests_total counter',
-      ...renderMap(this.webhookResults, 'volley_webhook_requests_total', 'result'),
+      ...renderMap(
+        this.webhookResults,
+        'volley_webhook_requests_total',
+        'result',
+      ),
       ...renderHistogram(
         'volley_webhook_duration_seconds',
         'Telegram webhook processing duration.',

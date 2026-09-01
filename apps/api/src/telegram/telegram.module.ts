@@ -1,7 +1,5 @@
 import { createHash } from 'node:crypto';
-import {
-  Module,
-} from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import {
   AuthorizationService,
   ConfirmAttendance,
@@ -49,10 +47,7 @@ import {
   WebhookController,
   type TelegramUpdateHandler,
 } from '@volley/telegram';
-import {
-  APP_ENV,
-  DATABASE,
-} from '../infrastructure/infrastructure.module.js';
+import { APP_ENV, DATABASE } from '../infrastructure/infrastructure.module.js';
 
 const TELEGRAM_RUNTIME = Symbol('TELEGRAM_RUNTIME');
 

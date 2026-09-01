@@ -40,8 +40,8 @@ export class OutboxConsumer implements ManagedWorker {
     private readonly dispatcher: OutboxDispatcher,
     private readonly closeResources: () => Promise<void>,
     private readonly intervalMs = 1_000,
-    private readonly purgeExpiredPaymentState: () => Promise<unknown> =
-      async () => undefined,
+    private readonly purgeExpiredPaymentState: () => Promise<unknown> = async () =>
+      undefined,
   ) {}
 
   public async start(): Promise<void> {

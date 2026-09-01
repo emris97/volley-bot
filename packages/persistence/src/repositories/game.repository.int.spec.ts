@@ -1,7 +1,4 @@
-import {
-  asGroupId,
-  type GameTemplateSnapshot,
-} from '@volley/domain';
+import { asGroupId, type GameTemplateSnapshot } from '@volley/domain';
 import { Pool } from 'pg';
 import {
   GenericContainer,
@@ -66,7 +63,10 @@ describe('GameRepository', () => {
     const templates = new TemplateRepository(database);
     const games = new GameRepository(database);
 
-    const template = await templates.insert({ groupId: firstGroup, ...snapshot });
+    const template = await templates.insert({
+      groupId: firstGroup,
+      ...snapshot,
+    });
     expect(await templates.findById(secondGroup, template.id)).toBeNull();
 
     const game = await games.insert({

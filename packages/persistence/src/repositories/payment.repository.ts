@@ -249,10 +249,12 @@ export class PaymentRepository {
       );
   }
 
-  public async purgeExpiredState(input: {
-    now?: Date;
-    batchSize?: number;
-  } = {}): Promise<{ draftsDeleted: number; inputSessionsDeleted: number }> {
+  public async purgeExpiredState(
+    input: {
+      now?: Date;
+      batchSize?: number;
+    } = {},
+  ): Promise<{ draftsDeleted: number; inputSessionsDeleted: number }> {
     const now = input.now ?? new Date();
     const batchSize = input.batchSize ?? 500;
     if (
@@ -260,7 +262,9 @@ export class PaymentRepository {
       batchSize <= 0 ||
       batchSize > 1_000
     ) {
-      throw new Error('Payment state purge batch size must be between 1 and 1000');
+      throw new Error(
+        'Payment state purge batch size must be between 1 and 1000',
+      );
     }
     return this.database.transaction(async (transaction) => {
       const expiredDrafts = await transaction
@@ -270,14 +274,12 @@ export class PaymentRepository {
         .orderBy(asc(paymentDrafts.id))
         .limit(batchSize);
       if (expiredDrafts.length > 0) {
-        await transaction
-          .delete(paymentDrafts)
-          .where(
-            inArray(
-              paymentDrafts.id,
-              expiredDrafts.map((draft) => draft.id),
-            ),
-          );
+        await transaction.delete(paymentDrafts).where(
+          inArray(
+            paymentDrafts.id,
+            expiredDrafts.map((draft) => draft.id),
+          ),
+        );
       }
       const expiredInputs = await transaction
         .select({ actorUserId: paymentInputSessions.actorUserId })
@@ -286,14 +288,12 @@ export class PaymentRepository {
         .orderBy(asc(paymentInputSessions.actorUserId))
         .limit(batchSize);
       if (expiredInputs.length > 0) {
-        await transaction
-          .delete(paymentInputSessions)
-          .where(
-            inArray(
-              paymentInputSessions.actorUserId,
-              expiredInputs.map((session) => session.actorUserId),
-            ),
-          );
+        await transaction.delete(paymentInputSessions).where(
+          inArray(
+            paymentInputSessions.actorUserId,
+            expiredInputs.map((session) => session.actorUserId),
+          ),
+        );
       }
       return {
         draftsDeleted: expiredDrafts.length,

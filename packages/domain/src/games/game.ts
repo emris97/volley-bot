@@ -10,12 +10,7 @@ declare const gameIdBrand: unique symbol;
 export type GameId = string & { readonly [gameIdBrand]: 'GameId' };
 
 export type GameState =
-  | 'DRAFT'
-  | 'SCHEDULED'
-  | 'OPEN'
-  | 'CLOSED'
-  | 'COMPLETED'
-  | 'CANCELLED';
+  'DRAFT' | 'SCHEDULED' | 'OPEN' | 'CLOSED' | 'COMPLETED' | 'CANCELLED';
 
 export interface Game {
   id?: GameId;

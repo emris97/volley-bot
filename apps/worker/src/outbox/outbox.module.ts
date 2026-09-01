@@ -33,10 +33,15 @@ export const OUTBOX_WORKER = Symbol('OUTBOX_WORKER');
           new OutboxRepository(database),
           new BullMqJobPublisher(queue),
         );
-        return new OutboxConsumer(dispatcher, async () => {
-          await queue.close();
-          await pool.end();
-        }, 1_000, () => payments.purgeExpiredState({ batchSize: 500 }));
+        return new OutboxConsumer(
+          dispatcher,
+          async () => {
+            await queue.close();
+            await pool.end();
+          },
+          1_000,
+          () => payments.purgeExpiredState({ batchSize: 500 }),
+        );
       },
     },
   ],

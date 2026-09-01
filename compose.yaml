@@ -17,11 +17,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-volley}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-volley}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - '${POSTGRES_PORT:-5432}:5432'
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
       interval: 5s
       timeout: 5s
       retries: 12
@@ -29,11 +29,11 @@ services:
 
   redis:
     image: redis:8-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - '${REDIS_PORT:-6379}:6379'
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
       timeout: 5s
       retries: 12
@@ -44,7 +44,7 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    command: ["migrate"]
+    command: ['migrate']
     environment: *app-environment
     depends_on:
       postgres:
@@ -54,17 +54,17 @@ services:
       - /tmp
     security_opt:
       - no-new-privileges:true
-    restart: "no"
+    restart: 'no'
 
   api:
     image: volley-bot-api
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    command: ["serve"]
+    command: ['serve']
     environment: *app-environment
     ports:
-      - "${API_PORT:-3000}:3000"
+      - '${API_PORT:-3000}:3000'
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -75,9 +75,9 @@ services:
     healthcheck:
       test:
         [
-          "CMD",
-          "node",
-          "-e",
+          'CMD',
+          'node',
+          '-e',
           "fetch('http://127.0.0.1:3000/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
         ]
       interval: 10s
@@ -95,7 +95,7 @@ services:
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
-    command: ["serve"]
+    command: ['serve']
     environment: *app-environment
     depends_on:
       db-migrate:

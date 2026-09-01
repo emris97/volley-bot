@@ -197,7 +197,9 @@ export class AttendanceHandlers {
     }
     const displayName = input.displayName.trim();
     if (displayName.length === 0 || [...displayName].length > 80) {
-      throw new Error('Participant name must contain between 1 and 80 characters');
+      throw new Error(
+        'Participant name must contain between 1 and 80 characters',
+      );
     }
     const result = await this.attendance.execute({
       groupId: actor.groupId,
@@ -306,11 +308,11 @@ const parseAttendanceCallback = (value: string): AttendanceCallback => {
   const decodedSnapshotId = decodeCompactUuid(snapshotId);
   if (action === 't') {
     return {
-        action: 'toggle',
-        groupId: asGroupId(decodedGroupId),
-        snapshotId: asAttendanceSnapshotId(decodedSnapshotId),
-        candidateIndex: Number.parseInt(candidateIndex!, 36),
-      };
+      action: 'toggle',
+      groupId: asGroupId(decodedGroupId),
+      snapshotId: asAttendanceSnapshotId(decodedSnapshotId),
+      candidateIndex: Number.parseInt(candidateIndex!, 36),
+    };
   }
   return {
     action: action === 'c' ? 'confirm' : 'add',
@@ -336,8 +338,10 @@ export const registerAttendanceHandlers = (
   handlers: AttendanceHandlers,
 ): Bot<Context> => {
   bot.command('attendance', async (context) => {
-    if (context.from === undefined) throw new Error('Message sender is required');
-    if (context.chat.type !== 'private') throw new Error('Private chat required');
+    if (context.from === undefined)
+      throw new Error('Message sender is required');
+    if (context.chat.type !== 'private')
+      throw new Error('Private chat required');
     const preview = await handlers.start({
       telegramUserId: toTelegramId(context.from.id),
       gameId: parseGameId(context.match ?? ''),
