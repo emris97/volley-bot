@@ -4,9 +4,11 @@ import {
   Headers,
   HttpCode,
   Inject,
+  Optional,
   Post,
   UnauthorizedException,
 } from '@nestjs/common';
+import { MetricsRegistry } from '@volley/application';
 import type { Update } from 'grammy/types';
 
 export interface TelegramUpdateHandler {
@@ -23,6 +25,7 @@ export class WebhookController {
     private readonly bot: TelegramUpdateHandler,
     @Inject(TELEGRAM_WEBHOOK_SECRET)
     private readonly secret: string,
+    @Optional() private readonly metrics?: MetricsRegistry,
   ) {}
 
   @Post()
@@ -32,10 +35,27 @@ export class WebhookController {
     providedSecret: string | undefined,
     @Body() update: Update,
   ): Promise<{ ok: true }> {
+    const startedAt = performance.now();
     if (providedSecret !== this.secret) {
+      this.metrics?.recordWebhook(
+        'unauthorized',
+        (performance.now() - startedAt) / 1_000,
+      );
       throw new UnauthorizedException();
     }
-    await this.bot.handleUpdate(update);
-    return { ok: true };
+    try {
+      await this.bot.handleUpdate(update);
+      this.metrics?.recordWebhook(
+        'success',
+        (performance.now() - startedAt) / 1_000,
+      );
+      return { ok: true };
+    } catch (error) {
+      this.metrics?.recordWebhook(
+        'failure',
+        (performance.now() - startedAt) / 1_000,
+      );
+      throw error;
+    }
   }
 }

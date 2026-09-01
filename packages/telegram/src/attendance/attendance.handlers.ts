@@ -5,6 +5,7 @@ import type {
 } from '@volley/application';
 import {
   asAttendanceSnapshotId,
+  asGameId,
   asGroupId,
   type AttendanceSnapshot,
   type AttendanceSnapshotId,
@@ -28,6 +29,7 @@ export interface AttendancePreview {
   text: string;
   snapshot: AttendanceSnapshot;
   buttons: readonly { text: string; callbackData: string }[];
+  manualParticipantPrompt?: { text: string; token: string };
 }
 
 export class AttendanceHandlers {
@@ -57,6 +59,20 @@ export class AttendanceHandlers {
     return this.execute(input, true);
   }
 
+  public async start(input: {
+    telegramUserId: TelegramId;
+    gameId: GameId;
+  }): Promise<AttendancePreview> {
+    return this.render(
+      await this.preview({
+        ...input,
+        expectedRevision: 0,
+        excludedRegistrationIds: [],
+        manualParticipants: [],
+      }),
+    );
+  }
+
   public render(snapshot: AttendanceSnapshot): AttendancePreview {
     return {
       text: snapshot.finalized
@@ -75,6 +91,14 @@ export class AttendanceHandlers {
                 index,
               ),
             })),
+            {
+              text: 'Добавить участника',
+              callbackData: attendanceCallback(
+                'add',
+                snapshot.groupId,
+                snapshot.id,
+              ),
+            },
             {
               text: 'Confirm attendance',
               callbackData: attendanceCallback(
@@ -107,6 +131,15 @@ export class AttendanceHandlers {
     ) {
       throw new Error('Attendance callback identity mismatch');
     }
+    if (callback.action === 'add') {
+      return {
+        ...this.render(snapshot),
+        manualParticipantPrompt: {
+          token: input.data,
+          text: `${input.data}\nВведите имя участника`,
+        },
+      };
+    }
     if (
       callback.action === 'toggle' &&
       snapshot.rosterCandidates[callback.candidateIndex] === undefined
@@ -134,6 +167,56 @@ export class AttendanceHandlers {
       excludedRegistrationIds,
       manualParticipants,
       finalize: callback.action === 'confirm',
+    });
+    return this.render(result);
+  }
+
+  public async addManualParticipant(input: {
+    telegramUserId: TelegramId;
+    token: string;
+    displayName: string;
+  }): Promise<AttendancePreview> {
+    const callback = parseAttendanceCallback(input.token);
+    if (callback.action !== 'add') {
+      throw new Error('Invalid manual attendance prompt');
+    }
+    const snapshot = await this.snapshots.findSnapshot(
+      callback.groupId,
+      callback.snapshotId,
+    );
+    if (snapshot === null) throw new Error('Attendance preview not found');
+    const actor = await this.actors.resolve(
+      snapshot.gameId,
+      input.telegramUserId,
+    );
+    if (
+      actor.groupId !== callback.groupId ||
+      actor.gameId !== snapshot.gameId
+    ) {
+      throw new Error('Attendance callback identity mismatch');
+    }
+    const displayName = input.displayName.trim();
+    if (displayName.length === 0 || [...displayName].length > 80) {
+      throw new Error('Participant name must contain between 1 and 80 characters');
+    }
+    const result = await this.attendance.execute({
+      groupId: actor.groupId,
+      gameId: actor.gameId,
+      actorUserId: actor.userId,
+      expectedRevision: snapshot.revision,
+      excludedRegistrationIds: snapshot.rosterCandidates
+        .filter((candidate) => !candidate.included)
+        .map((candidate) => candidate.sourceRegistrationId),
+      manualParticipants: [
+        ...snapshot.entries
+          .filter((entry) => entry.addedManually)
+          .map((entry) => ({
+            displayName: entry.displayName,
+            billable: entry.billable,
+          })),
+        { displayName, billable: true },
+      ],
+      finalize: false,
     });
     return this.render(result);
   }
@@ -172,6 +255,12 @@ type AttendanceCallback =
       groupId: GroupId;
       snapshotId: AttendanceSnapshotId;
       candidateIndex?: never;
+    }
+  | {
+      action: 'add';
+      groupId: GroupId;
+      snapshotId: AttendanceSnapshotId;
+      candidateIndex?: never;
     };
 
 export const attendanceCallback = (
@@ -191,7 +280,7 @@ export const attendanceCallback = (
   const callback =
     action === 'toggle'
       ? `at:t:${compactUuid(groupId)}:${compactUuid(snapshotId)}:${candidateIndex?.toString(36)}`
-      : `at:c:${compactUuid(groupId)}:${compactUuid(snapshotId)}`;
+      : `at:${action === 'confirm' ? 'c' : 'a'}:${compactUuid(groupId)}:${compactUuid(snapshotId)}`;
   if (Buffer.byteLength(callback, 'utf8') > 64) {
     throw new Error('Telegram callback payload exceeds 64 bytes');
   }
@@ -203,30 +292,31 @@ const parseAttendanceCallback = (value: string): AttendanceCallback => {
     value.split(':');
   if (
     prefix !== 'at' ||
-    (action !== 't' && action !== 'c') ||
+    (action !== 't' && action !== 'c' && action !== 'a') ||
     groupId === undefined ||
     snapshotId === undefined ||
     rest.length > 0 ||
     (action === 't' &&
       (candidateIndex === undefined || !/^[0-9a-z]+$/i.test(candidateIndex))) ||
-    (action === 'c' && candidateIndex !== undefined)
+    (action !== 't' && candidateIndex !== undefined)
   ) {
     throw new Error('Invalid attendance callback');
   }
   const decodedGroupId = decodeCompactUuid(groupId);
   const decodedSnapshotId = decodeCompactUuid(snapshotId);
-  return action === 't'
-    ? {
+  if (action === 't') {
+    return {
         action: 'toggle',
         groupId: asGroupId(decodedGroupId),
         snapshotId: asAttendanceSnapshotId(decodedSnapshotId),
         candidateIndex: Number.parseInt(candidateIndex!, 36),
-      }
-    : {
-        action: 'confirm',
-        groupId: asGroupId(decodedGroupId),
-        snapshotId: asAttendanceSnapshotId(decodedSnapshotId),
       };
+  }
+  return {
+    action: action === 'c' ? 'confirm' : 'add',
+    groupId: asGroupId(decodedGroupId),
+    snapshotId: asAttendanceSnapshotId(decodedSnapshotId),
+  };
 };
 
 const compactUuid = (value: string): string =>
@@ -245,19 +335,65 @@ export const registerAttendanceHandlers = (
   bot: Bot<Context>,
   handlers: AttendanceHandlers,
 ): Bot<Context> => {
+  bot.command('attendance', async (context) => {
+    if (context.from === undefined) throw new Error('Message sender is required');
+    if (context.chat.type !== 'private') throw new Error('Private chat required');
+    const preview = await handlers.start({
+      telegramUserId: toTelegramId(context.from.id),
+      gameId: parseGameId(context.match ?? ''),
+    });
+    await context.reply(preview.text, replyMarkup(preview));
+  });
+  bot.on('message:text', async (context, next) => {
+    const prompt = context.message.reply_to_message?.text?.split('\n')[0];
+    if (
+      context.chat.type !== 'private' ||
+      context.from === undefined ||
+      prompt === undefined ||
+      !prompt.startsWith('at:a:')
+    ) {
+      await next();
+      return;
+    }
+    const preview = await handlers.addManualParticipant({
+      telegramUserId: toTelegramId(context.from.id),
+      token: prompt,
+      displayName: context.message.text,
+    });
+    await context.reply(preview.text, replyMarkup(preview));
+  });
   bot.callbackQuery(/^at:/, async (context) => {
+    if (context.callbackQuery.message?.chat.type !== 'private') {
+      throw new Error('Private chat required');
+    }
     const preview = await handlers.handleCallback({
       telegramUserId: toTelegramId(context.callbackQuery.from.id),
       data: context.callbackQuery.data,
     });
-    await context.editMessageText(preview.text, {
-      reply_markup: {
-        inline_keyboard: preview.buttons.map((button) => [
-          { text: button.text, callback_data: button.callbackData },
-        ]),
-      },
-    });
+    if (preview.manualParticipantPrompt === undefined) {
+      await context.editMessageText(preview.text, replyMarkup(preview));
+    } else {
+      await context.reply(preview.manualParticipantPrompt.text, {
+        reply_markup: { force_reply: true, selective: true },
+      });
+    }
     await context.answerCallbackQuery({ text: 'attendance:updated' });
   });
   return bot;
+};
+
+const replyMarkup = (preview: AttendancePreview) => ({
+  reply_markup: {
+    inline_keyboard: preview.buttons.map((button) => [
+      { text: button.text, callback_data: button.callbackData },
+    ]),
+  },
+});
+
+const parseGameId = (value: string): GameId => {
+  const trimmed = value.trim();
+  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(trimmed)) {
+    throw new Error('Valid game id required');
+  }
+  return asGameId(trimmed);
 };

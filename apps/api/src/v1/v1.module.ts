@@ -1,17 +1,12 @@
-import {
-  Inject,
-  Injectable,
-  Module,
-  type OnApplicationShutdown,
-} from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { AuthorizationService, GetGame } from '@volley/application';
-import { parseEnv, type AppEnv } from '@volley/config';
+import type { AppEnv } from '@volley/config';
 import {
-  createDatabase,
+  type Database,
   GameRepository,
   GroupRepository,
 } from '@volley/persistence';
-import { Pool } from 'pg';
+import { APP_ENV, DATABASE } from '../infrastructure/infrastructure.module.js';
 import {
   AUTHENTICATED_PRINCIPAL_RESOLVER,
   MINI_APP_INIT_DATA_VERIFIER,
@@ -25,44 +20,27 @@ import {
   type GameQueries,
 } from './games.controller.js';
 
-const V1_ENV = Symbol('V1_ENV');
 const V1_RUNTIME = Symbol('V1_RUNTIME');
 
 interface V1Runtime {
-  pool: Pool;
   games: GameRepository;
   groups: GroupRepository;
-}
-
-@Injectable()
-class V1RuntimeLifecycle implements OnApplicationShutdown {
-  public constructor(@Inject(V1_RUNTIME) private readonly runtime: V1Runtime) {}
-
-  public async onApplicationShutdown(): Promise<void> {
-    await this.runtime.pool.end();
-  }
 }
 
 @Module({
   controllers: [GamesController],
   providers: [
-    { provide: V1_ENV, useFactory: (): AppEnv => parseEnv(process.env) },
     {
       provide: V1_RUNTIME,
-      inject: [V1_ENV],
-      useFactory: (env: AppEnv): V1Runtime => {
-        const pool = new Pool({ connectionString: env.DATABASE_URL });
-        const database = createDatabase(pool);
-        return {
-          pool,
-          games: new GameRepository(database),
-          groups: new GroupRepository(database),
-        };
-      },
+      inject: [DATABASE],
+      useFactory: (database: Database): V1Runtime => ({
+        games: new GameRepository(database),
+        groups: new GroupRepository(database),
+      }),
     },
     {
       provide: MINI_APP_INIT_DATA_VERIFIER,
-      inject: [V1_ENV],
+      inject: [APP_ENV],
       useFactory: (env: AppEnv): MiniAppInitDataVerifier =>
         new MiniAppInitDataVerifier(env.BOT_TOKEN),
     },
@@ -92,7 +70,6 @@ class V1RuntimeLifecycle implements OnApplicationShutdown {
         new GetGame(runtime.games),
     },
     MiniAppAuthGuard,
-    V1RuntimeLifecycle,
   ],
 })
 export class V1Module {}

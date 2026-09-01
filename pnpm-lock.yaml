@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@volley/persistence':
+        specifier: workspace:*
+        version: link:packages/persistence
     devDependencies:
       '@nestjs/cli':
         specifier: 11.0.24

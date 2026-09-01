@@ -2,14 +2,12 @@ import {
   Inject,
   Injectable,
   ServiceUnavailableException,
-  type OnApplicationShutdown,
 } from '@nestjs/common';
 import type { Redis } from 'ioredis';
 import type { Pool } from 'pg';
 
 export interface HealthProbe {
   check(): Promise<void>;
-  close?(): Promise<void>;
 }
 
 export const POSTGRES_HEALTH_PROBE = Symbol('POSTGRES_HEALTH_PROBE');
@@ -22,9 +20,6 @@ export class PostgresHealthProbe implements HealthProbe {
     await this.pool.query('select 1');
   }
 
-  async close(): Promise<void> {
-    await this.pool.end();
-  }
 }
 
 export class RedisHealthProbe implements HealthProbe {
@@ -34,13 +29,10 @@ export class RedisHealthProbe implements HealthProbe {
     await this.redis.ping();
   }
 
-  async close(): Promise<void> {
-    await this.redis.quit();
-  }
 }
 
 @Injectable()
-export class HealthService implements OnApplicationShutdown {
+export class HealthService {
   constructor(
     @Inject(POSTGRES_HEALTH_PROBE)
     private readonly postgres: HealthProbe,
@@ -69,9 +61,5 @@ export class HealthService implements OnApplicationShutdown {
     }
 
     return { status: 'ok' };
-  }
-
-  async onApplicationShutdown(): Promise<void> {
-    await Promise.all([this.postgres.close?.(), this.redis.close?.()]);
   }
 }

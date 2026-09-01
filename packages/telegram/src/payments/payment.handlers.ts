@@ -197,7 +197,8 @@ export class PaymentHandlers {
         roundingMode: draft.roundingMode,
         draftId: draft.id,
       });
-      return renderSettlement(settlement, actor.gameId);
+      void settlement;
+      return this.renderActiveSettlement(actor.groupId, actor.gameId);
     }
     if (callback.action === 'status') {
       await this.changeChargeStatus.execute({
@@ -305,7 +306,7 @@ const renderSettlement = (
       text: 'Оплата не требуется',
       callbackData: paymentCallback('status', gameId, charge.id, 'WAIVED'),
     },
-    ...(charge.status === 'UNPAID' && !charge.addedManually
+    ...(charge.status === 'UNPAID' && charge.privateReminderAvailable
       ? [
           {
             text: 'Напомнить',

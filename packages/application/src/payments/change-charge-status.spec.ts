@@ -34,6 +34,7 @@ it('records an organizer status change through the tenant-scoped repository', as
         participantRef: 'registration:1',
         displayName: 'Player',
         addedManually: false,
+        privateReminderAvailable: true,
         amountMinor: 10000n,
         status: input.status,
         createdAt: new Date('2026-08-31T00:00:00Z'),

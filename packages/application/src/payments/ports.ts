@@ -17,6 +17,7 @@ export interface SettlementChargeRecord {
   participantRef: string;
   displayName: string;
   addedManually: boolean;
+  privateReminderAvailable: boolean;
   amountMinor: bigint;
   status: ChargeStatus;
   createdAt: Date;

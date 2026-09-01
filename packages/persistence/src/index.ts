@@ -1,5 +1,9 @@
 export const packageMarker = 'persistence' as const;
-export { createDatabase, type Database } from './client.js';
+export {
+  createDatabase,
+  createPostgresPool,
+  type Database,
+} from './client.js';
 export {
   GroupRepository,
   type UpsertGroupFromTelegramInput,

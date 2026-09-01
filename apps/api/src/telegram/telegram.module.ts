@@ -1,12 +1,10 @@
 import { createHash } from 'node:crypto';
 import {
-  Inject,
-  Injectable,
   Module,
-  type OnApplicationShutdown,
 } from '@nestjs/common';
 import {
   AuthorizationService,
+  ConfirmAttendance,
   ConfirmTentative,
   ChangeChargeStatus,
   ConfigureGroup,
@@ -19,9 +17,10 @@ import {
   WithdrawRegistration,
   type ConfigurationLinkFactory,
 } from '@volley/application';
-import { parseEnv, type AppEnv } from '@volley/config';
+import type { AppEnv } from '@volley/config';
 import {
-  createDatabase,
+  type Database,
+  AttendanceRepository,
   GuestRegistrationDraftRepository,
   GroupRepository,
   PaymentRepository,
@@ -29,6 +28,7 @@ import {
 } from '@volley/persistence';
 import {
   CallbackCodec,
+  AttendanceHandlers,
   createLazyTelegramUpdateHandler,
   createTelegramBot,
   GrammyTelegramGateway,
@@ -37,6 +37,7 @@ import {
   PaymentHandlers,
   RegistrationHandlers,
   registerRegistrationHandlers,
+  registerAttendanceHandlers,
   registerTentativeHandlers,
   registerGroupOnboardingHandlers,
   registerPaymentHandlers,
@@ -48,42 +49,27 @@ import {
   WebhookController,
   type TelegramUpdateHandler,
 } from '@volley/telegram';
-import { Pool } from 'pg';
+import {
+  APP_ENV,
+  DATABASE,
+} from '../infrastructure/infrastructure.module.js';
 
-const TELEGRAM_ENV = Symbol('TELEGRAM_ENV');
 const TELEGRAM_RUNTIME = Symbol('TELEGRAM_RUNTIME');
 
 interface TelegramRuntime {
   bot: TelegramUpdateHandler;
-  pool: Pool;
-}
-
-@Injectable()
-class TelegramRuntimeLifecycle implements OnApplicationShutdown {
-  constructor(
-    @Inject(TELEGRAM_RUNTIME) private readonly runtime: TelegramRuntime,
-  ) {}
-
-  async onApplicationShutdown(): Promise<void> {
-    await this.runtime.pool.end();
-  }
 }
 
 @Module({
   controllers: [WebhookController],
   providers: [
     {
-      provide: TELEGRAM_ENV,
-      useFactory: (): AppEnv => parseEnv(process.env),
-    },
-    {
       provide: TELEGRAM_RUNTIME,
-      inject: [TELEGRAM_ENV],
-      useFactory: (env: AppEnv): TelegramRuntime => {
-        const pool = new Pool({ connectionString: env.DATABASE_URL });
-        const database = createDatabase(pool);
+      inject: [APP_ENV, DATABASE],
+      useFactory: (env: AppEnv, database: Database): TelegramRuntime => {
         const groups = new GroupRepository(database);
         const registrations = new RegistrationRepository(database);
+        const attendance = new AttendanceRepository(database);
         const guestDrafts = new GuestRegistrationDraftRepository(database);
         const payments = new PaymentRepository(database);
         const authorization = new AuthorizationService({
@@ -140,6 +126,14 @@ class TelegramRuntimeLifecycle implements OnApplicationShutdown {
             authorization,
           ),
         );
+        registerAttendanceHandlers(
+          bot,
+          new AttendanceHandlers(
+            registrations,
+            new ConfirmAttendance(authorization, attendance),
+            attendance,
+          ),
+        );
         registerGroupOnboardingHandlers(bot, handlers, guestHandlers);
         registerRegistrationHandlers(
           bot,
@@ -182,7 +176,7 @@ class TelegramRuntimeLifecycle implements OnApplicationShutdown {
             new WithdrawRegistration(registrations),
           ),
         );
-        return { bot: createLazyTelegramUpdateHandler(bot), pool };
+        return { bot: createLazyTelegramUpdateHandler(bot) };
       },
     },
     {
@@ -193,10 +187,9 @@ class TelegramRuntimeLifecycle implements OnApplicationShutdown {
     },
     {
       provide: TELEGRAM_WEBHOOK_SECRET,
-      inject: [TELEGRAM_ENV],
+      inject: [APP_ENV],
       useFactory: (env: AppEnv): string => env.TELEGRAM_WEBHOOK_SECRET,
     },
-    TelegramRuntimeLifecycle,
   ],
 })
 export class TelegramModule {}

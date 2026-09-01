@@ -391,6 +391,51 @@ describe('PaymentRepository', () => {
       rows: [{ finalized_settlement_id: first.id }],
     });
   });
+
+  it('purges expired payment drafts and input sessions in bounded batches', async () => {
+    const fixture = await insertFixture(pool);
+    const expiredDraft = await repository.saveDraft({
+      groupId: fixture.groupId,
+      gameId: fixture.gameId,
+      actorUserId: fixture.actorUserId,
+      attendanceRevision: 1,
+      totalAmount: '100.00',
+      currency: 'RUB',
+      roundingMode: 'EXACT',
+    });
+    await repository.beginInput({
+      groupId: fixture.groupId,
+      gameId: fixture.gameId,
+      actorUserId: fixture.actorUserId,
+    });
+    await pool.query(
+      'UPDATE payment_drafts SET expires_at = $1 WHERE id = $2',
+      [new Date('2026-08-30T00:00:00Z'), expiredDraft.id],
+    );
+    await pool.query(
+      'UPDATE payment_input_sessions SET expires_at = $1 WHERE actor_user_id = $2',
+      [new Date('2026-08-30T00:00:00Z'), fixture.actorUserId],
+    );
+    const liveDraft = await repository.saveDraft({
+      groupId: fixture.groupId,
+      gameId: fixture.gameId,
+      actorUserId: fixture.actorUserId,
+      attendanceRevision: 1,
+      totalAmount: '200.00',
+      currency: 'RUB',
+      roundingMode: 'EXACT',
+    });
+
+    await expect(
+      repository.purgeExpiredState({
+        now: new Date('2026-08-31T00:00:00Z'),
+        batchSize: 1,
+      }),
+    ).resolves.toEqual({ draftsDeleted: 1, inputSessionsDeleted: 1 });
+    await expect(
+      pool.query('SELECT id FROM payment_drafts ORDER BY id'),
+    ).resolves.toMatchObject({ rows: [{ id: liveDraft.id }] });
+  });
 });
 
 const beginSupersedingCorrection = async (

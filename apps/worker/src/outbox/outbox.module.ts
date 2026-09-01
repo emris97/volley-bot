@@ -1,6 +1,10 @@
 import { Module } from '@nestjs/common';
 import { parseEnv } from '@volley/config';
-import { createDatabase, OutboxRepository } from '@volley/persistence';
+import {
+  createDatabase,
+  OutboxRepository,
+  PaymentRepository,
+} from '@volley/persistence';
 import { OutboxDispatcher } from '@volley/application';
 import { Queue } from 'bullmq';
 import { Pool } from 'pg';
@@ -23,14 +27,16 @@ export const OUTBOX_WORKER = Symbol('OUTBOX_WORKER');
             password: redis.password || undefined,
           },
         });
+        const database = createDatabase(pool);
+        const payments = new PaymentRepository(database);
         const dispatcher = new OutboxDispatcher(
-          new OutboxRepository(createDatabase(pool)),
+          new OutboxRepository(database),
           new BullMqJobPublisher(queue),
         );
         return new OutboxConsumer(dispatcher, async () => {
           await queue.close();
           await pool.end();
-        });
+        }, 1_000, () => payments.purgeExpiredState({ batchSize: 500 }));
       },
     },
   ],

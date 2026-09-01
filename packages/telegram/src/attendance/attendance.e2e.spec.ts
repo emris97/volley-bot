@@ -8,7 +8,15 @@ import {
   asUserId,
   type AttendanceSnapshot,
 } from '@volley/domain';
-import { AttendanceHandlers } from './attendance.handlers.js';
+import type { Update, UserFromGetMe } from 'grammy/types';
+import {
+  createLazyTelegramUpdateHandler,
+  createTelegramBot,
+} from '../bot.factory.js';
+import {
+  AttendanceHandlers,
+  registerAttendanceHandlers,
+} from './attendance.handlers.js';
 
 const groupId = asGroupId('018f6ba0-62d2-7bd1-8f13-12e0c8424611');
 const gameId = asGameId('018f6ba0-62d2-7bd1-8f13-12e0c8424610');
@@ -155,5 +163,185 @@ it('rejects malformed and unknown compact attendance callbacks', async () => {
   ).rejects.toThrow(/attendance preview not found/i);
 });
 
+it('adds a named manual participant through the registered private Telegram flow', async () => {
+  const snapshots = new Map<string, AttendanceSnapshot>();
+  const apiCalls: Array<{ method: string; payload: Record<string, unknown> }> =
+    [];
+  const attendance = {
+    execute: async (
+      command: ConfirmAttendanceCommand,
+    ): Promise<AttendanceSnapshot> => {
+      const id = `018f6ba0-62d2-7bd1-8f13-12e0c84246${(command.expectedRevision + 1).toString().padStart(2, '0')}` as never;
+      const snapshot: AttendanceSnapshot = {
+        id,
+        groupId: command.groupId,
+        gameId: command.gameId,
+        revision: command.expectedRevision + 1,
+        finalized: command.finalize,
+        rosterCandidates: [
+          {
+            participantRef: `registration:${registrationId}`,
+            sourceRegistrationId: registrationId,
+            displayName: 'Roster player',
+            billable: true,
+            included: true,
+          },
+        ],
+        entries: [
+          {
+            participantRef: `registration:${registrationId}`,
+            sourceRegistrationId: registrationId,
+            displayName: 'Roster player',
+            billable: true,
+            addedManually: false,
+          },
+          ...command.manualParticipants.map((participant, index) => ({
+            participantRef: `manual:${index}`,
+            displayName: participant.displayName,
+            billable: participant.billable,
+            addedManually: true,
+          })),
+        ],
+      };
+      snapshots.set(snapshot.id, snapshot);
+      return snapshot;
+    },
+  };
+  const handlers = new AttendanceHandlers(
+    {
+      resolve: async () => ({
+        groupId,
+        gameId,
+        userId: asUserId('018f6ba0-62d2-7bd1-8f13-12e0c8424613'),
+      }),
+    },
+    attendance,
+    {
+      findSnapshot: async (_requestedGroupId, snapshotId) =>
+        snapshots.get(snapshotId) ?? null,
+    },
+  );
+  const botInfo: UserFromGetMe = {
+    id: 999,
+    is_bot: true,
+    first_name: 'Volley',
+    username: 'volley_test_bot',
+    can_join_groups: true,
+    can_read_all_group_messages: false,
+    supports_inline_queries: false,
+    can_connect_to_business: false,
+    has_main_web_app: false,
+    has_topics_enabled: false,
+    allows_users_to_create_topics: false,
+    can_manage_bots: false,
+    supports_join_request_queries: false,
+  };
+  const bot = createTelegramBot('123456:abcdefghijklmnopqrstuvwxyz', botInfo);
+  registerAttendanceHandlers(bot, handlers);
+  bot.api.config.use(async (_previous, method, payload) => {
+    apiCalls.push({ method, payload: payload as Record<string, unknown> });
+    return {
+      ok: true,
+      result:
+        method === 'answerCallbackQuery'
+          ? true
+          : {
+              message_id: apiCalls.length,
+              date: 1_788_134_400,
+              chat: { id: 42, type: 'private' },
+              text: String((payload as { text?: unknown }).text ?? 'ok'),
+            },
+    } as never;
+  });
+  const updates = createLazyTelegramUpdateHandler(bot);
+
+  await updates.handleUpdate(attendanceCommandUpdate(1));
+  const previewCall = apiCalls.at(-1)!;
+  const addCallback = (
+    previewCall.payload.reply_markup as {
+      inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+    }
+  ).inline_keyboard
+    .flat()
+    .find((button) => button.text === 'Добавить участника')!.callback_data;
+
+  await updates.handleUpdate(attendanceCallbackUpdate(2, addCallback));
+  const promptCall = apiCalls.findLast(
+    (call) =>
+      call.method === 'sendMessage' &&
+      String(call.payload.text).includes('Введите имя участника'),
+  )!;
+  expect(promptCall.payload.reply_markup).toMatchObject({ force_reply: true });
+
+  await updates.handleUpdate(
+    attendanceNameReplyUpdate(3, String(promptCall.payload.text), 'Late player'),
+  );
+  const updatedPreview = apiCalls.at(-1)!;
+  expect(updatedPreview).toMatchObject({
+    method: 'sendMessage',
+    payload: { text: expect.stringContaining('attendance:preview:2') },
+  });
+  expect([...snapshots.values()].at(-1)!.entries).toContainEqual(
+    expect.objectContaining({
+      displayName: 'Late player',
+      billable: true,
+      addedManually: true,
+    }),
+  );
+});
+
 const compactUuid = (value: string): string =>
   Buffer.from(value.replaceAll('-', ''), 'hex').toString('base64url');
+
+const attendanceCommandUpdate = (updateId: number): Update =>
+  ({
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      date: 1_788_134_400,
+      chat: { id: 42, type: 'private', first_name: 'Ada' },
+      from: { id: 42, is_bot: false, first_name: 'Ada' },
+      text: `/attendance ${gameId}`,
+      entities: [{ type: 'bot_command', offset: 0, length: 11 }],
+    },
+  }) as Update;
+
+const attendanceCallbackUpdate = (updateId: number, data: string): Update =>
+  ({
+    update_id: updateId,
+    callback_query: {
+      id: `attendance-${updateId}`,
+      chat_instance: 'attendance-test',
+      from: { id: 42, is_bot: false, first_name: 'Ada' },
+      data,
+      message: {
+        message_id: updateId,
+        date: 1_788_134_400,
+        chat: { id: 42, type: 'private', first_name: 'Ada' },
+        text: 'attendance:preview:1',
+      },
+    },
+  }) as Update;
+
+const attendanceNameReplyUpdate = (
+  updateId: number,
+  promptText: string,
+  displayName: string,
+): Update =>
+  ({
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      date: 1_788_134_400,
+      chat: { id: 42, type: 'private', first_name: 'Ada' },
+      from: { id: 42, is_bot: false, first_name: 'Ada' },
+      text: displayName,
+      reply_to_message: {
+        message_id: updateId - 1,
+        date: 1_788_134_400,
+        chat: { id: 42, type: 'private', first_name: 'Ada' },
+        from: { id: 999, is_bot: true, first_name: 'Volley' },
+        text: promptText,
+      },
+    },
+  }) as Update;

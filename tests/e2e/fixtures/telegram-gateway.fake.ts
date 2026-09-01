@@ -14,6 +14,10 @@ export class FakeTelegramGateway {
   public readonly groupMessages: Array<{ chatId: TelegramId; text: string }> =
     [];
 
+  public async getChatMember(): Promise<{ status: 'creator' }> {
+    return { status: 'creator' };
+  }
+
   public async sendPrivate(
     telegramUserId: TelegramId,
     text: string,
@@ -40,5 +44,10 @@ export class FakeTelegramGateway {
     telegramUserId: TelegramId,
   ): readonly FakePrivateMessage[] {
     return this.privateMessages.get(telegramUserId) ?? [];
+  }
+
+  public clear(): void {
+    this.privateMessages.clear();
+    this.groupMessages.length = 0;
   }
 }

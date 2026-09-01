@@ -20,6 +20,8 @@ export * from './games/update-game.js';
 export * from './outbox/outbox-dispatcher.js';
 export * from './outbox/outbox-event.js';
 export * from './notifications/notification-policy.js';
+export * from './observability/logger.js';
+export * from './observability/metrics.js';
 export * from './payments/ports.js';
 export * from './payments/preview-settlement.js';
 export * from './payments/finalize-settlement.js';

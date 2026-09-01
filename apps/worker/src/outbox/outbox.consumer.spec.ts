@@ -6,7 +6,7 @@ import {
   type JobPublisher,
   type OutboxClaimStore,
 } from '@volley/application';
-import { BullMqJobPublisher } from './outbox.consumer.js';
+import { BullMqJobPublisher, OutboxConsumer } from './outbox.consumer.js';
 
 describe('OutboxDispatcher', () => {
   it('publishes retries with the same deterministic BullMQ job id', async () => {
@@ -143,6 +143,34 @@ describe('BullMqJobPublisher', () => {
 
     expect(completed.remove).toHaveBeenCalledOnce();
     expect(queue.add).toHaveBeenCalledOnce();
+  });
+});
+
+describe('OutboxConsumer maintenance', () => {
+  it('purges one bounded batch of expired payment state per tick', async () => {
+    const dispatchOnce = vi.fn().mockResolvedValue({
+      claimed: 0,
+      published: 0,
+      failed: 0,
+    });
+    const purgeExpiredPaymentState = vi.fn().mockResolvedValue({
+      draftsDeleted: 0,
+      inputSessionsDeleted: 0,
+    });
+    const closeResources = vi.fn().mockResolvedValue(undefined);
+    const consumer = new OutboxConsumer(
+      { dispatchOnce } as unknown as OutboxDispatcher,
+      closeResources,
+      60_000,
+      purgeExpiredPaymentState,
+    );
+
+    await consumer.start();
+    await consumer.stop();
+
+    expect(dispatchOnce).toHaveBeenCalledOnce();
+    expect(purgeExpiredPaymentState).toHaveBeenCalledOnce();
+    expect(closeResources).toHaveBeenCalledOnce();
   });
 });
 

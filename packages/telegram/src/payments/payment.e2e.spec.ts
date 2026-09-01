@@ -98,6 +98,7 @@ it('drives restart-safe confirmation, status, and reminder callbacks through fre
       ][index]!,
       settlementId: '018f6ba0-62d2-7bd1-8f13-12e0c8424690',
       ...charge,
+      privateReminderAvailable: !charge.addedManually,
       status: 'UNPAID' as const,
       createdAt: new Date('2026-08-31T00:00:00Z'),
     })),
@@ -287,6 +288,7 @@ it('registers payment callbacks and rejects callback updates outside a private c
         participantRef: 'registration:player',
         displayName: 'Player',
         addedManually: false,
+        privateReminderAvailable: true,
         amountMinor: 10000n,
         status: 'UNPAID',
         createdAt: new Date('2026-08-31T00:00:00Z'),
@@ -437,6 +439,7 @@ it('runs registered private payment command through durable decimal input and fr
         id: '018f6ba0-62d2-7bd1-8f13-12e0c8424621',
         settlementId: '018f6ba0-62d2-7bd1-8f13-12e0c8424690',
         ...previewResult.charges[0]!,
+        privateReminderAvailable: true,
         status: 'UNPAID' as const,
         createdAt: new Date('2026-08-31T00:00:00Z'),
       },
@@ -645,6 +648,146 @@ it('passes ordinary group text to later middleware while private payment input r
     method: 'sendMessage',
     payload: { text: expect.stringMatching(/предпросмотр/i) },
   });
+});
+
+it('hides reminders for every charge without a linked private recipient', async () => {
+  const unlinkedGuestCharge = {
+    id: '018f6ba0-62d2-7bd1-8f13-12e0c8424621',
+    settlementId: '018f6ba0-62d2-7bd1-8f13-12e0c8424690',
+    participantRef: 'registration:unlinked-guest',
+    displayName: 'Unlinked guest',
+    addedManually: false,
+    privateReminderAvailable: false,
+    amountMinor: 10000n,
+    status: 'UNPAID' as const,
+    createdAt: new Date('2026-08-31T00:00:00Z'),
+  };
+  const settlement: Settlement = {
+    id: unlinkedGuestCharge.settlementId,
+    groupId,
+    gameId,
+    attendanceSnapshotId: '018f6ba0-62d2-7bd1-8f13-12e0c8424699' as never,
+    attendanceRevision: 1,
+    revision: 1,
+    totalMinor: 10000n,
+    currency: 'RUB',
+    roundingMode: 'EXACT',
+    allocationOrder: [unlinkedGuestCharge.participantRef],
+    collectedMinor: 10000n,
+    surplusMinor: 0n,
+    supersededAt: null,
+    createdBy: actorUserId,
+    createdAt: new Date('2026-08-31T00:00:00Z'),
+    charges: [unlinkedGuestCharge],
+  };
+  const handlers = new PaymentHandlers(
+    { resolve: async () => ({ groupId, gameId, userId: actorUserId }) },
+    { execute: async () => Promise.reject(new Error('unused')) },
+    { execute: async () => Promise.reject(new Error('unused')) },
+    { execute: async () => unlinkedGuestCharge },
+    { execute: async () => Promise.reject(new Error('unused')) },
+    {
+      beginInput: async () => Promise.reject(new Error('unused')),
+      findInputByTelegramUserId: async () => null,
+      clearInput: async () => undefined,
+      saveDraft: async () => Promise.reject(new Error('unused')),
+      findDraft: async () => null,
+      deleteDraft: async () => undefined,
+      findActiveSettlement: async () => settlement,
+    },
+    { requireOrganizer: async () => undefined },
+  );
+
+  const view = await handlers.handleCallback({
+    telegramUserId,
+    privateChat: true,
+    data: `pay:p:${compactUuid(gameId)}:${compactUuid(unlinkedGuestCharge.id)}`,
+  });
+
+  expect(view.buttons.map((button) => button.text)).not.toContain('Напомнить');
+});
+
+it('replaying a finalized draft after correction renders the active settlement', async () => {
+  const historical = settlementFixture(1);
+  const active = settlementFixture(2);
+  const storedDraft: PaymentDraft = {
+    id: draftId,
+    groupId,
+    gameId,
+    actorUserId,
+    attendanceRevision: 1,
+    totalAmount: '100.00',
+    currency: 'RUB',
+    roundingMode: 'EXACT',
+    expiresAt: new Date('2026-08-31T01:00:00Z'),
+    finalizedSettlementId: historical.id,
+  };
+  const handlers = new PaymentHandlers(
+    { resolve: async () => ({ groupId, gameId, userId: actorUserId }) },
+    { execute: async () => Promise.reject(new Error('unused')) },
+    { execute: async () => historical },
+    { execute: async () => Promise.reject(new Error('unused')) },
+    { execute: async () => Promise.reject(new Error('unused')) },
+    {
+      beginInput: async () => Promise.reject(new Error('unused')),
+      findInputByTelegramUserId: async () => null,
+      clearInput: async () => undefined,
+      saveDraft: async () => Promise.reject(new Error('unused')),
+      findDraft: async () => storedDraft,
+      deleteDraft: async () => undefined,
+      findActiveSettlement: async () => active,
+    },
+    { requireOrganizer: async () => undefined },
+  );
+
+  const view = await handlers.handleCallback({
+    telegramUserId,
+    privateChat: true,
+    data: `pay:c:${compactUuid(gameId)}:${compactUuid(draftId)}`,
+  });
+
+  expect(view.text).toMatch(/Расчёт #2/);
+  expect(view.text).not.toMatch(/Расчёт #1/);
+});
+
+const settlementFixture = (revision: number): Settlement => ({
+  id:
+    revision === 1
+      ? '018f6ba0-62d2-7bd1-8f13-12e0c8424690'
+      : '018f6ba0-62d2-7bd1-8f13-12e0c8424691',
+  groupId,
+  gameId,
+  attendanceSnapshotId: '018f6ba0-62d2-7bd1-8f13-12e0c8424699' as never,
+  attendanceRevision: 1,
+  revision,
+  totalMinor: 10000n,
+  currency: 'RUB',
+  roundingMode: 'EXACT',
+  allocationOrder: ['registration:player'],
+  collectedMinor: 10000n,
+  surplusMinor: 0n,
+  supersededAt: revision === 1 ? new Date('2026-08-31T01:00:00Z') : null,
+  createdBy: actorUserId,
+  createdAt: new Date('2026-08-31T00:00:00Z'),
+  charges: [
+    {
+      id:
+        revision === 1
+          ? '018f6ba0-62d2-7bd1-8f13-12e0c8424621'
+          : '018f6ba0-62d2-7bd1-8f13-12e0c8424622',
+      settlementId:
+        revision === 1
+          ? '018f6ba0-62d2-7bd1-8f13-12e0c8424690'
+          : '018f6ba0-62d2-7bd1-8f13-12e0c8424691',
+      participantRef: 'registration:player',
+      displayName: 'Player',
+      addedManually: false,
+      privateReminderAvailable: true,
+      amountMinor: 10000n,
+      status: 'UNPAID',
+      createdAt: new Date('2026-08-31T00:00:00Z'),
+    },
+  ],
 });
 
 const compactUuid = (value: string): string =>

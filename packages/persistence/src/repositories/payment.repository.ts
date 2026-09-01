@@ -12,7 +12,7 @@ import {
   type TelegramId,
   type UserId,
 } from '@volley/domain';
-import { and, desc, eq, gt, inArray, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, lte } from 'drizzle-orm';
 import type { Database } from '../client.js';
 import {
   attendanceEntries,
@@ -60,6 +60,7 @@ export interface StoredSettlementCharge {
   participantRef: string;
   displayName: string;
   addedManually: boolean;
+  privateReminderAvailable: boolean;
   amountMinor: bigint;
   status: ChargeStatus;
   createdAt: Date;
@@ -246,6 +247,59 @@ export class PaymentRepository {
           eq(paymentInputSessions.actorUserId, actorUserId),
         ),
       );
+  }
+
+  public async purgeExpiredState(input: {
+    now?: Date;
+    batchSize?: number;
+  } = {}): Promise<{ draftsDeleted: number; inputSessionsDeleted: number }> {
+    const now = input.now ?? new Date();
+    const batchSize = input.batchSize ?? 500;
+    if (
+      !Number.isSafeInteger(batchSize) ||
+      batchSize <= 0 ||
+      batchSize > 1_000
+    ) {
+      throw new Error('Payment state purge batch size must be between 1 and 1000');
+    }
+    return this.database.transaction(async (transaction) => {
+      const expiredDrafts = await transaction
+        .select({ id: paymentDrafts.id })
+        .from(paymentDrafts)
+        .where(lte(paymentDrafts.expiresAt, now))
+        .orderBy(asc(paymentDrafts.id))
+        .limit(batchSize);
+      if (expiredDrafts.length > 0) {
+        await transaction
+          .delete(paymentDrafts)
+          .where(
+            inArray(
+              paymentDrafts.id,
+              expiredDrafts.map((draft) => draft.id),
+            ),
+          );
+      }
+      const expiredInputs = await transaction
+        .select({ actorUserId: paymentInputSessions.actorUserId })
+        .from(paymentInputSessions)
+        .where(lte(paymentInputSessions.expiresAt, now))
+        .orderBy(asc(paymentInputSessions.actorUserId))
+        .limit(batchSize);
+      if (expiredInputs.length > 0) {
+        await transaction
+          .delete(paymentInputSessions)
+          .where(
+            inArray(
+              paymentInputSessions.actorUserId,
+              expiredInputs.map((session) => session.actorUserId),
+            ),
+          );
+      }
+      return {
+        draftsDeleted: expiredDrafts.length,
+        inputSessionsDeleted: expiredInputs.length,
+      };
+    });
   }
 
   public async findActiveSettlement(
@@ -506,7 +560,7 @@ export class PaymentRepository {
                 ),
               );
           }
-          return toStoredSettlement(settlement, chargeRows);
+          return readStoredSettlement(transaction, settlement);
         },
       });
     });
@@ -571,7 +625,10 @@ export class PaymentRepository {
         .limit(1);
       if (charge === undefined) throw new Error('Charge not found');
       if (charge.status === input.status) {
-        return toStoredCharge(charge);
+        return toStoredCharge(
+          charge,
+          await hasPrivateReminderRecipient(transaction, charge),
+        );
       }
       const now = new Date();
       const [updated] = await transaction
@@ -604,7 +661,10 @@ export class PaymentRepository {
           status: input.status,
         },
       });
-      return toStoredCharge(updated);
+      return toStoredCharge(
+        updated,
+        await hasPrivateReminderRecipient(transaction, updated),
+      );
     });
   }
 
@@ -812,7 +872,7 @@ const toAttendanceEntry = (
 
 const toStoredSettlement = (
   settlement: typeof settlements.$inferSelect,
-  charges: readonly (typeof settlementCharges.$inferSelect)[],
+  charges: readonly StoredSettlementCharge[],
 ): StoredSettlement => ({
   id: settlement.id,
   groupId: asGroupId(settlement.groupId),
@@ -829,17 +889,19 @@ const toStoredSettlement = (
   supersededAt: settlement.supersededAt,
   createdBy: asUserId(settlement.createdBy),
   createdAt: settlement.createdAt,
-  charges: charges.map(toStoredCharge),
+  charges,
 });
 
 const toStoredCharge = (
   charge: typeof settlementCharges.$inferSelect,
+  privateReminderAvailable: boolean,
 ): StoredSettlementCharge => ({
   id: charge.id,
   settlementId: charge.settlementId,
   participantRef: charge.participantRef,
   displayName: charge.displayName,
   addedManually: charge.addedManually,
+  privateReminderAvailable,
   amountMinor: charge.amountMinor,
   status: charge.status,
   createdAt: charge.createdAt,
@@ -917,8 +979,66 @@ const readStoredSettlement = async (
       (order.get(left.participantRef) ?? Number.MAX_SAFE_INTEGER) -
       (order.get(right.participantRef) ?? Number.MAX_SAFE_INTEGER),
   );
-  return toStoredSettlement(settlement, charges);
+  const availability = await privateReminderAvailability(
+    database,
+    settlement.groupId,
+    charges,
+  );
+  return toStoredSettlement(
+    settlement,
+    charges.map((charge) =>
+      toStoredCharge(charge, availability.get(charge.id) ?? false),
+    ),
+  );
 };
+
+const privateReminderAvailability = async (
+  database: Database,
+  groupId: string,
+  charges: readonly (typeof settlementCharges.$inferSelect)[],
+): Promise<Map<string, boolean>> => {
+  const chargeRegistrations = charges
+    .map((charge) => ({
+      chargeId: charge.id,
+      registrationId: registrationIdFromParticipantRef(charge.participantRef),
+    }))
+    .filter(
+      (item): item is { chargeId: string; registrationId: string } =>
+        item.registrationId !== null,
+    );
+  if (chargeRegistrations.length === 0) return new Map();
+  const linked = await database
+    .select({ id: registrations.id, userId: registrations.userId })
+    .from(registrations)
+    .where(
+      and(
+        eq(registrations.groupId, groupId),
+        inArray(
+          registrations.id,
+          chargeRegistrations.map((item) => item.registrationId),
+        ),
+      ),
+    );
+  const linkedIds = new Set(
+    linked
+      .filter((registration) => registration.userId !== null)
+      .map((registration) => registration.id),
+  );
+  return new Map(
+    chargeRegistrations.map((item) => [
+      item.chargeId,
+      linkedIds.has(item.registrationId),
+    ]),
+  );
+};
+
+const hasPrivateReminderRecipient = async (
+  database: Database,
+  charge: typeof settlementCharges.$inferSelect,
+): Promise<boolean> =>
+  (await privateReminderAvailability(database, charge.groupId, [charge])).get(
+    charge.id,
+  ) ?? false;
 
 const toStoredPaymentDraft = (
   draft: typeof paymentDrafts.$inferSelect,

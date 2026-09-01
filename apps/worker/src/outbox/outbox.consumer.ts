@@ -40,6 +40,8 @@ export class OutboxConsumer implements ManagedWorker {
     private readonly dispatcher: OutboxDispatcher,
     private readonly closeResources: () => Promise<void>,
     private readonly intervalMs = 1_000,
+    private readonly purgeExpiredPaymentState: () => Promise<unknown> =
+      async () => undefined,
   ) {}
 
   public async start(): Promise<void> {
@@ -58,12 +60,22 @@ export class OutboxConsumer implements ManagedWorker {
     if (this.running) return;
     this.running = true;
     try {
-      await this.dispatcher.dispatchOnce();
-    } catch (error) {
-      this.logger.error(
-        'Outbox dispatch failed',
-        error instanceof Error ? error.stack : String(error),
-      );
+      try {
+        await this.dispatcher.dispatchOnce();
+      } catch (error) {
+        this.logger.error(
+          'Outbox dispatch failed',
+          error instanceof Error ? error.stack : String(error),
+        );
+      }
+      try {
+        await this.purgeExpiredPaymentState();
+      } catch (error) {
+        this.logger.error(
+          'Payment state maintenance failed',
+          error instanceof Error ? error.stack : String(error),
+        );
+      }
     } finally {
       this.running = false;
     }

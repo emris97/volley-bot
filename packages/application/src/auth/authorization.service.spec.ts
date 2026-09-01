@@ -113,6 +113,7 @@ describe('AuthorizationService shared role hierarchy', () => {
         participantRef: 'registration:player',
         displayName: 'Player',
         addedManually: false,
+        privateReminderAvailable: true,
         amountMinor: 10_000n,
         status: input.status,
         createdAt: new Date('2026-08-31T00:00:00.000Z'),

@@ -160,6 +160,7 @@ const memoryPayments = (
             id: `charge-${index + 1}`,
             settlementId: `settlement-${saved.length + 1}`,
             ...charge,
+            privateReminderAvailable: !charge.addedManually,
             status: 'UNPAID',
             createdAt: new Date('2026-08-31T00:00:00Z'),
           })),

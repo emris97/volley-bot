@@ -1,35 +1,115 @@
+name: volley-bot
+
+x-app-environment: &app-environment
+  NODE_ENV: ${NODE_ENV:-production}
+  DATABASE_URL: postgresql://${POSTGRES_USER:-volley}:${POSTGRES_PASSWORD:-volley}@postgres:5432/${POSTGRES_DB:-volley}
+  REDIS_URL: redis://redis:6379
+  BOT_TOKEN: ${BOT_TOKEN:-123456:replace_with_a_real_bot_token}
+  TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-replace_with_a_random_secret}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://localhost:3000}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16-alpine
     environment:
-      POSTGRES_DB: volley
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_USER: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-volley}
+      POSTGRES_USER: ${POSTGRES_USER:-volley}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-volley}
     ports:
-      - '5432:5432'
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U postgres -d volley']
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
-      retries: 10
-      start_period: 5s
+      retries: 12
+    restart: unless-stopped
 
   redis:
-    image: redis:8
-    command: ['redis-server', '--appendonly', 'yes']
+    image: redis:8-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
-      - '6379:6379'
-    volumes:
-      - redis-data:/data
+      - "${REDIS_PORT:-6379}:6379"
     healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
-      retries: 10
-      start_period: 5s
+      retries: 12
+    restart: unless-stopped
+
+  db-migrate:
+    image: volley-bot-api
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ["migrate"]
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  api:
+    image: volley-bot-api
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ["serve"]
+    environment: *app-environment
+    ports:
+      - "${API_PORT:-3000}:3000"
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  worker:
+    image: volley-bot-worker
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    command: ["serve"]
+    environment: *app-environment
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
 
 volumes:
   postgres-data:
-  redis-data:

@@ -4,3 +4,4 @@ node_modules/
 docs/
 pnpm-lock.yaml
 README.md
+.superpowers/sdd/
