@@ -1,6 +1,7 @@
 import type {
   ChangeChargeStatus,
   FinalizeSettlement,
+  PaymentDraftRepository,
   PreviewSettlement,
   PreviewSettlementResult,
   SendPaymentReminders,
@@ -9,6 +10,8 @@ import type {
   SettlementChargeRecord,
 } from '@volley/application';
 import type { GameId, GroupId, TelegramId, UserId } from '@volley/domain';
+import type { Bot, Context } from 'grammy';
+import { toTelegramId } from '../group-onboarding.handlers.js';
 
 export interface PaymentActorResolver {
   resolve(
@@ -45,6 +48,7 @@ export class PaymentHandlers {
       SendPaymentReminders,
       'execute'
     >,
+    private readonly drafts: PaymentDraftRepository,
   ) {}
 
   public start(input: PrivatePaymentInput): PaymentView {
@@ -58,10 +62,18 @@ export class PaymentHandlers {
   public async preview(input: SettlementFlowInput): Promise<PaymentView> {
     requirePrivateChat(input.privateChat);
     const actor = await this.actors.resolve(input.gameId, input.telegramUserId);
-    const preview = await this.previewSettlement.execute(
-      toSettlementCommand(input, actor),
-    );
-    return renderPreview(preview);
+    const command = toSettlementCommand(input, actor);
+    const preview = await this.previewSettlement.execute(command);
+    const draft = await this.drafts.saveDraft({
+      groupId: command.groupId,
+      gameId: command.gameId,
+      actorUserId: command.actorUserId,
+      attendanceRevision: command.attendanceRevision,
+      totalAmount: command.totalAmount,
+      currency: command.currency,
+      roundingMode: command.roundingMode,
+    });
+    return renderPreview(preview, command.gameId, draft.id);
   }
 
   public async confirm(input: SettlementFlowInput): Promise<PaymentView> {
@@ -70,7 +82,7 @@ export class PaymentHandlers {
     const settlement = await this.finalizeSettlement.execute(
       toSettlementCommand(input, actor),
     );
-    return renderSettlement(settlement);
+    return renderSettlement(settlement, actor.gameId);
   }
 
   public async changeStatus(
@@ -102,6 +114,68 @@ export class PaymentHandlers {
       chargeIds: input.chargeIds,
     });
   }
+
+  public async handleCallback(input: {
+    telegramUserId: TelegramId;
+    privateChat: boolean;
+    data: string;
+  }): Promise<PaymentView> {
+    requirePrivateChat(input.privateChat);
+    const callback = parsePaymentCallback(input.data);
+    const actor = await this.actors.resolve(
+      callback.gameId,
+      input.telegramUserId,
+    );
+    if (actor.gameId !== callback.gameId) {
+      throw new Error('Payment actor identity mismatch');
+    }
+
+    if (callback.action === 'confirm') {
+      const draft = await this.drafts.findDraft(
+        actor.groupId,
+        callback.draftId,
+      );
+      if (
+        draft === null ||
+        draft.gameId !== actor.gameId ||
+        draft.actorUserId !== actor.userId
+      ) {
+        throw new Error('Payment preview not found');
+      }
+      const settlement = await this.finalizeSettlement.execute({
+        groupId: actor.groupId,
+        gameId: actor.gameId,
+        actorUserId: actor.userId,
+        attendanceRevision: draft.attendanceRevision,
+        totalAmount: draft.totalAmount,
+        currency: draft.currency,
+        roundingMode: draft.roundingMode,
+      });
+      await this.drafts.deleteDraft(actor.groupId, callback.draftId);
+      return renderSettlement(settlement, actor.gameId);
+    }
+    if (callback.action === 'status') {
+      const charge = await this.changeChargeStatus.execute({
+        groupId: actor.groupId,
+        chargeId: callback.chargeId,
+        actorUserId: actor.userId,
+        status: callback.status,
+      });
+      return {
+        text: `${charge.displayName}: ${formatMinor(charge.amountMinor)} RUB — ${charge.status}`,
+        buttons: [],
+      };
+    }
+    const result = await this.sendPaymentReminders.execute({
+      groupId: actor.groupId,
+      actorUserId: actor.userId,
+      chargeIds: [callback.chargeId],
+    });
+    return {
+      text: `Напоминаний поставлено в очередь: ${result.enqueued}`,
+      buttons: [],
+    };
+  }
 }
 
 const requirePrivateChat = (privateChat: boolean): void => {
@@ -132,7 +206,11 @@ const formatMinor = (amountMinor: bigint): string => {
   return `${whole}.${fraction}`;
 };
 
-const renderPreview = (preview: PreviewSettlementResult): PaymentView => ({
+const renderPreview = (
+  preview: PreviewSettlementResult,
+  gameId: GameId,
+  draftId: string,
+): PaymentView => ({
   text: [
     `Предпросмотр: ${preview.participantCount} участников`,
     ...preview.charges.map(
@@ -143,10 +221,18 @@ const renderPreview = (preview: PreviewSettlementResult): PaymentView => ({
     `Будет собрано: ${formatMinor(preview.collectedMinor)} RUB`,
     `Излишек: ${formatMinor(preview.surplusMinor)} RUB`,
   ].join('\n'),
-  buttons: [{ text: 'Подтвердить', callbackData: 'payment:confirm' }],
+  buttons: [
+    {
+      text: 'Подтвердить',
+      callbackData: paymentCallback('confirm', gameId, draftId),
+    },
+  ],
 });
 
-const renderSettlement = (settlement: Settlement): PaymentView => ({
+const renderSettlement = (
+  settlement: Settlement,
+  gameId: GameId,
+): PaymentView => ({
   text: [
     `Расчёт #${settlement.revision}`,
     ...settlement.charges.map(
@@ -157,15 +243,122 @@ const renderSettlement = (settlement: Settlement): PaymentView => ({
   buttons: settlement.charges.flatMap((charge) => [
     {
       text: 'Оплачено',
-      callbackData: `payment:status:${charge.id}:PAID`,
+      callbackData: paymentCallback('status', gameId, charge.id, 'PAID'),
     },
     {
       text: 'Не оплачено',
-      callbackData: `payment:status:${charge.id}:UNPAID`,
+      callbackData: paymentCallback('status', gameId, charge.id, 'UNPAID'),
     },
     {
       text: 'Оплата не требуется',
-      callbackData: `payment:status:${charge.id}:WAIVED`,
+      callbackData: paymentCallback('status', gameId, charge.id, 'WAIVED'),
     },
+    ...(charge.status === 'UNPAID' && !charge.addedManually
+      ? [
+          {
+            text: 'Напомнить',
+            callbackData: paymentCallback('remind', gameId, charge.id),
+          },
+        ]
+      : []),
   ]),
 });
+
+type PaymentCallback =
+  | { action: 'confirm'; gameId: GameId; draftId: string }
+  | {
+      action: 'status';
+      gameId: GameId;
+      chargeId: string;
+      status: SettlementChargeRecord['status'];
+    }
+  | { action: 'remind'; gameId: GameId; chargeId: string };
+
+const paymentCallback = (
+  action: PaymentCallback['action'],
+  gameId: GameId,
+  entityId: string,
+  status?: SettlementChargeRecord['status'],
+): string => {
+  const code =
+    action === 'confirm'
+      ? 'c'
+      : action === 'remind'
+        ? 'r'
+        : status === 'PAID'
+          ? 'p'
+          : status === 'UNPAID'
+            ? 'u'
+            : status === 'WAIVED'
+              ? 'w'
+              : null;
+  if (code === null) throw new Error('Invalid payment callback');
+  const value = `pay:${code}:${compactUuid(gameId)}:${compactUuid(entityId)}`;
+  if (Buffer.byteLength(value, 'utf8') > 64) {
+    throw new Error('Telegram callback payload exceeds 64 bytes');
+  }
+  return value;
+};
+
+const parsePaymentCallback = (value: string): PaymentCallback => {
+  const [prefix, code, compactGameId, compactEntityId, ...rest] =
+    value.split(':');
+  if (
+    prefix !== 'pay' ||
+    !['c', 'r', 'p', 'u', 'w'].includes(code ?? '') ||
+    compactGameId === undefined ||
+    compactEntityId === undefined ||
+    rest.length > 0
+  ) {
+    throw new Error('Invalid payment callback');
+  }
+  const gameId = decodeCompactUuid(compactGameId) as GameId;
+  const entityId = decodeCompactUuid(compactEntityId);
+  if (code === 'c') return { action: 'confirm', gameId, draftId: entityId };
+  if (code === 'r') return { action: 'remind', gameId, chargeId: entityId };
+  return {
+    action: 'status',
+    gameId,
+    chargeId: entityId,
+    status: code === 'p' ? 'PAID' : code === 'u' ? 'UNPAID' : 'WAIVED',
+  };
+};
+
+const compactUuid = (value: string): string => {
+  const hex = value.replaceAll('-', '');
+  if (!/^[0-9a-f]{32}$/i.test(hex)) {
+    throw new Error('Invalid payment callback id');
+  }
+  return Buffer.from(hex, 'hex').toString('base64url');
+};
+
+const decodeCompactUuid = (value: string): string => {
+  if (!/^[A-Za-z0-9_-]{22}$/.test(value)) {
+    throw new Error('Invalid payment callback');
+  }
+  const hex = Buffer.from(value, 'base64url').toString('hex');
+  if (hex.length !== 32) throw new Error('Invalid payment callback');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+
+export const registerPaymentHandlers = (
+  bot: Bot<Context>,
+  handlers: PaymentHandlers,
+): Bot<Context> => {
+  bot.callbackQuery(/^pay:/, async (context) => {
+    const view = await handlers.handleCallback({
+      telegramUserId: toTelegramId(context.callbackQuery.from.id),
+      privateChat: context.callbackQuery.message?.chat.type === 'private',
+      data: context.callbackQuery.data,
+    });
+    await context.editMessageText(view.text, {
+      reply_markup: {
+        inline_keyboard: view.buttons.map((button) => [
+          { text: button.text, callback_data: button.callbackData },
+        ]),
+      },
+    });
+    await context.answerCallbackQuery({ text: 'payment:updated' });
+  });
+  return bot;
+};

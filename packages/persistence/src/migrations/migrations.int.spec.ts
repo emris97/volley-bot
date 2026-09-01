@@ -57,6 +57,7 @@ describe('foundation migration', () => {
       'guest_registration_drafts',
       'notification_deliveries',
       'outbox_events',
+      'payment_drafts',
       'registrations',
       'scheduled_jobs',
       'settlement_charges',

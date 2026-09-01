@@ -36,7 +36,7 @@ describe('PaymentRepository', () => {
 
   beforeEach(async () => {
     await pool.query(
-      'TRUNCATE charge_status_events, settlement_charges, settlements, outbox_events, audit_events, attendance_entries, attendance_snapshots, registrations, games, group_members, groups, users CASCADE',
+      'TRUNCATE payment_drafts, charge_status_events, settlement_charges, settlements, outbox_events, audit_events, attendance_entries, attendance_snapshots, registrations, games, group_members, groups, users CASCADE',
     );
   });
 
@@ -209,7 +209,132 @@ describe('PaymentRepository', () => {
       }),
     ).rejects.toThrow(/private reminder recipient/i);
   });
+
+  it('does not change a charge after a concurrent correction wins the game lock', async () => {
+    const fixture = await insertFixture(pool);
+    const settlement = await createRevision(repository, fixture, 10000n, 5000n);
+    const charge = settlement.charges[0]!;
+    const correction = await beginSupersedingCorrection(
+      pool,
+      fixture.gameId,
+      settlement.id,
+    );
+
+    let completed = false;
+    const pending = repository
+      .changeChargeStatus({
+        groupId: fixture.groupId,
+        chargeId: charge.id,
+        actorUserId: fixture.actorUserId,
+        status: 'PAID',
+      })
+      .finally(() => {
+        completed = true;
+      });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const waitedForCorrection = !completed;
+    await correction.query('COMMIT');
+    correction.release();
+    expect(waitedForCorrection).toBe(true);
+    await expect(pending).rejects.toThrow(/charge not found/i);
+    await expect(
+      pool.query('SELECT status FROM settlement_charges WHERE id = $1', [
+        charge.id,
+      ]),
+    ).resolves.toMatchObject({ rows: [{ status: 'UNPAID' }] });
+  });
+
+  it('does not enqueue a reminder after a concurrent correction wins the game lock', async () => {
+    const fixture = await insertFixture(pool);
+    const settlement = await createRevision(repository, fixture, 10000n, 5000n);
+    const charge = settlement.charges.find(
+      (candidate) => !candidate.addedManually,
+    )!;
+    const correction = await beginSupersedingCorrection(
+      pool,
+      fixture.gameId,
+      settlement.id,
+    );
+
+    let completed = false;
+    const pending = repository
+      .enqueueReminders({
+        groupId: fixture.groupId,
+        actorUserId: fixture.actorUserId,
+        chargeIds: [charge.id],
+      })
+      .finally(() => {
+        completed = true;
+      });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const waitedForCorrection = !completed;
+    await correction.query('COMMIT');
+    correction.release();
+    expect(waitedForCorrection).toBe(true);
+    await expect(pending).rejects.toThrow(/selected unpaid charge not found/i);
+    await expect(
+      pool.query(
+        "SELECT id FROM outbox_events WHERE event_type = 'PAYMENT_REMINDER_REQUESTED'",
+      ),
+    ).resolves.toMatchObject({ rowCount: 0 });
+  });
+
+  it('persists preview callback state with tenant-scoped lookup and deletion', async () => {
+    const fixture = await insertFixture(pool);
+    const draft = await repository.saveDraft({
+      groupId: fixture.groupId,
+      gameId: fixture.gameId,
+      actorUserId: fixture.actorUserId,
+      attendanceRevision: 1,
+      totalAmount: '2800.00',
+      currency: 'RUB',
+      roundingMode: 'UP_10',
+    });
+
+    await expect(
+      repository.findDraft(fixture.otherGroupId, draft.id),
+    ).resolves.toBeNull();
+    await expect(
+      repository.findDraft(fixture.groupId, draft.id),
+    ).resolves.toMatchObject({
+      id: draft.id,
+      actorUserId: fixture.actorUserId,
+      totalAmount: '2800.00',
+      roundingMode: 'UP_10',
+    });
+
+    await repository.deleteDraft(fixture.groupId, draft.id);
+    await expect(
+      repository.findDraft(fixture.groupId, draft.id),
+    ).resolves.toBeNull();
+  });
 });
+
+const beginSupersedingCorrection = async (
+  pool: Pool,
+  gameId: ReturnType<typeof asGameId>,
+  settlementId: string,
+) => {
+  const client = await pool.connect();
+  await client.query('BEGIN');
+  await client.query('SELECT id FROM games WHERE id = $1 FOR UPDATE', [gameId]);
+  await client.query(
+    'UPDATE settlements SET superseded_at = NOW() WHERE id = $1',
+    [settlementId],
+  );
+  await client.query(
+    `INSERT INTO settlements (
+      group_id, game_id, attendance_snapshot_id, attendance_revision,
+      revision, total_minor, currency, rounding_mode, allocation_order,
+      collected_minor, surplus_minor, created_by
+    ) SELECT group_id, game_id, attendance_snapshot_id, attendance_revision,
+      revision + 1, total_minor, currency, rounding_mode, allocation_order,
+      collected_minor, surplus_minor, created_by
+    FROM settlements WHERE id = $1`,
+    [settlementId],
+  );
+  return client;
+};
 
 const createRevision = async (
   repository: PaymentRepository,

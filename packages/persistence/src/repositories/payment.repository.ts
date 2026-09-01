@@ -11,7 +11,7 @@ import {
   type RoundingMode,
   type UserId,
 } from '@volley/domain';
-import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNull } from 'drizzle-orm';
 import type { Database } from '../client.js';
 import {
   attendanceEntries,
@@ -20,12 +20,25 @@ import {
   chargeStatusEvents,
   games,
   outboxEvents,
+  paymentDrafts,
   registrations,
   settlementCharges,
   settlements,
 } from '../schema/index.js';
 
 type ChargeStatus = 'UNPAID' | 'PAID' | 'WAIVED';
+
+export interface StoredPaymentDraft {
+  id: string;
+  groupId: GroupId;
+  gameId: GameId;
+  actorUserId: UserId;
+  attendanceRevision: number;
+  totalAmount: string;
+  currency: 'RUB';
+  roundingMode: RoundingMode;
+  expiresAt: Date;
+}
 
 export interface StoredSettlementCharge {
   id: string;
@@ -75,6 +88,53 @@ interface CreateRevisionInput {
 
 export class PaymentRepository {
   public constructor(private readonly database: Database) {}
+
+  public async saveDraft(input: {
+    groupId: GroupId;
+    gameId: GameId;
+    actorUserId: UserId;
+    attendanceRevision: number;
+    totalAmount: string;
+    currency: 'RUB';
+    roundingMode: RoundingMode;
+  }): Promise<StoredPaymentDraft> {
+    const [draft] = await this.database
+      .insert(paymentDrafts)
+      .values({
+        ...input,
+        expiresAt: new Date(Date.now() + 30 * 60_000),
+      })
+      .returning();
+    if (draft === undefined)
+      throw new Error('Payment draft insert returned no row');
+    return toStoredPaymentDraft(draft);
+  }
+
+  public async findDraft(
+    groupId: GroupId,
+    draftId: string,
+  ): Promise<StoredPaymentDraft | null> {
+    const [draft] = await this.database
+      .select()
+      .from(paymentDrafts)
+      .where(
+        and(
+          eq(paymentDrafts.groupId, groupId),
+          eq(paymentDrafts.id, draftId),
+          gt(paymentDrafts.expiresAt, new Date()),
+        ),
+      )
+      .limit(1);
+    return draft === undefined ? null : toStoredPaymentDraft(draft);
+  }
+
+  public async deleteDraft(groupId: GroupId, draftId: string): Promise<void> {
+    await this.database
+      .delete(paymentDrafts)
+      .where(
+        and(eq(paymentDrafts.groupId, groupId), eq(paymentDrafts.id, draftId)),
+      );
+  }
 
   public async findFinalizedAttendance(
     groupId: GroupId,
@@ -243,8 +303,8 @@ export class PaymentRepository {
     status: ChargeStatus;
   }): Promise<StoredSettlementCharge> {
     return this.database.transaction(async (transaction) => {
-      const [charge] = await transaction
-        .select({ charge: settlementCharges })
+      const [context] = await transaction
+        .select({ gameId: settlements.gameId })
         .from(settlementCharges)
         .innerJoin(
           settlements,
@@ -255,14 +315,47 @@ export class PaymentRepository {
             eq(settlementCharges.groupId, input.groupId),
             eq(settlementCharges.id, input.chargeId),
             eq(settlements.groupId, input.groupId),
+          ),
+        )
+        .limit(1);
+      if (context === undefined) throw new Error('Charge not found');
+      await lockGame(transaction, input.groupId, asGameId(context.gameId));
+
+      const [activeSettlement] = await transaction
+        .select({ id: settlements.id })
+        .from(settlements)
+        .innerJoin(
+          settlementCharges,
+          eq(settlementCharges.settlementId, settlements.id),
+        )
+        .where(
+          and(
+            eq(settlements.groupId, input.groupId),
+            eq(settlements.gameId, context.gameId),
+            eq(settlementCharges.groupId, input.groupId),
+            eq(settlementCharges.id, input.chargeId),
             isNull(settlements.supersededAt),
           ),
         )
-        .for('update', { of: settlementCharges })
+        .for('update', { of: settlements })
+        .limit(1);
+      if (activeSettlement === undefined) throw new Error('Charge not found');
+
+      const [charge] = await transaction
+        .select()
+        .from(settlementCharges)
+        .where(
+          and(
+            eq(settlementCharges.groupId, input.groupId),
+            eq(settlementCharges.id, input.chargeId),
+            eq(settlementCharges.settlementId, activeSettlement.id),
+          ),
+        )
+        .for('update')
         .limit(1);
       if (charge === undefined) throw new Error('Charge not found');
-      if (charge.charge.status === input.status) {
-        return toStoredCharge(charge.charge);
+      if (charge.status === input.status) {
+        return toStoredCharge(charge);
       }
       const now = new Date();
       const [updated] = await transaction
@@ -279,7 +372,7 @@ export class PaymentRepository {
       await transaction.insert(chargeStatusEvents).values({
         groupId: input.groupId,
         chargeId: updated.id,
-        previousStatus: charge.charge.status,
+        previousStatus: charge.status,
         status: input.status,
         actorUserId: input.actorUserId,
         occurredAt: now,
@@ -291,7 +384,7 @@ export class PaymentRepository {
         entityType: 'SETTLEMENT_CHARGE',
         entityId: updated.id,
         payload: {
-          previousStatus: charge.charge.status,
+          previousStatus: charge.status,
           status: input.status,
         },
       });
@@ -309,6 +402,56 @@ export class PaymentRepository {
       throw new Error('Selected charges must be unique and nonempty');
     }
     return this.database.transaction(async (transaction) => {
+      const contexts = await transaction
+        .select({
+          chargeId: settlementCharges.id,
+          gameId: settlements.gameId,
+        })
+        .from(settlementCharges)
+        .innerJoin(
+          settlements,
+          eq(settlements.id, settlementCharges.settlementId),
+        )
+        .where(
+          and(
+            eq(settlementCharges.groupId, input.groupId),
+            inArray(settlementCharges.id, chargeIds),
+            eq(settlements.groupId, input.groupId),
+          ),
+        );
+      if (contexts.length !== chargeIds.length) {
+        throw new Error('Selected unpaid charge not found');
+      }
+      const gameIds = [...new Set(contexts.map((context) => context.gameId))]
+        .sort()
+        .map(asGameId);
+      for (const gameId of gameIds) {
+        await lockGame(transaction, input.groupId, gameId);
+      }
+
+      const activeSettlements = await transaction
+        .select({
+          chargeId: settlementCharges.id,
+          settlementId: settlements.id,
+        })
+        .from(settlements)
+        .innerJoin(
+          settlementCharges,
+          eq(settlementCharges.settlementId, settlements.id),
+        )
+        .where(
+          and(
+            eq(settlements.groupId, input.groupId),
+            eq(settlementCharges.groupId, input.groupId),
+            inArray(settlementCharges.id, chargeIds),
+            isNull(settlements.supersededAt),
+          ),
+        )
+        .for('update', { of: settlements });
+      if (activeSettlements.length !== chargeIds.length) {
+        throw new Error('Selected unpaid charge not found');
+      }
+
       const selected = await transaction
         .select({
           charge: settlementCharges,
@@ -490,3 +633,31 @@ const registrationIdFromParticipantRef = (value: string): string | null => {
   const prefix = 'registration:';
   return value.startsWith(prefix) ? value.slice(prefix.length) : null;
 };
+
+const lockGame = async (
+  database: Database,
+  groupId: GroupId,
+  gameId: GameId,
+): Promise<void> => {
+  const [game] = await database
+    .select({ id: games.id })
+    .from(games)
+    .where(and(eq(games.groupId, groupId), eq(games.id, gameId)))
+    .for('update')
+    .limit(1);
+  if (game === undefined) throw new Error('Game not found');
+};
+
+const toStoredPaymentDraft = (
+  draft: typeof paymentDrafts.$inferSelect,
+): StoredPaymentDraft => ({
+  id: draft.id,
+  groupId: asGroupId(draft.groupId),
+  gameId: asGameId(draft.gameId),
+  actorUserId: asUserId(draft.actorUserId),
+  attendanceRevision: draft.attendanceRevision,
+  totalAmount: draft.totalAmount,
+  currency: draft.currency,
+  roundingMode: draft.roundingMode,
+  expiresAt: draft.expiresAt,
+});

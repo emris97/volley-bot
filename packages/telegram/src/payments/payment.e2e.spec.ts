@@ -1,13 +1,28 @@
-import { expect, it } from 'vitest';
+import type { PaymentDraft, PaymentDraftRepository } from '@volley/application';
 import { asGameId, asGroupId, asTelegramId, asUserId } from '@volley/domain';
-import { PaymentHandlers } from './payment.handlers.js';
+import { expect, it, vi } from 'vitest';
+import {
+  PaymentHandlers,
+  registerPaymentHandlers,
+} from './payment.handlers.js';
 
 const groupId = asGroupId('018f6ba0-62d2-7bd1-8f13-12e0c8424611');
 const gameId = asGameId('018f6ba0-62d2-7bd1-8f13-12e0c8424610');
 const actorUserId = asUserId('018f6ba0-62d2-7bd1-8f13-12e0c8424613');
 const telegramUserId = asTelegramId('42');
+const draftId = '018f6ba0-62d2-7bd1-8f13-12e0c8424688';
 
-it('runs the private decimal preview, confirmation, controls, and selected reminder flow', async () => {
+interface TestCallbackContext {
+  callbackQuery: {
+    from: { id: number };
+    data: string;
+    message: { chat: { type: string } };
+  };
+  editMessageText: ReturnType<typeof vi.fn>;
+  answerCallbackQuery: ReturnType<typeof vi.fn>;
+}
+
+it('drives restart-safe confirmation, status, and reminder callbacks through fresh handlers', async () => {
   const finalized: unknown[] = [];
   const statuses: unknown[] = [];
   const reminders: unknown[] = [];
@@ -52,42 +67,68 @@ it('runs the private decimal preview, confirmation, controls, and selected remin
     createdBy: actorUserId,
     createdAt: new Date('2026-08-31T00:00:00Z'),
     charges: previewResult.charges.map((charge, index) => ({
-      id: `018f6ba0-62d2-7bd1-8f13-12e0c84246${index + 1}`,
+      id: [
+        '018f6ba0-62d2-7bd1-8f13-12e0c8424621',
+        '018f6ba0-62d2-7bd1-8f13-12e0c8424622',
+      ][index]!,
       settlementId: '018f6ba0-62d2-7bd1-8f13-12e0c8424690',
       ...charge,
       status: 'UNPAID' as const,
       createdAt: new Date('2026-08-31T00:00:00Z'),
     })),
   };
-  const handlers = new PaymentHandlers(
-    {
-      resolve: async () => ({ groupId, gameId, userId: actorUserId }),
+  let storedDraft: PaymentDraft | null = null;
+  const drafts: PaymentDraftRepository = {
+    saveDraft: async (input) => {
+      storedDraft = {
+        id: draftId,
+        ...input,
+        expiresAt: new Date('2026-08-31T01:00:00Z'),
+      };
+      return storedDraft;
     },
-    { execute: async () => previewResult },
-    {
-      execute: async (command) => {
-        finalized.push(command);
-        return settlement;
+    findDraft: async (requestedGroupId, requestedDraftId) =>
+      storedDraft?.groupId === requestedGroupId &&
+      storedDraft.id === requestedDraftId
+        ? storedDraft
+        : null,
+    deleteDraft: async (requestedGroupId, requestedDraftId) => {
+      if (
+        storedDraft?.groupId === requestedGroupId &&
+        storedDraft.id === requestedDraftId
+      ) {
+        storedDraft = null;
+      }
+    },
+  };
+  const createHandlers = () =>
+    new PaymentHandlers(
+      {
+        resolve: async () => ({ groupId, gameId, userId: actorUserId }),
       },
-    },
-    {
-      execute: async (command) => {
-        statuses.push(command);
-        return { ...settlement.charges[0]!, status: command.status };
+      { execute: async () => previewResult },
+      {
+        execute: async (command) => {
+          finalized.push(command);
+          return settlement;
+        },
       },
-    },
-    {
-      execute: async (command) => {
-        reminders.push(command);
-        return { enqueued: command.chargeIds.length };
+      {
+        execute: async (command) => {
+          statuses.push(command);
+          return { ...settlement.charges[1]!, status: command.status };
+        },
       },
-    },
-  );
+      {
+        execute: async (command) => {
+          reminders.push(command);
+          return { enqueued: command.chargeIds.length };
+        },
+      },
+      drafts,
+    );
 
-  expect(
-    handlers.start({ telegramUserId, gameId, privateChat: true }),
-  ).toMatchObject({ text: expect.stringMatching(/сумм.*руб/i) });
-  const preview = await handlers.preview({
+  const preview = await createHandlers().preview({
     telegramUserId,
     gameId,
     privateChat: true,
@@ -99,73 +140,161 @@ it('runs the private decimal preview, confirmation, controls, and selected remin
   expect(preview.text).toMatch(/2 участник/i);
   expect(preview.text).toMatch(/Late player/);
   expect(preview.text).toMatch(/2800\.00/);
+  const confirmData = preview.buttons.find(
+    (button) => button.text === 'Подтвердить',
+  )!.callbackData;
+  expect(Buffer.byteLength(confirmData, 'utf8')).toBeLessThanOrEqual(64);
 
-  const confirmed = await handlers.confirm({
+  const confirmed = await createHandlers().handleCallback({
     telegramUserId,
-    gameId,
     privateChat: true,
-    attendanceRevision: 1,
-    totalAmount: '2800.00',
-    currency: 'RUB',
-    roundingMode: 'EXACT',
+    data: confirmData,
   });
   expect(confirmed.buttons.map((button) => button.text)).toEqual(
-    expect.arrayContaining(['Оплачено', 'Не оплачено', 'Оплата не требуется']),
+    expect.arrayContaining([
+      'Оплачено',
+      'Не оплачено',
+      'Оплата не требуется',
+      'Напомнить',
+    ]),
   );
+  expect(
+    confirmed.buttons.every(
+      (button) => Buffer.byteLength(button.callbackData, 'utf8') <= 64,
+    ),
+  ).toBe(true);
 
-  await handlers.changeStatus({
+  const paidData = confirmed.buttons.filter(
+    (button) => button.text === 'Оплачено',
+  )[1]!.callbackData;
+  await createHandlers().handleCallback({
     telegramUserId,
-    gameId,
     privateChat: true,
-    chargeId: settlement.charges[0]!.id,
-    status: 'PAID',
+    data: paidData,
   });
-  await handlers.sendReminders({
+  const reminderData = confirmed.buttons.find(
+    (button) => button.text === 'Напомнить',
+  )!.callbackData;
+  await createHandlers().handleCallback({
     telegramUserId,
-    gameId,
     privateChat: true,
-    chargeIds: [settlement.charges[0]!.id],
+    data: reminderData,
   });
 
-  expect(finalized).toHaveLength(1);
-  expect(statuses).toHaveLength(1);
-  expect(reminders).toHaveLength(1);
-});
-
-it('rejects payment management outside a private chat', async () => {
-  const handlers = new PaymentHandlers(
-    { resolve: async () => ({ groupId, gameId, userId: actorUserId }) },
-    {
-      execute: async () => {
-        throw new Error('unused');
-      },
-    },
-    {
-      execute: async () => {
-        throw new Error('unused');
-      },
-    },
-    {
-      execute: async () => {
-        throw new Error('unused');
-      },
-    },
-    {
-      execute: async () => {
-        throw new Error('unused');
-      },
-    },
-  );
-
-  await expect(
-    handlers.preview({
-      telegramUserId,
+  expect(finalized).toEqual([
+    expect.objectContaining({
+      groupId,
       gameId,
-      privateChat: false,
+      actorUserId,
       attendanceRevision: 1,
-      totalAmount: '100',
-      currency: 'RUB',
+      totalAmount: '2800.00',
       roundingMode: 'EXACT',
     }),
-  ).rejects.toThrow(/private chat required/i);
+  ]);
+  expect(statuses).toEqual([
+    expect.objectContaining({
+      groupId,
+      actorUserId,
+      chargeId: settlement.charges[1]!.id,
+      status: 'PAID',
+    }),
+  ]);
+  expect(reminders).toEqual([
+    { groupId, actorUserId, chargeIds: [settlement.charges[0]!.id] },
+  ]);
 });
+
+it('registers payment callbacks and rejects callback updates outside a private chat', async () => {
+  const externalCalls: unknown[] = [];
+  let registered:
+    | {
+        pattern: RegExp;
+        handler: (context: TestCallbackContext) => Promise<void>;
+      }
+    | undefined;
+  const bot = {
+    callbackQuery: (
+      pattern: RegExp,
+      handler: (context: TestCallbackContext) => Promise<void>,
+    ) => {
+      registered = { pattern, handler };
+    },
+  };
+  const handlers = new PaymentHandlers(
+    {
+      resolve: async () => {
+        externalCalls.push('resolve');
+        return { groupId, gameId, userId: actorUserId };
+      },
+    },
+    {
+      execute: async () => {
+        throw new Error('unused');
+      },
+    },
+    {
+      execute: async () => {
+        throw new Error('unused');
+      },
+    },
+    {
+      execute: async () => {
+        throw new Error('unused');
+      },
+    },
+    {
+      execute: async (command) => {
+        externalCalls.push(command);
+        return { enqueued: command.chargeIds.length };
+      },
+    },
+    {
+      saveDraft: async () => {
+        throw new Error('unused');
+      },
+      findDraft: async () => {
+        throw new Error('unused');
+      },
+      deleteDraft: async () => {
+        throw new Error('unused');
+      },
+    },
+  );
+  registerPaymentHandlers(bot as never, handlers);
+  expect(registered?.pattern.test('pay:r:bad')).toBe(true);
+
+  await expect(
+    registered!.handler({
+      callbackQuery: {
+        from: { id: Number(telegramUserId) },
+        data: 'pay:r:bad',
+        message: { chat: { type: 'supergroup' } },
+      },
+      editMessageText: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+    }),
+  ).rejects.toThrow(/private chat required/i);
+  expect(externalCalls).toEqual([]);
+
+  const editMessageText = vi.fn().mockResolvedValue(undefined);
+  const answerCallbackQuery = vi.fn().mockResolvedValue(undefined);
+  const chargeId = '018f6ba0-62d2-7bd1-8f13-12e0c8424621';
+  await registered!.handler({
+    callbackQuery: {
+      from: { id: Number(telegramUserId) },
+      data: `pay:r:${compactUuid(gameId)}:${compactUuid(chargeId)}`,
+      message: { chat: { type: 'private' } },
+    },
+    editMessageText,
+    answerCallbackQuery,
+  });
+  expect(externalCalls).toEqual([
+    'resolve',
+    { groupId, actorUserId, chargeIds: [chargeId] },
+  ]);
+  expect(editMessageText).toHaveBeenCalledOnce();
+  expect(answerCallbackQuery).toHaveBeenCalledOnce();
+});
+
+const compactUuid = (value: string): string =>
+  Buffer.from(value.replaceAll('-', ''), 'hex').toString('base64url');

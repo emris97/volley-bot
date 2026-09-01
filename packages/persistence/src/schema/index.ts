@@ -7,6 +7,7 @@ export { guestRegistrationDrafts } from './guest-registration-drafts.js';
 export { outboxEvents } from './outbox.js';
 export {
   chargeStatusEvents,
+  paymentDrafts,
   settlementCharges,
   settlements,
 } from './payments.js';

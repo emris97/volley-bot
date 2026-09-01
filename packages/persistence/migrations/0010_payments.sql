@@ -1,5 +1,28 @@
 BEGIN;
 
+CREATE TABLE IF NOT EXISTS payment_drafts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  game_id UUID NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  actor_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  attendance_revision INTEGER NOT NULL,
+  total_amount TEXT NOT NULL,
+  currency TEXT NOT NULL,
+  rounding_mode TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT payment_drafts_attendance_revision_check
+    CHECK (attendance_revision > 0),
+  CONSTRAINT payment_drafts_total_amount_check
+    CHECK (total_amount ~ '^[0-9]+(\.[0-9]{1,2})?$'),
+  CONSTRAINT payment_drafts_currency_check CHECK (currency IN ('RUB')),
+  CONSTRAINT payment_drafts_rounding_mode_check
+    CHECK (rounding_mode IN ('EXACT', 'UP_1', 'UP_10', 'UP_50'))
+);
+
+CREATE INDEX IF NOT EXISTS payment_drafts_group_expires_idx
+  ON payment_drafts(group_id, expires_at);
+
 CREATE TABLE IF NOT EXISTS settlements (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   group_id UUID NOT NULL REFERENCES groups(id) ON DELETE RESTRICT,

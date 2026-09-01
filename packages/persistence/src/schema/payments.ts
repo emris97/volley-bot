@@ -18,6 +18,52 @@ import { games } from './games.js';
 import { groups } from './groups.js';
 import { users } from './users.js';
 
+export const paymentDrafts = pgTable(
+  'payment_drafts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    groupId: uuid('group_id')
+      .notNull()
+      .references(() => groups.id, { onDelete: 'cascade' }),
+    gameId: uuid('game_id')
+      .notNull()
+      .references(() => games.id, { onDelete: 'cascade' }),
+    actorUserId: uuid('actor_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    attendanceRevision: integer('attendance_revision').notNull(),
+    totalAmount: text('total_amount').notNull(),
+    currency: text('currency').$type<'RUB'>().notNull(),
+    roundingMode: text('rounding_mode').$type<RoundingMode>().notNull(),
+    expiresAt: timestamp('expires_at', {
+      mode: 'date',
+      withTimezone: true,
+    }).notNull(),
+    createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index('payment_drafts_group_expires_idx').on(
+      table.groupId,
+      table.expiresAt,
+    ),
+    check(
+      'payment_drafts_attendance_revision_check',
+      sql`${table.attendanceRevision} > 0`,
+    ),
+    check(
+      'payment_drafts_total_amount_check',
+      sql`${table.totalAmount} ~ '^[0-9]+(\\.[0-9]{1,2})?$'`,
+    ),
+    check('payment_drafts_currency_check', sql`${table.currency} in ('RUB')`),
+    check(
+      'payment_drafts_rounding_mode_check',
+      sql`${table.roundingMode} in ('EXACT', 'UP_1', 'UP_10', 'UP_50')`,
+    ),
+  ],
+);
+
 export const settlements = pgTable(
   'settlements',
   {
