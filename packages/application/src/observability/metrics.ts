@@ -91,6 +91,12 @@ export class MetricsRegistry {
   }
 }
 
+export const isTransactionConflictError = (error: unknown): boolean => {
+  if (typeof error !== 'object' || error === null) return false;
+  const code = (error as { code?: unknown }).code;
+  return code === '40001' || code === '40P01';
+};
+
 const createHistogram = (): HistogramState => ({
   count: 0,
   sum: 0,

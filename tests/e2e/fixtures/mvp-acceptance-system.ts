@@ -10,18 +10,21 @@ import {
   ConfirmAttendance,
   CreateGame,
   CreateTemplate,
-  ExpireTentative,
   FinalizeSettlement,
   GetGame,
   OnboardGroup,
+  OutboxDispatcher,
   ReconcileGameJobs,
   RegisterGuest,
   RegisterParticipant,
+  type RequiredJob,
+  type TelegramGateway,
   WithdrawRegistration,
   type ConfigurationLinkFactory,
 } from '@volley/application';
 import {
   asGameId,
+  asRegistrationId,
   asTelegramId,
   type AttendanceSnapshot,
   type Game,
@@ -38,8 +41,10 @@ import {
   createDatabase,
   GameMessageRepository,
   GameRepository,
+  GuestRegistrationDraftRepository,
   GroupRepository,
   NotificationRepository,
+  OutboxRepository,
   PaymentRepository,
   RegistrationRepository,
   ScheduledJobRepository,
@@ -47,10 +52,19 @@ import {
   type Database,
 } from '@volley/persistence';
 import {
+  AttendanceHandlers,
+  CallbackCodec,
+  createLazyTelegramUpdateHandler,
+  createTelegramBot,
   GameMessageUpdater,
+  GroupOnboardingHandlers,
+  GuestFlowHandlers,
   NotificationSender,
+  RegistrationHandlers,
   renderGameMessage,
-  tentativeCallback,
+  SignedStartToken,
+  TelegramMembershipResolver,
+  WebhookController,
   type RenderedTelegramMessage,
 } from '@volley/telegram';
 import {
@@ -59,7 +73,16 @@ import {
   Wait,
 } from 'testcontainers';
 import { AppModule } from '../../../apps/api/src/app.module.js';
-import { BullMqDelayedJobScheduler } from '../../../apps/worker/src/scheduling/game-scheduler.consumer.js';
+import { NotificationConsumer } from '../../../apps/worker/src/notifications/notification.consumer.js';
+import { BullMqJobPublisher } from '../../../apps/worker/src/outbox/outbox.consumer.js';
+import {
+  BullMqDelayedJobScheduler,
+  GameSchedulerConsumer,
+} from '../../../apps/worker/src/scheduling/game-scheduler.consumer.js';
+import {
+  OutboxEventRouter,
+  WaitlistPromotionConsumer,
+} from '../../../apps/worker/src/telegram/game-message.consumer.js';
 import { applyTestMigrations } from '../../../packages/persistence/src/migrations/migration-test-helper.js';
 import { FakeTelegramGateway } from './telegram-gateway.fake.js';
 
@@ -81,8 +104,17 @@ interface PoolLike {
   end(): Promise<void>;
 }
 
+interface QueueJobLike {
+  id?: string;
+  name: string;
+  data: Record<string, unknown>;
+  attemptsMade: number;
+}
+
 interface QueueLike {
   close(): Promise<void>;
+  count(): Promise<number>;
+  getJob(id: string): Promise<QueueJobLike | undefined>;
   getJobCounts(...types: string[]): Promise<Record<string, number>>;
 }
 
@@ -131,7 +163,25 @@ const { FastifyAdapter } = apiRequire('@nestjs/platform-fastify') as {
 };
 
 const BOT_TOKEN = '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcd';
+const WEBHOOK_SECRET = 'acceptance-webhook-secret';
+const START_TOKEN_SECRET =
+  'acceptance-start-token-secret-with-at-least-thirty-two-bytes';
 const STARTS_AT = new Date('2026-09-10T16:00:00.000Z');
+const BOT_INFO = {
+  id: 999,
+  is_bot: true,
+  first_name: 'Volley',
+  username: 'volley_test_bot',
+  can_join_groups: true,
+  can_read_all_group_messages: false,
+  supports_inline_queries: false,
+  can_connect_to_business: false,
+  has_main_web_app: false,
+  has_topics_enabled: false,
+  allows_users_to_create_topics: false,
+  can_manage_bots: false,
+  supports_join_request_queries: false,
+} as const;
 
 export interface AcceptanceGroup extends Group {
   ownerUserId: UserId;
@@ -208,6 +258,8 @@ const gameIdFromMessage = (message: RenderedTelegramMessage): GameId => {
 
 export class MvpAcceptanceSystem {
   public readonly telegram = new FakeTelegramGateway();
+  private readonly registrationResponses: string[] = [];
+  private readonly updateIdsByIdempotencyKey = new Map<string, number>();
 
   private readonly canonicalTelegram = new CanonicalTelegramGateway();
   private readonly groups: GroupRepository;
@@ -225,16 +277,23 @@ export class MvpAcceptanceSystem {
   private readonly registerGuestUseCase: RegisterGuest;
   private readonly withdrawRegistration: WithdrawRegistration;
   private readonly changeRegistrationOrder: ChangeRegistrationOrder;
-  private readonly confirmAttendance: ConfirmAttendance;
   private readonly finalizeSettlementUseCase: FinalizeSettlement;
   private readonly changeChargeStatus: ChangeChargeStatus;
-  private readonly expireTentativeUseCase: ExpireTentative;
   private readonly messageRepository: GameMessageRepository;
   private readonly reconciler: ReconcileGameJobs;
   private readonly sender: NotificationSender;
+  private readonly signer: SignedStartToken;
+  private readonly webhook: WebhookController;
+  private readonly registrationHandlers: RegistrationHandlers;
+  private readonly guestFlowHandlers: GuestFlowHandlers;
+  private readonly scheduledNotifications: GameSchedulerConsumer;
+  private readonly outboxDispatcher: OutboxDispatcher;
+  private readonly outboxRouter: OutboxEventRouter;
+  private readonly waitlistPromotions: WaitlistPromotionConsumer;
   private apiApp?: ProductionAppLike;
   private previousApiEnv?: NodeJS.ProcessEnv;
   private groupSequence = 20_000;
+  private updateSequence = 1;
 
   private constructor(
     private readonly postgres: StartedTestContainer,
@@ -243,6 +302,9 @@ export class MvpAcceptanceSystem {
     private readonly database: Database,
     private readonly redis: RedisLike,
     private readonly queue: QueueLike,
+    private readonly outboxQueue: QueueLike,
+    private readonly canonicalQueue: QueueLike,
+    private readonly notificationQueue: QueueLike,
     private readonly databaseUrl: string,
     private readonly redisUrl: string,
   ) {
@@ -280,10 +342,6 @@ export class MvpAcceptanceSystem {
       this.authorization,
       this.registrations,
     );
-    this.confirmAttendance = new ConfirmAttendance(
-      this.authorization,
-      this.attendance,
-    );
     this.finalizeSettlementUseCase = new FinalizeSettlement(
       this.authorization,
       this.payments,
@@ -292,13 +350,84 @@ export class MvpAcceptanceSystem {
       this.authorization,
       this.payments,
     );
-    this.expireTentativeUseCase = new ExpireTentative(this.registrations);
     this.messageRepository = new GameMessageRepository(database, pool as never);
     this.reconciler = new ReconcileGameJobs(
       new ScheduledJobRepository(database),
       new BullMqDelayedJobScheduler(queue as never),
     );
     this.sender = new NotificationSender(this.telegram, this.notifications);
+    this.signer = new SignedStartToken(START_TOKEN_SECRET);
+    const telegramGateway: TelegramGateway = {
+      getChatMember: (chatId, telegramUserId) =>
+        this.telegram.getChatMember(chatId, telegramUserId),
+      sendMessage: async (chatId, message) => {
+        if (chatId.startsWith('-')) {
+          await this.telegram.sendGroupMessage(chatId, message);
+        } else {
+          await this.telegram.sendPrivate(chatId, message, []);
+        }
+        return { messageId: BigInt(this.updateSequence) };
+      },
+    };
+    const links: ConfigurationLinkFactory = {
+      create: ({ groupId, administratorTelegramId }) => {
+        const token = this.signer.sign({
+          purpose: 'configure-group',
+          groupId,
+          administratorTelegramId,
+          expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+        });
+        return `https://t.me/${BOT_INFO.username}?start=${token}`;
+      },
+    };
+    const onboardingHandlers = new GroupOnboardingHandlers(
+      new OnboardGroup(telegramGateway, this.groups, links),
+      new ConfigureGroup(this.authorization, this.groups),
+      this.authorization,
+      this.groups,
+      this.signer,
+      telegramGateway,
+    );
+    this.webhook = new WebhookController(
+      createLazyTelegramUpdateHandler(
+        createTelegramBot(BOT_TOKEN, BOT_INFO as never, onboardingHandlers),
+      ),
+      WEBHOOK_SECRET,
+    );
+    this.registrationHandlers = new RegistrationHandlers(
+      new CallbackCodec(),
+      this.registrations,
+      new RegisterParticipant(
+        new TelegramMembershipResolver(telegramGateway, this.groups),
+        this.registrations,
+      ),
+      this.withdrawRegistration,
+    );
+    this.guestFlowHandlers = new GuestFlowHandlers(
+      this.signer,
+      new GuestRegistrationDraftRepository(database),
+      this.registrations,
+      this.registerGuestUseCase,
+    );
+    const notificationConsumer = new NotificationConsumer(
+      this.notifications,
+      this.sender,
+      this.registrations,
+    );
+    this.scheduledNotifications = new GameSchedulerConsumer(this.games, (job) =>
+      notificationConsumer.process(job),
+    );
+    this.outboxDispatcher = new OutboxDispatcher(
+      new OutboxRepository(database),
+      new BullMqJobPublisher(outboxQueue as never),
+    );
+    this.outboxRouter = new OutboxEventRouter(
+      canonicalQueue as never,
+      notificationQueue as never,
+    );
+    this.waitlistPromotions = new WaitlistPromotionConsumer(
+      notificationConsumer,
+    );
   }
 
   public static async start(): Promise<MvpAcceptanceSystem> {
@@ -331,11 +460,16 @@ export class MvpAcceptanceSystem {
       lazyConnect: false,
       maxRetriesPerRequest: null,
     });
-    const queue = new Queue(`mvp-acceptance-${Date.now()}`, {
-      connection: {
-        host: redisContainer.getHost(),
-        port: redisContainer.getMappedPort(6379),
-      },
+    const queueBase = `mvp-acceptance-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const connection = {
+      host: redisContainer.getHost(),
+      port: redisContainer.getMappedPort(6379),
+    };
+    const queue = new Queue(`${queueBase}-scheduler`, { connection });
+    const outboxQueue = new Queue(`${queueBase}-outbox`, { connection });
+    const canonicalQueue = new Queue(`${queueBase}-canonical`, { connection });
+    const notificationQueue = new Queue(`${queueBase}-notifications`, {
+      connection,
     });
     return new MvpAcceptanceSystem(
       postgres,
@@ -344,6 +478,9 @@ export class MvpAcceptanceSystem {
       database,
       redis,
       queue,
+      outboxQueue,
+      canonicalQueue,
+      notificationQueue,
       databaseUrl,
       redisUrl,
     );
@@ -354,6 +491,9 @@ export class MvpAcceptanceSystem {
     await this.redis.flushall();
     await this.pool.query('TRUNCATE groups, users CASCADE');
     this.telegram.clear();
+    this.registrationResponses.length = 0;
+    this.updateIdsByIdempotencyKey.clear();
+    this.updateSequence = 1;
     this.canonicalTelegram.clear();
   }
 
@@ -361,6 +501,9 @@ export class MvpAcceptanceSystem {
     await this.closeApi();
     await Promise.allSettled([
       this.queue.close(),
+      this.outboxQueue.close(),
+      this.canonicalQueue.close(),
+      this.notificationQueue.close(),
       this.redis.quit(),
       this.pool.end(),
     ]);
@@ -375,45 +518,55 @@ export class MvpAcceptanceSystem {
     administratorTelegramId: string;
     timeZone: string;
   }): Promise<AcceptanceGroup> {
-    const links: ConfigurationLinkFactory = {
-      create: ({ groupId }) => `https://t.me/volley_test_bot?start=${groupId}`,
-    };
-    const onboarding = await new OnboardGroup(
-      this.telegram,
-      this.groups,
-      links,
-    ).execute({
-      telegramChatId: asTelegramId(input.telegramChatId),
-      telegramUserId: asTelegramId(input.administratorTelegramId),
-      title: `Group ${input.telegramChatId}`,
-    });
-    await new ConfigureGroup(this.authorization, this.groups).execute({
-      groupId: onboarding.groupId,
-      actorTelegramId: asTelegramId(input.administratorTelegramId),
-      timeZone: input.timeZone,
-      memberPriorityEnabled: true,
-      tentativePromptMinutesBefore: 1_440,
-      tentativeResponseMinutes: 60,
-      reminderMinutesBefore: 120,
-      currency: 'RUB',
-      roundingMode: 'EXACT',
-      pinGameMessages: true,
-    });
+    await this.webhook.handle(
+      WEBHOOK_SECRET,
+      membershipUpdate(
+        this.nextUpdateId(),
+        input.telegramChatId,
+        input.administratorTelegramId,
+      ) as never,
+    );
+    const started = await this.groups.findByTelegramChatId(
+      asTelegramId(input.telegramChatId),
+    );
+    if (started === null) throw new Error('Onboarded group missing');
+    const startLink = this.telegram.groupMessages.at(-1)?.text;
+    const token = startLink?.split('?start=')[1];
+    if (token === undefined) throw new Error('Onboarding start token missing');
+    await this.webhook.handle(
+      WEBHOOK_SECRET,
+      startUpdate(
+        this.nextUpdateId(),
+        input.administratorTelegramId,
+        token,
+      ) as never,
+    );
+    for (const [code, value] of [
+      ['tz', input.timeZone],
+      ['mp', '1'],
+      ['tp', '1440'],
+      ['tr', '60'],
+      ['rm', '120'],
+      ['ro', 'EXACT'],
+      ['pin', '1'],
+    ] as const) {
+      await this.webhook.handle(
+        WEBHOOK_SECRET,
+        onboardingCallbackUpdate(
+          this.nextUpdateId(),
+          input.administratorTelegramId,
+          started.id,
+          code,
+          value,
+        ) as never,
+      );
+    }
     const membership = await this.groups.findMembership(
-      onboarding.groupId,
+      started.id,
       asTelegramId(input.administratorTelegramId),
     );
     if (membership === null) throw new Error('Owner membership missing');
-    await this.telegram.sendGroupMessage(
-      asTelegramId(input.telegramChatId),
-      'onboarding:configured',
-    );
-    await this.telegram.sendPrivate(
-      asTelegramId(input.administratorTelegramId),
-      'onboarding:complete',
-      [],
-    );
-    const group = await this.groups.findById(onboarding.groupId);
+    const group = await this.groups.findById(started.id);
     if (group === null) throw new Error('Configured group missing');
     return { ...group, ownerUserId: membership.userId };
   }
@@ -525,14 +678,13 @@ export class MvpAcceptanceSystem {
       'UPDATE users SET display_name = $1, dm_available_at = NOW() WHERE id = $2',
       [`Player ${telegramId}`, membership.userId],
     );
-    const result = await this.registerParticipant.execute({
-      groupId: fixture.groupId,
-      gameId: fixture.game.id!,
-      userId: membership.userId,
-      intent: 'CONFIRMED',
+    return this.registerViaCallback(
+      fixture,
+      telegramId,
+      membership.userId,
       idempotencyKey,
-    });
-    return { ...result, userId: membership.userId };
+      'GOING',
+    );
   }
 
   public async registerGuest(
@@ -541,14 +693,40 @@ export class MvpAcceptanceSystem {
     guestDisplayName: string,
     idempotencyKey: string,
   ): Promise<AcceptanceRegistration> {
-    const result = await this.registerGuestUseCase.execute({
-      groupId: fixture.groupId,
+    const inviterTelegramId = await this.telegramIdForUser(inviterUserId);
+    const token = this.signer.sign({
+      purpose: 'add-guest',
       gameId: fixture.game.id!,
-      inviterUserId,
-      guestDisplayName,
-      idempotencyKey,
+      inviterTelegramId,
+      expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
     });
-    return { ...result, userId: inviterUserId };
+    await this.guestFlowHandlers.handleStart({
+      telegramUserId: inviterTelegramId,
+      token,
+    });
+    const updateId = this.updateIdFor(idempotencyKey);
+    await this.guestFlowHandlers.handleName({
+      telegramUserId: inviterTelegramId,
+      text: guestDisplayName,
+      updateId,
+    });
+    const result = await this.pool.query<{
+      id: string;
+      state: RegistrationState;
+    }>(
+      `SELECT id, state
+       FROM registrations
+       WHERE idempotency_key = $1`,
+      [`guest-name:${updateId}`],
+    );
+    const registration = result.rows[0];
+    if (registration === undefined)
+      throw new Error('Guest registration missing');
+    return {
+      registrationId: asRegistrationId(registration.id),
+      state: registration.state,
+      userId: inviterUserId,
+    };
   }
 
   public async registerTentative(
@@ -565,27 +743,35 @@ export class MvpAcceptanceSystem {
       'UPDATE users SET display_name = $1, dm_available_at = NOW() WHERE id = $2',
       [`Player ${telegramId}`, membership.userId],
     );
-    const result = await this.registerParticipant.execute({
-      groupId: fixture.groupId,
-      gameId: fixture.game.id!,
-      userId: membership.userId,
-      intent: 'TENTATIVE',
+    return this.registerViaCallback(
+      fixture,
+      telegramId,
+      membership.userId,
       idempotencyKey,
-    });
-    return { ...result, userId: membership.userId };
+      'TENTATIVE',
+    );
   }
 
-  public withdraw(
+  public async withdraw(
     fixture: AcceptanceFixture,
     registrationId: RegistrationId,
     actorUserId: UserId,
-  ) {
-    return this.withdrawRegistration.execute({
-      groupId: fixture.groupId,
-      gameId: fixture.game.id!,
-      registrationId,
-      actorUserId,
+  ): Promise<string> {
+    const actorTelegramId = await this.telegramIdForUser(actorUserId);
+    const actor = await this.registrations.resolve(
+      fixture.game.id!,
+      actorTelegramId,
+    );
+    if (actor.activeRegistrationId !== registrationId) {
+      throw new Error('Withdrawal registration does not belong to actor');
+    }
+    const response = await this.registrationHandlers.handleCallback({
+      telegramUserId: actorTelegramId,
+      updateId: this.nextUpdateId(),
+      data: new CallbackCodec().withdraw(fixture.game.id!),
     });
+    this.registrationResponses.push(response);
+    return response;
   }
 
   public async registrationState(
@@ -597,6 +783,47 @@ export class MvpAcceptanceSystem {
     );
     if (result.rows[0] === undefined) throw new Error('Registration missing');
     return result.rows[0].state;
+  }
+
+  public handledRegistrationResponses(): readonly string[] {
+    return this.registrationResponses;
+  }
+
+  public async notificationWasDelivered(
+    deterministicJobId: string,
+    registrationId: RegistrationId,
+  ): Promise<boolean> {
+    const result = await this.pool.query<{ delivered: boolean }>(
+      `SELECT delivered_at IS NOT NULL AS delivered
+       FROM notification_deliveries
+       WHERE deterministic_job_id = $1 AND registration_id = $2`,
+      [deterministicJobId, registrationId],
+    );
+    return result.rows[0]?.delivered ?? false;
+  }
+
+  public async waitlistPromotionReachedDelivery(
+    registrationId: RegistrationId,
+  ): Promise<boolean> {
+    const result = await this.pool.query<{ delivered: boolean }>(
+      `SELECT delivery.delivered_at IS NOT NULL AS delivered
+       FROM notification_deliveries AS delivery
+       JOIN outbox_events AS event
+         ON delivery.deterministic_job_id = 'outbox:' || event.id::text || ':notification'
+       WHERE event.event_type = 'WAITLIST_PROMOTED'
+         AND event.payload ->> 'registrationId' = $1
+         AND event.published_at IS NOT NULL`,
+      [registrationId],
+    );
+    return result.rows[0]?.delivered ?? false;
+  }
+
+  public async attendanceSnapshotCount(gameId: GameId): Promise<number> {
+    const result = await this.pool.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM attendance_snapshots WHERE game_id = $1',
+      [gameId],
+    );
+    return Number(result.rows[0]?.count ?? 0);
   }
 
   public async registrationCounts(gameId: GameId): Promise<{
@@ -652,71 +879,69 @@ export class MvpAcceptanceSystem {
     fixture: AcceptanceFixture,
     registration: AcceptanceRegistration,
   ): Promise<void> {
+    if (
+      (await this.registrationState(registration.registrationId)) !==
+      'TENTATIVE'
+    ) {
+      throw new Error('Tentative recipient is not active');
+    }
     await this.reconcileGameJobs(fixture);
-    const recipients = await this.notifications.listTentative(
-      fixture.groupId,
-      fixture.game.id!,
-      fixture.game.scheduleRevision,
+    const job = await this.requiredScheduledJob(
+      `REQUEST_TENTATIVE_CONFIRMATION:${fixture.game.id}:${fixture.game.scheduleRevision}`,
     );
-    const recipient = recipients.find(
-      (item) => item.registrationId === registration.registrationId,
-    );
-    if (recipient === undefined) throw new Error('Tentative recipient missing');
-    await this.sender.send({
-      notificationType: 'TENTATIVE_CONFIRMATION',
-      groupId: fixture.groupId,
-      gameId: fixture.game.id!,
-      groupChatId: recipient.groupChatId,
-      recipient,
-      text: 'Подтвердите участие в игре',
-      buttons: [
-        {
-          text: 'Подтверждаю',
-          callbackData: tentativeCallback(
-            registration.registrationId,
-            0,
-            'confirm',
-          ),
-        },
-        {
-          text: 'Снимаюсь',
-          callbackData: tentativeCallback(
-            registration.registrationId,
-            0,
-            'withdraw',
-          ),
-        },
-      ],
-    });
+    await this.scheduledNotifications.process(job);
   }
 
-  public expireTentative(
+  public async expireTentative(
     fixture: AcceptanceFixture,
     registrationId: RegistrationId,
-  ) {
-    return this.expireTentativeUseCase.execute({
-      groupId: fixture.groupId,
-      gameId: fixture.game.id!,
-      registrationId,
-      expectedConfirmationRevision: 0,
-    });
+  ): Promise<void> {
+    const job = await this.requiredScheduledJob(
+      `EXPIRE_TENTATIVE:${fixture.game.id}:${fixture.game.scheduleRevision}`,
+    );
+    await this.scheduledNotifications.process(job);
+    if ((await this.registrationState(registrationId)) !== 'CANCELLED') {
+      throw new Error('Scheduled tentative expiry did not cancel registration');
+    }
   }
 
   public async deliverWaitlistPromotion(
     registrationId: RegistrationId,
   ): Promise<void> {
-    const recipient =
-      await this.notifications.findByRegistration(registrationId);
-    if (recipient === null) throw new Error('Promoted recipient missing');
-    await this.sender.send({
-      notificationType: 'WAITLIST_PROMOTED',
-      groupId: recipient.groupId,
-      gameId: recipient.gameId,
-      groupChatId: recipient.groupChatId,
-      recipient,
-      text: 'Вы перешли из листа ожидания в основной состав',
-      buttons: [],
-    });
+    const eventResult = await this.pool.query<{ id: string }>(
+      `SELECT id
+       FROM outbox_events
+       WHERE event_type = 'WAITLIST_PROMOTED'
+         AND payload ->> 'registrationId' = $1
+       ORDER BY occurred_at DESC, id DESC
+       LIMIT 1`,
+      [registrationId],
+    );
+    const eventId = eventResult.rows[0]?.id;
+    if (eventId === undefined)
+      throw new Error('Promotion outbox event missing');
+    await this.outboxDispatcher.dispatchOnce();
+    const parentJobId = `outbox:${eventId}:event`;
+    const parentJob = await this.outboxQueue.getJob(parentJobId);
+    if (parentJob === undefined)
+      throw new Error('Promotion router job missing');
+    await this.outboxRouter.process(
+      parentJob.name,
+      parentJob.data,
+      parentJobId,
+      parentJob.attemptsMade,
+    );
+    const notificationJobId = `outbox:${eventId}:notification`;
+    const notificationJob =
+      await this.notificationQueue.getJob(notificationJobId);
+    if (notificationJob === undefined) {
+      throw new Error('Promotion notification job missing');
+    }
+    await this.waitlistPromotions.process(
+      notificationJob.data,
+      notificationJobId,
+      notificationJob.attemptsMade,
+    );
   }
 
   public createCanonicalMessageUpdater(): GameMessageUpdater {
@@ -773,19 +998,48 @@ export class MvpAcceptanceSystem {
     return { groupId: group.id, organizerUserId: group.ownerUserId, game };
   }
 
-  public confirmAttendanceWithManualParticipant(
+  public async confirmAttendanceWithManualParticipant(
     fixture: AcceptanceFixture,
     displayName: string,
   ): Promise<AttendanceSnapshot> {
-    return this.confirmAttendance.execute({
-      groupId: fixture.groupId,
+    const organizerTelegramId = await this.telegramIdForUser(
+      fixture.organizerUserId,
+    );
+    const preview = await this.createFreshAttendanceHandlers().start({
+      telegramUserId: organizerTelegramId,
       gameId: fixture.game.id!,
-      actorUserId: fixture.organizerUserId,
-      expectedRevision: 0,
-      excludedRegistrationIds: [],
-      manualParticipants: [{ displayName, billable: true }],
-      finalize: true,
     });
+    const addButton = preview.buttons.find(
+      (button) => button.text === 'Добавить участника',
+    );
+    if (addButton === undefined)
+      throw new Error('Attendance add button missing');
+    const prompt = await this.createFreshAttendanceHandlers().handleCallback({
+      telegramUserId: organizerTelegramId,
+      data: addButton.callbackData,
+    });
+    if (prompt.manualParticipantPrompt === undefined) {
+      throw new Error('Manual attendance prompt missing');
+    }
+    const withManual =
+      await this.createFreshAttendanceHandlers().addManualParticipant({
+        telegramUserId: organizerTelegramId,
+        token: prompt.manualParticipantPrompt.token,
+        displayName,
+      });
+    const confirmButton = withManual.buttons.find(
+      (button) => button.text === 'Confirm attendance',
+    );
+    if (confirmButton === undefined) {
+      throw new Error('Attendance confirmation button missing');
+    }
+    const finalized = await this.createFreshAttendanceHandlers().handleCallback(
+      {
+        telegramUserId: organizerTelegramId,
+        data: confirmButton.callbackData,
+      },
+    );
+    return finalized.snapshot;
   }
 
   public finalizeSettlement(
@@ -870,6 +1124,88 @@ export class MvpAcceptanceSystem {
       .statusCode;
   }
 
+  private async registerViaCallback(
+    fixture: AcceptanceFixture,
+    telegramId: string,
+    userId: UserId,
+    idempotencyKey: string,
+    action: 'GOING' | 'TENTATIVE',
+  ): Promise<AcceptanceRegistration> {
+    const codec = new CallbackCodec();
+    const response = await this.registrationHandlers.handleCallback({
+      telegramUserId: asTelegramId(telegramId),
+      updateId: this.updateIdFor(idempotencyKey),
+      data:
+        action === 'GOING'
+          ? codec.going(fixture.game.id!)
+          : codec.tentative(fixture.game.id!),
+    });
+    this.registrationResponses.push(response);
+    const actor = await this.registrations.resolve(
+      fixture.game.id!,
+      asTelegramId(telegramId),
+    );
+    if (actor.activeRegistrationId === null) {
+      throw new Error('Registration handler did not persist an active record');
+    }
+    return {
+      registrationId: actor.activeRegistrationId,
+      state: await this.registrationState(actor.activeRegistrationId),
+      userId,
+    };
+  }
+
+  private async telegramIdForUser(userId: UserId) {
+    const result = await this.pool.query<{ telegram_user_id: string }>(
+      `SELECT telegram_user_id::text AS telegram_user_id
+       FROM users
+       WHERE id = $1`,
+      [userId],
+    );
+    const telegramId = result.rows[0]?.telegram_user_id;
+    if (telegramId === undefined) throw new Error('Telegram identity missing');
+    return asTelegramId(telegramId);
+  }
+
+  private async requiredScheduledJob(id: string): Promise<RequiredJob> {
+    const queued = await this.queue.getJob(id);
+    if (queued === undefined) throw new Error(`Scheduled job ${id} missing`);
+    return {
+      ...queued.data,
+      runAt: new Date(String(queued.data.runAt)),
+    } as unknown as RequiredJob;
+  }
+
+  private createFreshAttendanceHandlers(): AttendanceHandlers {
+    const groups = new GroupRepository(this.database);
+    const authorization = new AuthorizationService({
+      findMembership: (groupId, userId) =>
+        groups.findMembershipByUserId(groupId, userId),
+      findMembershipByTelegramUserId: (groupId, telegramUserId) =>
+        groups.findMembership(groupId, telegramUserId),
+    });
+    const attendance = new AttendanceRepository(this.database);
+    return new AttendanceHandlers(
+      new RegistrationRepository(this.database),
+      new ConfirmAttendance(authorization, attendance),
+      attendance,
+    );
+  }
+
+  private updateIdFor(idempotencyKey: string): number {
+    const existing = this.updateIdsByIdempotencyKey.get(idempotencyKey);
+    if (existing !== undefined) return existing;
+    const updateId = this.nextUpdateId();
+    this.updateIdsByIdempotencyKey.set(idempotencyKey, updateId);
+    return updateId;
+  }
+
+  private nextUpdateId(): number {
+    const updateId = this.updateSequence;
+    this.updateSequence += 1;
+    return updateId;
+  }
+
   private async ensureApi(): Promise<void> {
     if (this.apiApp !== undefined) return;
     this.previousApiEnv = { ...process.env };
@@ -916,6 +1252,83 @@ export class MvpAcceptanceSystem {
     }
   }
 }
+
+const membershipUpdate = (
+  updateId: number,
+  groupChatId: string,
+  administratorTelegramId: string,
+) => ({
+  update_id: updateId,
+  my_chat_member: {
+    chat: {
+      id: Number(groupChatId),
+      type: 'supergroup' as const,
+      title: `Group ${groupChatId}`,
+    },
+    from: {
+      id: Number(administratorTelegramId),
+      is_bot: false,
+      first_name: 'Admin',
+    },
+    date: Math.floor(Date.now() / 1_000),
+    old_chat_member: { user: BOT_INFO, status: 'left' as const },
+    new_chat_member: { user: BOT_INFO, status: 'member' as const },
+  },
+});
+
+const startUpdate = (
+  updateId: number,
+  administratorTelegramId: string,
+  token: string,
+) => ({
+  update_id: updateId,
+  message: {
+    message_id: updateId,
+    date: Math.floor(Date.now() / 1_000),
+    chat: {
+      id: Number(administratorTelegramId),
+      type: 'private' as const,
+      first_name: 'Admin',
+    },
+    from: {
+      id: Number(administratorTelegramId),
+      is_bot: false,
+      first_name: 'Admin',
+    },
+    text: `/start ${token}`,
+    entities: [{ offset: 0, length: 6, type: 'bot_command' as const }],
+  },
+});
+
+const onboardingCallbackUpdate = (
+  updateId: number,
+  administratorTelegramId: string,
+  groupId: GroupId,
+  code: string,
+  value: string,
+) => ({
+  update_id: updateId,
+  callback_query: {
+    id: String(updateId),
+    chat_instance: 'acceptance',
+    from: {
+      id: Number(administratorTelegramId),
+      is_bot: false,
+      first_name: 'Admin',
+    },
+    data: `cfg:${groupId}:${code}:${value}`,
+    message: {
+      message_id: updateId,
+      date: Math.floor(Date.now() / 1_000),
+      chat: {
+        id: Number(administratorTelegramId),
+        type: 'private' as const,
+        first_name: 'Admin',
+      },
+      text: 'configuration',
+    },
+  },
+});
 
 const templateSettings = (name: string, capacity: number) => ({
   name,

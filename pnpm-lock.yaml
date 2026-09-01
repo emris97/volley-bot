@@ -117,6 +117,9 @@ importers:
       '@nestjs/core':
         specifier: 11.1.28
         version: 11.1.28(@nestjs/common@11.1.28(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@8.1.1))(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      '@nestjs/platform-fastify':
+        specifier: 11.1.28
+        version: 11.1.28(@nestjs/common@11.1.28(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@8.1.1))(@nestjs/core@11.1.28(@nestjs/common@11.1.28(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@8.1.1))(reflect-metadata@0.2.2)(rxjs@7.8.2))
       '@volley/application':
         specifier: workspace:*
         version: link:../../packages/application
@@ -135,6 +138,9 @@ importers:
       bullmq:
         specifier: 6.0.5
         version: 6.0.5(ioredis@6.0.0(supports-color@8.1.1))(pg@8.22.0)
+      fastify:
+        specifier: 5.11.0
+        version: 5.11.0
       ioredis:
         specifier: 6.0.0
         version: 6.0.0(supports-color@8.1.1)

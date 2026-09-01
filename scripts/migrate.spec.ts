@@ -18,13 +18,38 @@ it('applies only SQL migrations in deterministic filename order', async () => {
     writeFile(join(directory, '0001_first.sql'), 'SELECT 1;', 'utf8'),
     writeFile(join(directory, 'notes.md'), 'not a migration', 'utf8'),
   ]);
-  const queries: string[] = [];
+  const queries: Array<{ sql: string; values?: readonly unknown[] }> = [];
+  let released = false;
+  let connectCalls = 0;
+  const client = {
+    query: async (sql: string, values?: readonly unknown[]) => {
+      queries.push({ sql, values });
+      return { rows: [] };
+    },
+    release: () => {
+      released = true;
+    },
+  };
 
   const applied = await applyMigrations(
-    { query: async (sql: string) => void queries.push(sql) },
+    {
+      connect: async () => {
+        connectCalls += 1;
+        return client;
+      },
+    },
     directory,
   );
 
   expect(applied).toEqual(['0001_first.sql', '0002_second.sql']);
-  expect(queries).toEqual(['SELECT 1;', 'SELECT 2;']);
+  expect(connectCalls).toBe(1);
+  expect(released).toBe(true);
+  expect(queries.map(({ sql }) => sql)).toEqual(
+    expect.arrayContaining(['SELECT 1;', 'SELECT 2;']),
+  );
+  expect(queries.findIndex(({ sql }) => sql === 'SELECT 1;')).toBeLessThan(
+    queries.findIndex(({ sql }) => sql === 'SELECT 2;'),
+  );
+  expect(queries.some(({ sql }) => /pg_advisory_lock/.test(sql))).toBe(true);
+  expect(queries.some(({ sql }) => /pg_advisory_unlock/.test(sql))).toBe(true);
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Queue } from 'bullmq';
 import {
+  MetricsRegistry,
   OutboxDispatcher,
   type ClaimedOutboxEvent,
   type JobPublisher,
@@ -144,6 +145,38 @@ describe('BullMqJobPublisher', () => {
     expect(completed.remove).toHaveBeenCalledOnce();
     expect(queue.add).toHaveBeenCalledOnce();
   });
+
+  it('records retry, queue depth, and outbox lag through the production publisher', async () => {
+    const failed = {
+      getState: vi.fn().mockResolvedValue('failed'),
+      retry: vi.fn().mockResolvedValue(undefined),
+    };
+    const queue = {
+      name: 'volley-outbox',
+      getJob: vi.fn().mockResolvedValue(failed),
+      add: vi.fn(),
+      count: vi.fn().mockResolvedValue(4),
+    };
+    const metrics = new MetricsRegistry();
+    const publisher = new BullMqJobPublisher(
+      queue as unknown as Queue,
+      metrics,
+      () => new Date('2026-09-02T12:00:05.000Z'),
+    );
+
+    await publisher.publish({
+      id: 'outbox:018f6ba0-62d2-7bd1-8f13-12e0c8424610',
+      type: 'GAME_CREATED',
+      payload: {},
+      occurredAt: new Date('2026-09-02T12:00:00.000Z'),
+    });
+
+    const rendered = metrics.render();
+    expect(rendered).toContain('volley_job_retries_total{queue="outbox"} 1');
+    expect(rendered).toContain('volley_queue_depth{queue="outbox"} 4');
+    expect(rendered).toContain('volley_outbox_lag_seconds_sum 5');
+    expect(rendered).toContain('volley_outbox_lag_seconds_count 1');
+  });
 });
 
 describe('OutboxConsumer maintenance', () => {
@@ -170,6 +203,30 @@ describe('OutboxConsumer maintenance', () => {
 
     expect(dispatchOnce).toHaveBeenCalledOnce();
     expect(purgeExpiredPaymentState).toHaveBeenCalledOnce();
+    expect(closeResources).toHaveBeenCalledOnce();
+  });
+
+  it('awaits a held in-flight tick before closing resources', async () => {
+    let releaseDispatch!: () => void;
+    const heldDispatch = new Promise<void>((resolve) => {
+      releaseDispatch = resolve;
+    });
+    const dispatchOnce = vi.fn().mockReturnValue(heldDispatch);
+    const closeResources = vi.fn().mockResolvedValue(undefined);
+    const consumer = new OutboxConsumer(
+      { dispatchOnce } as unknown as OutboxDispatcher,
+      closeResources,
+      60_000,
+    );
+
+    const starting = consumer.start();
+    await vi.waitFor(() => expect(dispatchOnce).toHaveBeenCalledOnce());
+    const stopping = consumer.stop();
+    await Promise.resolve();
+
+    expect(closeResources).not.toHaveBeenCalled();
+    releaseDispatch();
+    await Promise.all([starting, stopping]);
     expect(closeResources).toHaveBeenCalledOnce();
   });
 });

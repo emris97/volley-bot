@@ -46,6 +46,14 @@ const sensitiveKeys = new Set([
   'xtelegrambotapisecrettoken',
 ]);
 
+const genericSensitiveKeyParts = [
+  'password',
+  'token',
+  'secret',
+  'cookie',
+  'message',
+] as const;
+
 export class JsonLogger {
   private readonly minimumLevel: number;
   private readonly secrets: readonly string[];
@@ -100,16 +108,29 @@ export class JsonLogger {
 
   private write(level: LogLevel, message: unknown, fields?: unknown): void {
     if (levels.indexOf(level) < this.minimumLevel) return;
-    const safeFields = redactValue(fields, this.secrets);
+    const safeContext = redactValue(
+      currentLogContext(),
+      this.secrets,
+      undefined,
+      new WeakSet<object>(),
+    );
+    const safeFields = redactValue(
+      fields,
+      this.secrets,
+      undefined,
+      new WeakSet<object>(),
+    );
+    const contextualFields = isRecord(safeContext) ? safeContext : {};
     const payload = {
-      timestamp: this.now().toISOString(),
-      level,
-      message: redactString(formatMessage(message), this.secrets),
+      ...contextualFields,
       ...(isRecord(safeFields)
         ? safeFields
         : safeFields === undefined
           ? {}
           : { details: safeFields }),
+      timestamp: this.now().toISOString(),
+      level,
+      message: redactString(formatMessage(message), this.secrets),
     };
     this.output(JSON.stringify(payload, jsonReplacer));
   }
@@ -136,8 +157,9 @@ const redactValue = (
   value: unknown,
   secrets: readonly string[],
   key?: string,
+  seen = new WeakSet<object>(),
 ): unknown => {
-  if (key !== undefined && sensitiveKeys.has(normalizeKey(key))) {
+  if (key !== undefined && isSensitiveKey(key)) {
     return '[REDACTED]';
   }
   if (typeof value === 'string') return redactString(value, secrets);
@@ -153,15 +175,27 @@ const redactValue = (
     };
   }
   if (Array.isArray(value)) {
-    return value.map((item) => redactValue(item, secrets));
+    if (seen.has(value)) return '[Circular]';
+    seen.add(value);
+    try {
+      return value.map((item) => redactValue(item, secrets, undefined, seen));
+    } finally {
+      seen.delete(value);
+    }
   }
   if (isRecord(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([entryKey, entryValue]) => [
-        entryKey,
-        redactValue(entryValue, secrets, entryKey),
-      ]),
-    );
+    if (seen.has(value)) return '[Circular]';
+    seen.add(value);
+    try {
+      return Object.fromEntries(
+        Object.entries(value).map(([entryKey, entryValue]) => [
+          entryKey,
+          redactValue(entryValue, secrets, entryKey, seen),
+        ]),
+      );
+    } finally {
+      seen.delete(value);
+    }
   }
   return value;
 };
@@ -172,6 +206,10 @@ const redactString = (value: string, secrets: readonly string[]): string => {
   safe = safe.replace(
     /\b(?:postgres(?:ql)?|redis):\/\/[^\s"']+/giu,
     '[REDACTED_URL]',
+  );
+  safe = safe.replace(
+    /\b([a-z][a-z0-9+.-]*:\/\/)([^/@\s"']+)@/giu,
+    '$1[REDACTED]@',
   );
   safe = safe.replace(
     /\b(?:authorization\s*:\s*)?(?:bearer|basic|tma)\s+[^\s"']+/giu,
@@ -203,8 +241,17 @@ const urlCredentials = (values: readonly string[]): string[] =>
 const normalizeKey = (value: string): string =>
   value.toLowerCase().replaceAll(/[^a-z0-9]/g, '');
 
+const isSensitiveKey = (value: string): boolean => {
+  const normalized = normalizeKey(value);
+  return (
+    sensitiveKeys.has(normalized) ||
+    genericSensitiveKeyParts.some((part) => normalized.includes(part))
+  );
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const jsonReplacer = (_key: string, value: unknown): unknown =>
   typeof value === 'bigint' ? value.toString() : value;
+import { currentLogContext } from './log-context.js';

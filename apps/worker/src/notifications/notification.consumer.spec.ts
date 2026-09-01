@@ -6,6 +6,7 @@ import {
   asTelegramId,
 } from '@volley/domain';
 import { NotificationConsumer } from './notification.consumer.js';
+import { MetricsRegistry } from '@volley/application';
 
 describe('NotificationConsumer', () => {
   it('delivers a waitlist promotion to the promoted registration', async () => {
@@ -145,6 +146,43 @@ describe('NotificationConsumer', () => {
       }),
     ).rejects.toThrow(/already claimed/i);
     expect(sender.send).not.toHaveBeenCalled();
+  });
+
+  it('records a terminal notification failure through the production consumer', async () => {
+    const current = recipient('23');
+    const metrics = new MetricsRegistry();
+    const consumer = new NotificationConsumer(
+      {
+        listTentative: vi.fn().mockResolvedValue([current]),
+        listRostered: vi.fn(),
+        findByRegistration: vi.fn(),
+        claimDelivery: vi
+          .fn()
+          .mockResolvedValue({ status: 'CLAIMED', claimToken: 'claim' }),
+        markDelivered: vi.fn(),
+        releaseDelivery: vi.fn(),
+      },
+      {
+        send: vi.fn().mockRejectedValue(new Error('telegram unavailable')),
+      } as never,
+      { expireTentative: vi.fn() } as never,
+      metrics,
+    );
+
+    await expect(
+      consumer.process({
+        id: 'REQUEST_TENTATIVE_CONFIRMATION:game:1',
+        kind: 'REQUEST_TENTATIVE_CONFIRMATION',
+        groupId: current.groupId,
+        gameId: current.gameId,
+        scheduleRevision: 1,
+        runAt: new Date(),
+      }),
+    ).rejects.toThrow('telegram unavailable');
+
+    expect(metrics.render()).toContain(
+      'volley_notification_failures_total{channel="private"} 1',
+    );
   });
 });
 

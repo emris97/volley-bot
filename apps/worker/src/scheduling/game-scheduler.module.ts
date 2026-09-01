@@ -1,5 +1,10 @@
 import { Module } from '@nestjs/common';
-import { ReconcileGameJobs, type RequiredJob } from '@volley/application';
+import {
+  JsonLogger,
+  MetricsRegistry,
+  ReconcileGameJobs,
+  type RequiredJob,
+} from '@volley/application';
 import { parseEnv } from '@volley/config';
 import type { GameId } from '@volley/domain';
 import {
@@ -30,7 +35,8 @@ export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
   providers: [
     {
       provide: GAME_SCHEDULER_WORKER,
-      useFactory: () => {
+      inject: [MetricsRegistry, JsonLogger],
+      useFactory: (metrics: MetricsRegistry, logger: JsonLogger) => {
         const env = parseEnv(process.env);
         const pool = new Pool({ connectionString: env.DATABASE_URL });
         const database = createDatabase(pool);
@@ -40,7 +46,11 @@ export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
         const scheduledJobs = new ScheduledJobRepository(database);
         const connection = redisConnection(env.REDIS_URL);
         const queue = new Queue('volley-game-scheduler', { connection });
-        const scheduler = new BullMqDelayedJobScheduler(queue);
+        const scheduler = new BullMqDelayedJobScheduler(
+          queue,
+          () => new Date(),
+          metrics,
+        );
         const reconciler = new ReconcileGameJobs(scheduledJobs, scheduler);
         const telegram = new GrammyTelegramGateway(
           createTelegramBot(env.BOT_TOKEN),
@@ -80,15 +90,19 @@ export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
           notifications,
           sender,
           registrations,
+          metrics,
         );
-        const consumer = new GameSchedulerConsumer(games, (job) =>
-          notificationConsumer.process(job),
+        const consumer = new GameSchedulerConsumer(
+          games,
+          (job) => notificationConsumer.process(job),
+          metrics,
+          logger,
         );
         const worker = new Worker(
           'volley-game-scheduler',
           async (bullJob) => {
             const job = deserializeJob(bullJob.data);
-            await consumer.process(job);
+            await consumer.process(job, bullJob.attemptsMade);
             await scheduledJobs.markCompleted(job.groupId, job.gameId, job.id);
           },
           { connection, autorun: false },

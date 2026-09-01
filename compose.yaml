@@ -2,22 +2,22 @@ name: volley-bot
 
 x-app-environment: &app-environment
   NODE_ENV: ${NODE_ENV:-production}
-  DATABASE_URL: postgresql://${POSTGRES_USER:-volley}:${POSTGRES_PASSWORD:-volley}@postgres:5432/${POSTGRES_DB:-volley}
-  REDIS_URL: redis://redis:6379
-  BOT_TOKEN: ${BOT_TOKEN:-123456:replace_with_a_real_bot_token}
-  TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-replace_with_a_random_secret}
-  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://localhost:3000}
+  DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+  REDIS_URL: ${REDIS_URL:?REDIS_URL must be set}
+  BOT_TOKEN: ${BOT_TOKEN:?BOT_TOKEN must be set}
+  TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:?TELEGRAM_WEBHOOK_SECRET must be set}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL must be set}
   LOG_LEVEL: ${LOG_LEVEL:-info}
 
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-volley}
-      POSTGRES_USER: ${POSTGRES_USER:-volley}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-volley}
-    ports:
-      - '${POSTGRES_PORT:-5432}:5432'
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+    expose:
+      - '5432'
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -29,11 +29,22 @@ services:
 
   redis:
     image: redis:8-alpine
-    command: ['redis-server', '--save', '', '--appendonly', 'no']
-    ports:
-      - '${REDIS_PORT:-6379}:6379'
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+    command:
+      [
+        'sh',
+        '-c',
+        'exec redis-server --save "" --appendonly no --requirepass "$$REDIS_PASSWORD"',
+      ]
+    expose:
+      - '6379'
     healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
+      test:
+        [
+          'CMD-SHELL',
+          'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG',
+        ]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -62,9 +73,11 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     command: ['serve']
-    environment: *app-environment
-    ports:
-      - '${API_PORT:-3000}:3000'
+    environment:
+      <<: *app-environment
+      PORT: '3000'
+    expose:
+      - '3000'
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -96,7 +109,11 @@ services:
       context: .
       dockerfile: apps/worker/Dockerfile
     command: ['serve']
-    environment: *app-environment
+    environment:
+      <<: *app-environment
+      PORT: '3001'
+    expose:
+      - '3001'
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -104,6 +121,17 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3001/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     read_only: true
     tmpfs:
       - /tmp

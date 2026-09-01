@@ -1,31 +1,13 @@
-import { readdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createPostgresPool } from '@volley/persistence';
+import { applyMigrations, createPostgresPool } from '@volley/persistence';
 
-export interface MigrationDatabase {
-  query(sql: string): Promise<unknown>;
-}
+export { applyMigrations, type MigrationDatabase } from '@volley/persistence';
 
 const defaultMigrationsDirectory = resolve(
   process.cwd(),
   'packages/persistence/migrations',
 );
-
-export const applyMigrations = async (
-  database: MigrationDatabase,
-  migrationsDirectory = defaultMigrationsDirectory,
-): Promise<string[]> => {
-  const files = (await readdir(migrationsDirectory))
-    .filter((file) => file.endsWith('.sql'))
-    .sort();
-  for (const file of files) {
-    await database.query(
-      await readFile(resolve(migrationsDirectory, file), 'utf8'),
-    );
-  }
-  return files;
-};
 
 export const runMigrations = async (
   input: {

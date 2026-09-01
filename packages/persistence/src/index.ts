@@ -38,4 +38,9 @@ export {
   type NotificationRecipientRecord,
 } from './repositories/notification.repository.js';
 export { ScheduledJobRepository } from './repositories/scheduled-job.repository.js';
+export {
+  applyMigrations,
+  type MigrationClient,
+  type MigrationDatabase,
+} from './migrations/migration-runner.js';
 export * from './schema/index.js';

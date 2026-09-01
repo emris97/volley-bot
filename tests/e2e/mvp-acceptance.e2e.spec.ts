@@ -29,6 +29,12 @@ describe('volleyball bot MVP acceptance', () => {
       timeZone: 'Europe/Moscow',
     });
     expect(system.telegram.groupMessages).toHaveLength(1);
+    expect(system.telegram.groupMessages[0]?.text).toMatch(
+      /^https:\/\/t\.me\/volley_test_bot\?start=/,
+    );
+    expect(system.telegram.privateMessagesFor('1001')).toContainEqual(
+      expect.objectContaining({ text: 'onboarding:tz' }),
+    );
     expect(system.telegram.privateMessagesFor('1001')).toContainEqual(
       expect.objectContaining({ text: 'onboarding:complete' }),
     );
@@ -110,6 +116,12 @@ describe('volleyball bot MVP acceptance', () => {
 
     expect(guest.state).toBe('ROSTERED');
     expect(tentative.state).toBe('TENTATIVE');
+    expect(system.handledRegistrationResponses()).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^registration:rostered:/),
+        'registration:tentative',
+      ]),
+    );
     expect(await system.registrationState(self.registrationId)).toBe(
       'CANCELLED',
     );
@@ -181,6 +193,12 @@ describe('volleyball bot MVP acceptance', () => {
     expect(system.telegram.privateMessagesFor('1061')).toContainEqual(
       expect.objectContaining({ buttons: ['Подтверждаю', 'Снимаюсь'] }),
     );
+    expect(
+      await system.notificationWasDelivered(
+        `REQUEST_TENTATIVE_CONFIRMATION:${fixture.game.id}:${fixture.game.scheduleRevision}`,
+        tentative.registrationId,
+      ),
+    ).toBe(true);
 
     await system.expireTentative(fixture, tentative.registrationId);
     expect(await system.registrationState(tentative.registrationId)).toBe(
@@ -212,6 +230,9 @@ describe('volleyball bot MVP acceptance', () => {
         text: 'Вы перешли из листа ожидания в основной состав',
       }),
     );
+    expect(
+      await system.waitlistPromotionReachedDelivery(waiting.registrationId),
+    ).toBe(true);
   });
 
   it('canonical message converges after duplicate and rapid changes', async () => {
@@ -259,6 +280,8 @@ describe('volleyball bot MVP acceptance', () => {
         }),
       ]),
     );
+    expect(attendance.revision).toBeGreaterThanOrEqual(3);
+    expect(await system.attendanceSnapshotCount(fixture.game.id!)).toBe(3);
     expect(settlement.charges).toHaveLength(2);
     expect(
       settlement.charges.reduce((sum, charge) => sum + charge.amountMinor, 0n),

@@ -1,4 +1,5 @@
 import { Logger, Module } from '@nestjs/common';
+import { JsonLogger, MetricsRegistry } from '@volley/application';
 import { parseEnv } from '@volley/config';
 import { asGameId, asGroupId, asRegistrationId } from '@volley/domain';
 import {
@@ -20,6 +21,7 @@ import { Queue, Worker } from 'bullmq';
 import { Pool } from 'pg';
 import type { ManagedWorker } from '../worker-lifecycle.service.js';
 import { NotificationConsumer } from '../notifications/notification.consumer.js';
+import { observeWorkerJob } from '../observability/worker-job-observability.js';
 
 const refreshEventTypes = new Set([
   'GAME_CREATED',
@@ -34,68 +36,136 @@ export class OutboxEventRouter {
   public constructor(
     private readonly canonicalQueue: Pick<Queue, 'add' | 'getJob'>,
     private readonly notificationQueue: Pick<Queue, 'add' | 'getJob'>,
+    private readonly metrics?: MetricsRegistry,
+    private readonly jobLogger?: JsonLogger,
   ) {}
 
   public async process(
     eventType: string,
     payload: Record<string, unknown>,
     sourceJobId: string,
+    attemptsMade = 0,
   ): Promise<void> {
-    if (refreshEventTypes.has(eventType)) {
-      await ensureChildJob(
-        this.canonicalQueue,
-        eventType,
-        payload,
-        childJobId(sourceJobId, 'canonical'),
-      );
-    }
-    if (eventType === 'WAITLIST_PROMOTED') {
-      await ensureChildJob(
-        this.notificationQueue,
-        eventType,
-        payload,
-        childJobId(sourceJobId, 'notification'),
-      );
-    }
+    await observeWorkerJob(
+      this.metrics,
+      this.jobLogger,
+      {
+        queue: 'outbox',
+        jobId: sourceJobId,
+        groupId:
+          typeof payload.groupId === 'string' ? payload.groupId : undefined,
+        gameId:
+          typeof payload.aggregateId === 'string'
+            ? payload.aggregateId
+            : undefined,
+        attemptsMade,
+      },
+      async () => {
+        if (refreshEventTypes.has(eventType)) {
+          await ensureChildJob(
+            this.canonicalQueue,
+            eventType,
+            payload,
+            childJobId(sourceJobId, 'canonical'),
+          );
+        }
+        if (eventType === 'WAITLIST_PROMOTED') {
+          await ensureChildJob(
+            this.notificationQueue,
+            eventType,
+            payload,
+            childJobId(sourceJobId, 'notification'),
+          );
+        }
+      },
+    );
   }
 }
 
 export class GameMessageConsumer {
-  public constructor(private readonly updater: GameMessageUpdater) {}
+  public constructor(
+    private readonly updater: GameMessageUpdater,
+    private readonly metrics?: MetricsRegistry,
+    private readonly jobLogger?: JsonLogger,
+  ) {}
 
   public async process(
     eventType: string,
     payload: Record<string, unknown>,
+    jobId = `${eventType}:unknown`,
+    attemptsMade = 0,
   ): Promise<void> {
-    if (!refreshEventTypes.has(eventType) || payload.aggregateType !== 'GAME') {
-      return;
-    }
-    if (
-      typeof payload.groupId !== 'string' ||
-      typeof payload.aggregateId !== 'string'
-    ) {
-      throw new Error('Game outbox event identity is required');
-    }
-    await this.updater.refresh(
-      asGroupId(payload.groupId),
-      asGameId(payload.aggregateId),
+    await observeWorkerJob(
+      this.metrics,
+      this.jobLogger,
+      {
+        queue: 'game-messages',
+        jobId,
+        groupId:
+          typeof payload.groupId === 'string' ? payload.groupId : undefined,
+        gameId:
+          typeof payload.aggregateId === 'string'
+            ? payload.aggregateId
+            : undefined,
+        attemptsMade,
+      },
+      async () => {
+        if (
+          !refreshEventTypes.has(eventType) ||
+          payload.aggregateType !== 'GAME'
+        ) {
+          return;
+        }
+        if (
+          typeof payload.groupId !== 'string' ||
+          typeof payload.aggregateId !== 'string'
+        ) {
+          throw new Error('Game outbox event identity is required');
+        }
+        await this.updater.refresh(
+          asGroupId(payload.groupId),
+          asGameId(payload.aggregateId),
+        );
+      },
     );
   }
 }
 
 export class WaitlistPromotionConsumer {
-  public constructor(private readonly notifications: NotificationConsumer) {}
+  public constructor(
+    private readonly notifications: NotificationConsumer,
+    private readonly metrics?: MetricsRegistry,
+    private readonly jobLogger?: JsonLogger,
+  ) {}
 
   public async process(
     payload: Record<string, unknown>,
     deterministicEventId: string,
+    attemptsMade = 0,
   ): Promise<void> {
-    if (typeof payload.registrationId !== 'string') {
-      throw new Error('Promoted registration identity is required');
-    }
-    await this.notifications.processWaitlistPromotion(
-      asRegistrationId(payload.registrationId),
-      deterministicEventId,
+    await observeWorkerJob(
+      this.metrics,
+      this.jobLogger,
+      {
+        queue: 'notifications',
+        jobId: deterministicEventId,
+        groupId:
+          typeof payload.groupId === 'string' ? payload.groupId : undefined,
+        gameId:
+          typeof payload.aggregateId === 'string'
+            ? payload.aggregateId
+            : undefined,
+        attemptsMade,
+      },
+      async () => {
+        if (typeof payload.registrationId !== 'string') {
+          throw new Error('Promoted registration identity is required');
+        }
+        await this.notifications.processWaitlistPromotion(
+          asRegistrationId(payload.registrationId),
+          deterministicEventId,
+        );
+      },
     );
   }
 }
@@ -130,7 +200,8 @@ export const GAME_MESSAGE_WORKER = Symbol('GAME_MESSAGE_WORKER');
   providers: [
     {
       provide: GAME_MESSAGE_WORKER,
-      useFactory: () => {
+      inject: [MetricsRegistry, JsonLogger],
+      useFactory: (metrics: MetricsRegistry, logger: JsonLogger) => {
         const env = parseEnv(process.env);
         const pool = new Pool({ connectionString: env.DATABASE_URL });
         const database = createDatabase(pool);
@@ -192,6 +263,7 @@ export const GAME_MESSAGE_WORKER = Symbol('GAME_MESSAGE_WORKER');
           notifications,
           notificationSender,
           new RegistrationRepository(database),
+          metrics,
         );
         const canonicalQueue = new Queue('volley-game-messages', {
           connection: redisConnection(env.REDIS_URL),
@@ -199,29 +271,53 @@ export const GAME_MESSAGE_WORKER = Symbol('GAME_MESSAGE_WORKER');
         const notificationQueue = new Queue('volley-notifications', {
           connection: redisConnection(env.REDIS_URL),
         });
-        const router = new OutboxEventRouter(canonicalQueue, notificationQueue);
+        const router = new OutboxEventRouter(
+          canonicalQueue,
+          notificationQueue,
+          metrics,
+          logger,
+        );
         const messageConsumer = new GameMessageConsumer(
           new GameMessageUpdater(repository, gateway),
+          metrics,
+          logger,
         );
         const promotionConsumer = new WaitlistPromotionConsumer(
           notificationConsumer,
+          metrics,
+          logger,
         );
         const connection = redisConnection(env.REDIS_URL);
         const routerWorker = new Worker(
           'volley-outbox',
           async (job) =>
-            router.process(job.name, job.data, requiredJobId(job.id)),
+            router.process(
+              job.name,
+              job.data,
+              requiredJobId(job.id),
+              job.attemptsMade,
+            ),
           { connection, autorun: false },
         );
         const messageWorker = new Worker(
           'volley-game-messages',
-          async (job) => messageConsumer.process(job.name, job.data),
+          async (job) =>
+            messageConsumer.process(
+              job.name,
+              job.data,
+              requiredJobId(job.id),
+              job.attemptsMade,
+            ),
           { connection, autorun: false },
         );
         const promotionWorker = new Worker(
           'volley-notifications',
           async (job) =>
-            promotionConsumer.process(job.data, requiredJobId(job.id)),
+            promotionConsumer.process(
+              job.data,
+              requiredJobId(job.id),
+              job.attemptsMade,
+            ),
           { connection, autorun: false },
         );
         return new GameMessageWorkerRuntime(

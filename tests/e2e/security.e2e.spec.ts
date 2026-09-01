@@ -56,6 +56,52 @@ it('redacts secrets and sensitive transport data from JSON logs', () => {
   });
 });
 
+it('survives cyclic adversarial fields while preserving trusted log metadata', () => {
+  const output: string[] = [];
+  const cyclic: Record<string, unknown> = {
+    PaSsWoRd: 'database-password',
+    accessTOKEN: 'access-token',
+    clientSecret: 'client-secret',
+    sessionCOOKIE: 'session-cookie',
+    TelegramMessage: 'private message',
+    diagnosticUrl: 'https://operator:url-password@example.test/private',
+  };
+  cyclic.self = cyclic;
+  const logger = new JsonLogger({
+    output: (line: LogOutput) => output.push(line),
+    now: () => new Date('2026-09-02T00:00:00.000Z'),
+  });
+
+  logger.error('trusted message', {
+    timestamp: 'attacker timestamp',
+    level: 'fatal',
+    message: 'attacker message',
+    cyclic,
+  });
+
+  expect(output).toHaveLength(1);
+  expect(output[0]).not.toContain('database-password');
+  expect(output[0]).not.toContain('access-token');
+  expect(output[0]).not.toContain('client-secret');
+  expect(output[0]).not.toContain('session-cookie');
+  expect(output[0]).not.toContain('private message');
+  expect(output[0]).not.toContain('url-password');
+  expect(JSON.parse(output[0]!)).toMatchObject({
+    timestamp: '2026-09-02T00:00:00.000Z',
+    level: 'error',
+    message: 'trusted message',
+    cyclic: {
+      PaSsWoRd: '[REDACTED]',
+      accessTOKEN: '[REDACTED]',
+      clientSecret: '[REDACTED]',
+      sessionCOOKIE: '[REDACTED]',
+      TelegramMessage: '[REDACTED]',
+      diagnosticUrl: 'https://[REDACTED]@example.test/private',
+      self: '[Circular]',
+    },
+  });
+});
+
 it('exports production operational metrics without secret-bearing labels', () => {
   const metrics = new MetricsRegistry();
   metrics.recordWebhook('success', 0.025);

@@ -6,6 +6,7 @@ import {
   PaymentRepository,
 } from '@volley/persistence';
 import { OutboxDispatcher } from '@volley/application';
+import { MetricsRegistry } from '@volley/application';
 import { Queue } from 'bullmq';
 import { Pool } from 'pg';
 import { BullMqJobPublisher, OutboxConsumer } from './outbox.consumer.js';
@@ -16,7 +17,8 @@ export const OUTBOX_WORKER = Symbol('OUTBOX_WORKER');
   providers: [
     {
       provide: OUTBOX_WORKER,
-      useFactory: () => {
+      inject: [MetricsRegistry],
+      useFactory: (metrics: MetricsRegistry) => {
         const env = parseEnv(process.env);
         const pool = new Pool({ connectionString: env.DATABASE_URL });
         const redis = new URL(env.REDIS_URL);
@@ -31,7 +33,7 @@ export const OUTBOX_WORKER = Symbol('OUTBOX_WORKER');
         const payments = new PaymentRepository(database);
         const dispatcher = new OutboxDispatcher(
           new OutboxRepository(database),
-          new BullMqJobPublisher(queue),
+          new BullMqJobPublisher(queue, metrics),
         );
         return new OutboxConsumer(
           dispatcher,

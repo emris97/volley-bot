@@ -1,5 +1,3 @@
-BEGIN;
-
 CREATE TABLE IF NOT EXISTS attendance_snapshots (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
@@ -40,9 +38,3 @@ CREATE TABLE IF NOT EXISTS attendance_entries (
 
 CREATE INDEX IF NOT EXISTS attendance_entries_group_snapshot_idx
   ON attendance_entries(group_id, snapshot_id);
-
-INSERT INTO volley_schema_migrations (name)
-VALUES ('0009_attendance')
-ON CONFLICT (name) DO NOTHING;
-
-COMMIT;

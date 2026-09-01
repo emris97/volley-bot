@@ -13,9 +13,15 @@ import {
   GAME_MESSAGE_WORKER,
   GameMessageWorkerModule,
 } from './telegram/game-message.consumer.js';
+import { WorkerObservabilityModule } from './observability/worker-observability.module.js';
 
 @Module({
-  imports: [OutboxModule, GameSchedulerModule, GameMessageWorkerModule],
+  imports: [
+    WorkerObservabilityModule,
+    OutboxModule,
+    GameSchedulerModule,
+    GameMessageWorkerModule,
+  ],
   providers: [
     {
       provide: MANAGED_WORKERS,

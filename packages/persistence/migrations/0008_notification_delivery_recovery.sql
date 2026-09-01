@@ -1,5 +1,3 @@
-BEGIN;
-
 ALTER TABLE scheduled_jobs
   ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
 
@@ -27,9 +25,3 @@ ALTER TABLE notification_deliveries
   ADD COLUMN IF NOT EXISTS claim_token UUID,
   ALTER COLUMN delivered_at DROP NOT NULL,
   ALTER COLUMN delivered_at DROP DEFAULT;
-
-INSERT INTO volley_schema_migrations (name)
-VALUES ('0008_notification_delivery_recovery')
-ON CONFLICT (name) DO NOTHING;
-
-COMMIT;

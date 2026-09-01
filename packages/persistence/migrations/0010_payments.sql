@@ -1,5 +1,3 @@
-BEGIN;
-
 CREATE TABLE IF NOT EXISTS payment_drafts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
@@ -130,9 +128,3 @@ CREATE TABLE IF NOT EXISTS charge_status_events (
 
 CREATE INDEX IF NOT EXISTS charge_status_events_group_charge_occurred_idx
   ON charge_status_events(group_id, charge_id, occurred_at);
-
-INSERT INTO volley_schema_migrations (name)
-VALUES ('0010_payments')
-ON CONFLICT (name) DO NOTHING;
-
-COMMIT;

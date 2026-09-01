@@ -1,0 +1,16 @@
+services:
+  postgres:
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+
+  redis:
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+
+  api:
+    ports:
+      - '${API_PORT:-3000}:3000'
+
+  worker:
+    ports:
+      - '${WORKER_PORT:-3001}:3001'

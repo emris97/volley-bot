@@ -1,9 +1,6 @@
-BEGIN;
-
-SELECT pg_advisory_xact_lock(hashtext('volley-bot:schema-migrations'));
-
 CREATE TABLE IF NOT EXISTS volley_schema_migrations (
   name TEXT PRIMARY KEY,
+  checksum TEXT,
   applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -80,9 +77,3 @@ CREATE TABLE IF NOT EXISTS outbox_events (
 CREATE INDEX IF NOT EXISTS outbox_events_unpublished_idx
   ON outbox_events(occurred_at)
   WHERE published_at IS NULL;
-
-INSERT INTO volley_schema_migrations (name)
-VALUES ('0001_foundation')
-ON CONFLICT (name) DO NOTHING;
-
-COMMIT;

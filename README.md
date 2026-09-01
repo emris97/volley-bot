@@ -27,13 +27,19 @@ pnpm build
 Build the provider-neutral Node 24 images with:
 
 ```sh
-docker compose build api worker
+docker compose --env-file .env.compose.example -f compose.yaml -f compose.dev.yaml build api worker
 ```
+
+The command above opts into the explicit local-development overlay and its
+permissive example credentials. The base `compose.yaml` requires every real
+secret and publishes no host ports. For production, pass a deployment-owned
+environment or secret file to `docker compose -f compose.yaml`; never use
+`.env.compose.example`.
 
 Database migration is an explicit, one-shot deployment step:
 
 ```sh
-docker compose run --rm db-migrate
+docker compose --env-file .env.compose.example -f compose.yaml -f compose.dev.yaml run --rm db-migrate
 ```
 
 The normal `api` and `worker` entrypoints never run migrations. This keeps horizontally scaled API startup safe. Compose expresses the same ordering by requiring the one-shot `db-migrate` service to complete before starting API or worker processes.
@@ -41,9 +47,9 @@ The normal `api` and `worker` entrypoints never run migrations. This keeps horiz
 Start the stack:
 
 ```sh
-docker compose up -d postgres redis
-docker compose run --rm db-migrate
-docker compose up -d api worker
+docker compose --env-file .env.compose.example -f compose.yaml -f compose.dev.yaml up -d postgres redis
+docker compose --env-file .env.compose.example -f compose.yaml -f compose.dev.yaml run --rm db-migrate
+docker compose --env-file .env.compose.example -f compose.yaml -f compose.dev.yaml up -d api worker
 ```
 
 Only PostgreSQL has a durable application volume. Redis is deliberately ephemeral. Both application images use multi-stage builds, production dependencies and compiled output only, a non-root runtime user, read-only filesystems in Compose, and signal-aware `exec` entrypoints. Nest shutdown hooks drain workers and close process resources on termination.

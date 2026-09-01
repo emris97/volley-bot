@@ -1,5 +1,6 @@
 import {
   ExpireTentative,
+  type MetricsRegistry,
   type NotificationIntent,
   type RequiredJob,
 } from '@volley/application';
@@ -51,6 +52,7 @@ export class NotificationConsumer {
     private readonly recipients: NotificationRecipientRepository,
     private readonly sender: NotificationSender,
     registrations: Pick<RegistrationRepository, 'expireTentative'>,
+    private readonly metrics?: MetricsRegistry,
   ) {
     this.expire = new ExpireTentative(registrations);
   }
@@ -158,6 +160,7 @@ export class NotificationConsumer {
         claim.claimToken,
       );
     } catch (error) {
+      this.metrics?.recordNotificationFailure('private');
       await this.recipients.releaseDelivery(
         deterministicJobId,
         recipient.registrationId,
