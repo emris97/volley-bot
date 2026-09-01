@@ -32,3 +32,21 @@ export {
   createGameFromTemplate,
   transitionGame,
 } from './games/game-policy.js';
+export {
+  InvalidRegistrationError,
+  RegistrationMutationNotAllowedError,
+} from './registrations/registration-errors.js';
+export {
+  asRegistrationId,
+  type Registration,
+  type RegistrationCandidate,
+  type RegistrationId,
+  type RegistrationKind,
+  type RegistrationState,
+} from './registrations/registration.js';
+export {
+  placeConfirmedRegistrations,
+  rankConfirmedRegistrations,
+  type PlacementInput,
+  type PlacementResult,
+} from './registrations/placement-policy.js';
