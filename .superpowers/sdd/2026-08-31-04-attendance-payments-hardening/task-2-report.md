@@ -84,3 +84,37 @@ Exit 1. The domain and other non-container suites passed: `Test Files 36 passed`
 
 - The full repository test command cannot reach green until a Docker-compatible container runtime is available for the pre-existing integration/e2e suites.
 - In this checkout, `pnpm vitest` and `pnpm exec prettier` could not resolve local binaries; equivalent commands invoking the checked-in `.cmd` binaries were used for focused tests and formatting verification.
+
+## Controller verification
+
+The controller re-ran `pnpm test` with Docker Desktop access against commit `f38cb0e`: 47 test files and 114 tests passed, exit 0. This resolves the implementer's container-runtime concern.
+
+## Review fixes (round 1)
+
+- Replaced the property-test money generator's `fc.integer()` source with `fc.bigInt({ min: 0n, max: 1_000_000n })`; conversion to decimal text now starts from bigint and never routes minor units through a JavaScript number.
+- Added a property over positive bigint-native Money totals and all four rounding modes asserting that an empty participant array throws `At least one participant is required`.
+
+Focused verification after the fixes:
+
+```text
+& .\node_modules\.bin\prettier.cmd --write packages/domain/src/payments/settlement.property.spec.ts
+& .\node_modules\.bin\vitest.cmd run packages/domain/src/payments
+```
+
+Result: exit 0 — `Test Files 2 passed (2)`, `Tests 19 passed (19)`.
+
+```text
+pnpm typecheck
+pnpm lint
+& .\node_modules\.bin\prettier.cmd --check packages/domain/src/payments/settlement.property.spec.ts
+```
+
+Results: all exit 0 (`tsc -b --pretty false`, `eslint .`, and formatting check passed).
+
+Required full verification after the fixes:
+
+```text
+pnpm test
+```
+
+Result: exit 1 in this worker environment — `Test Files 36 passed`, `Tests 96 passed`, `Tests 19 skipped`; 11 existing integration/e2e suites failed during setup with `Could not find a working container runtime strategy`. The controller-side Docker verification recorded above remains green for the prior commit; this fix round changes only property tests.

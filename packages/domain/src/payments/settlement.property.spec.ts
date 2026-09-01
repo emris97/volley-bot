@@ -10,12 +10,23 @@ const participantIdsArbitrary = fc
   })
   .filter((ids) => ids.length > 0);
 
-const totalArbitrary = fc.integer({ min: 0, max: 1_000_000 }).map((minor) => {
-  const amountMinor = BigInt(minor);
+const rublesFromMinor = (amountMinor: bigint) => {
   const whole = amountMinor / 100n;
   const fractional = (amountMinor % 100n).toString().padStart(2, '0');
   return rubles(`${whole}.${fractional}`);
-});
+};
+
+const totalArbitrary = fc
+  .bigInt({ min: 0n, max: 1_000_000n })
+  .map(rublesFromMinor);
+
+const positiveTotalArbitrary = fc
+  .bigInt({ min: 1n, max: 1_000_000n })
+  .map(rublesFromMinor);
+
+const roundingModeArbitrary = fc.constantFrom<
+  'EXACT' | 'UP_1' | 'UP_10' | 'UP_50'
+>('EXACT', 'UP_1', 'UP_10', 'UP_50');
 
 it('EXACT charges always sum to the total', () => {
   fc.assert(
@@ -106,6 +117,24 @@ it('settlement uses bigint monetary values throughout its result', () => {
             (charge) => typeof charge.amountMinor === 'bigint',
           ),
         ).toBe(true);
+      },
+    ),
+  );
+});
+
+it('rejects zero participants for every valid positive total and rounding mode', () => {
+  fc.assert(
+    fc.property(
+      positiveTotalArbitrary,
+      roundingModeArbitrary,
+      (total, roundingMode) => {
+        expect(() =>
+          calculateSettlement({
+            total,
+            participantIds: [],
+            roundingMode,
+          }),
+        ).toThrow('At least one participant is required');
       },
     ),
   );
