@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import {
+  asAttendanceSnapshotId,
   asRegistrationId,
   type AttendanceEntry,
   type AttendanceSnapshot,
+  type AttendanceSnapshotId,
   type GameId,
   type GroupId,
   type RegistrationId,
@@ -138,6 +140,30 @@ export class AttendanceRepository {
       return readSnapshot(transaction, input.groupId, input.gameId, snapshot);
     });
   }
+
+  public async findSnapshot(
+    groupId: GroupId,
+    snapshotId: AttendanceSnapshotId,
+  ): Promise<AttendanceSnapshot | null> {
+    const [snapshot] = await this.database
+      .select()
+      .from(attendanceSnapshots)
+      .where(
+        and(
+          eq(attendanceSnapshots.groupId, groupId),
+          eq(attendanceSnapshots.id, snapshotId),
+        ),
+      )
+      .limit(1);
+    return snapshot === undefined
+      ? null
+      : readSnapshot(
+          this.database,
+          groupId,
+          snapshot.gameId as GameId,
+          snapshot,
+        );
+  }
 }
 
 interface ConfirmAttendanceInput {
@@ -186,6 +212,7 @@ const readSnapshot = async (
     ),
   );
   return {
+    id: asAttendanceSnapshotId(snapshot.id),
     groupId,
     gameId,
     revision: snapshot.revision,

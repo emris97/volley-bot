@@ -51,7 +51,9 @@ export {
   type PlacementResult,
 } from './registrations/placement-policy.js';
 export {
+  asAttendanceSnapshotId,
   type AttendanceEntry,
   type AttendanceRosterCandidate,
+  type AttendanceSnapshotId,
   type AttendanceSnapshot,
 } from './attendance/attendance.js';

@@ -1,16 +1,19 @@
 import type {
+  AttendanceSnapshotReader,
   ConfirmAttendance,
   ConfirmAttendanceCommand,
 } from '@volley/application';
-import type {
-  AttendanceSnapshot,
-  GameId,
-  GroupId,
-  RegistrationId,
-  TelegramId,
-  UserId,
+import {
+  asAttendanceSnapshotId,
+  asGroupId,
+  type AttendanceSnapshot,
+  type AttendanceSnapshotId,
+  type GameId,
+  type GroupId,
+  type RegistrationId,
+  type TelegramId,
+  type UserId,
 } from '@volley/domain';
-import { randomUUID } from 'node:crypto';
 import type { Bot, Context } from 'grammy';
 import { toTelegramId } from '../group-onboarding.handlers.js';
 
@@ -28,11 +31,10 @@ export interface AttendancePreview {
 }
 
 export class AttendanceHandlers {
-  private readonly sessions = new Map<string, AttendanceSession>();
-
   public constructor(
     private readonly actors: AttendanceActorResolver,
     private readonly attendance: Pick<ConfirmAttendance, 'execute'>,
+    private readonly snapshots: Pick<AttendanceSnapshotReader, 'findSnapshot'>,
   ) {}
 
   public async preview(input: {
@@ -42,9 +44,7 @@ export class AttendanceHandlers {
     excludedRegistrationIds: RegistrationId[];
     manualParticipants: Array<{ displayName: string; billable: boolean }>;
   }): Promise<AttendanceSnapshot> {
-    const snapshot = await this.execute(input, false);
-    this.remember(input.telegramUserId, snapshot);
-    return snapshot;
+    return this.execute(input, false);
   }
 
   public async finalize(input: {
@@ -54,9 +54,7 @@ export class AttendanceHandlers {
     excludedRegistrationIds: RegistrationId[];
     manualParticipants: Array<{ displayName: string; billable: boolean }>;
   }): Promise<AttendanceSnapshot> {
-    const snapshot = await this.execute(input, true);
-    this.remember(input.telegramUserId, snapshot);
-    return snapshot;
+    return this.execute(input, true);
   }
 
   public render(snapshot: AttendanceSnapshot): AttendancePreview {
@@ -65,7 +63,27 @@ export class AttendanceHandlers {
         ? `attendance:confirmed:${snapshot.revision}`
         : `attendance:preview:${snapshot.revision}`,
       snapshot,
-      buttons: snapshot.finalized ? [] : this.buttonsFor(snapshot),
+      buttons: snapshot.finalized
+        ? []
+        : [
+            ...snapshot.rosterCandidates.map((candidate, index) => ({
+              text: `${candidate.included ? '✓' : '✗'} ${candidate.displayName}`,
+              callbackData: attendanceCallback(
+                'toggle',
+                snapshot.groupId,
+                snapshot.id,
+                index,
+              ),
+            })),
+            {
+              text: 'Confirm attendance',
+              callbackData: attendanceCallback(
+                'confirm',
+                snapshot.groupId,
+                snapshot.id,
+              ),
+            },
+          ],
     };
   }
 
@@ -74,42 +92,50 @@ export class AttendanceHandlers {
     data: string;
   }): Promise<AttendancePreview> {
     const callback = parseAttendanceCallback(input.data);
-    const session = this.sessions.get(callback.token);
+    const snapshot = await this.snapshots.findSnapshot(
+      callback.groupId,
+      callback.snapshotId,
+    );
+    if (snapshot === null) throw new Error('Attendance preview not found');
+    const actor = await this.actors.resolve(
+      snapshot.gameId,
+      input.telegramUserId,
+    );
     if (
-      session === undefined ||
-      session.telegramUserId !== input.telegramUserId
+      actor.groupId !== callback.groupId ||
+      actor.gameId !== snapshot.gameId
     ) {
-      throw new Error('Attendance preview has expired');
+      throw new Error('Attendance callback identity mismatch');
     }
-    if (session.snapshot.revision !== callback.revision) {
-      return this.render(session.snapshot);
+    if (
+      callback.action === 'toggle' &&
+      snapshot.rosterCandidates[callback.candidateIndex] === undefined
+    ) {
+      throw new Error('Attendance candidate not found');
     }
-    const excludedRegistrationIds = session.snapshot.rosterCandidates
-      .filter((candidate) =>
-        callback.action === 'toggle' &&
-        candidate.sourceRegistrationId === callback.registrationId
+    const excludedRegistrationIds = snapshot.rosterCandidates
+      .filter((candidate, index) =>
+        callback.action === 'toggle' && index === callback.candidateIndex
           ? candidate.included
           : !candidate.included,
       )
       .map((candidate) => candidate.sourceRegistrationId);
-    const manualParticipants = session.snapshot.entries
+    const manualParticipants = snapshot.entries
       .filter((entry) => entry.addedManually)
       .map((entry) => ({
         displayName: entry.displayName,
         billable: entry.billable,
       }));
-    const snapshot = await this.execute(
-      {
-        telegramUserId: input.telegramUserId,
-        gameId: session.snapshot.gameId,
-        expectedRevision: session.snapshot.revision,
-        excludedRegistrationIds,
-        manualParticipants,
-      },
-      callback.action === 'confirm',
-    );
-    this.remember(input.telegramUserId, snapshot, callback.token);
-    return this.render(snapshot);
+    const result = await this.attendance.execute({
+      groupId: actor.groupId,
+      gameId: actor.gameId,
+      actorUserId: actor.userId,
+      expectedRevision: snapshot.revision,
+      excludedRegistrationIds,
+      manualParticipants,
+      finalize: callback.action === 'confirm',
+    });
+    return this.render(result);
   }
 
   private async execute(
@@ -132,83 +158,87 @@ export class AttendanceHandlers {
       finalize,
     });
   }
-
-  private buttonsFor(
-    snapshot: AttendanceSnapshot,
-  ): AttendancePreview['buttons'] {
-    const session = [...this.sessions.values()].find(
-      (candidate) => candidate.snapshot === snapshot,
-    );
-    if (session === undefined)
-      throw new Error('Attendance preview has expired');
-    return [
-      ...snapshot.rosterCandidates.map((candidate) => ({
-        text: `${candidate.included ? '✓' : '✗'} ${candidate.displayName}`,
-        callbackData: `at:t:${session.token}:${snapshot.revision}:${candidate.sourceRegistrationId}`,
-      })),
-      {
-        text: 'Confirm attendance',
-        callbackData: `at:c:${session.token}:${snapshot.revision}`,
-      },
-    ];
-  }
-
-  private remember(
-    telegramUserId: TelegramId,
-    snapshot: AttendanceSnapshot,
-    token = createSessionToken(),
-  ): void {
-    this.sessions.set(token, { token, telegramUserId, snapshot });
-  }
-}
-
-interface AttendanceSession {
-  token: string;
-  telegramUserId: TelegramId;
-  snapshot: AttendanceSnapshot;
 }
 
 type AttendanceCallback =
   | {
       action: 'toggle';
-      token: string;
-      revision: number;
-      registrationId: RegistrationId;
+      groupId: GroupId;
+      snapshotId: AttendanceSnapshotId;
+      candidateIndex: number;
     }
   | {
       action: 'confirm';
-      token: string;
-      revision: number;
-      registrationId?: never;
+      groupId: GroupId;
+      snapshotId: AttendanceSnapshotId;
+      candidateIndex?: never;
     };
 
-const createSessionToken = (): string =>
-  randomUUID().replaceAll('-', '').slice(0, 12);
+export const attendanceCallback = (
+  action: AttendanceCallback['action'],
+  groupId: GroupId,
+  snapshotId: AttendanceSnapshotId,
+  candidateIndex?: number,
+): string => {
+  if (
+    action === 'toggle' &&
+    (candidateIndex === undefined ||
+      !Number.isSafeInteger(candidateIndex) ||
+      candidateIndex < 0)
+  ) {
+    throw new Error('Invalid attendance callback');
+  }
+  const callback =
+    action === 'toggle'
+      ? `at:t:${compactUuid(groupId)}:${compactUuid(snapshotId)}:${candidateIndex?.toString(36)}`
+      : `at:c:${compactUuid(groupId)}:${compactUuid(snapshotId)}`;
+  if (Buffer.byteLength(callback, 'utf8') > 64) {
+    throw new Error('Telegram callback payload exceeds 64 bytes');
+  }
+  return callback;
+};
 
 const parseAttendanceCallback = (value: string): AttendanceCallback => {
-  const [prefix, action, token, revision, registrationId, ...rest] =
+  const [prefix, action, groupId, snapshotId, candidateIndex, ...rest] =
     value.split(':');
   if (
     prefix !== 'at' ||
     (action !== 't' && action !== 'c') ||
-    token === undefined ||
-    !/^[a-f0-9]{12}$/i.test(token) ||
-    revision === undefined ||
-    !/^\d+$/.test(revision) ||
+    groupId === undefined ||
+    snapshotId === undefined ||
     rest.length > 0 ||
-    (action === 't' && registrationId === undefined) ||
-    (action === 'c' && registrationId !== undefined)
+    (action === 't' &&
+      (candidateIndex === undefined || !/^[0-9a-z]+$/i.test(candidateIndex))) ||
+    (action === 'c' && candidateIndex !== undefined)
   ) {
     throw new Error('Invalid attendance callback');
   }
+  const decodedGroupId = decodeCompactUuid(groupId);
+  const decodedSnapshotId = decodeCompactUuid(snapshotId);
   return action === 't'
     ? {
         action: 'toggle',
-        token,
-        revision: Number(revision),
-        registrationId: registrationId as RegistrationId,
+        groupId: asGroupId(decodedGroupId),
+        snapshotId: asAttendanceSnapshotId(decodedSnapshotId),
+        candidateIndex: Number.parseInt(candidateIndex!, 36),
       }
-    : { action: 'confirm', token, revision: Number(revision) };
+    : {
+        action: 'confirm',
+        groupId: asGroupId(decodedGroupId),
+        snapshotId: asAttendanceSnapshotId(decodedSnapshotId),
+      };
+};
+
+const compactUuid = (value: string): string =>
+  Buffer.from(value.replaceAll('-', ''), 'hex').toString('base64url');
+
+const decodeCompactUuid = (value: string): string => {
+  if (!/^[A-Za-z0-9_-]{22}$/.test(value)) {
+    throw new Error('Invalid attendance callback');
+  }
+  const hex = Buffer.from(value, 'base64url').toString('hex');
+  if (hex.length !== 32) throw new Error('Invalid attendance callback');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
 
 export const registerAttendanceHandlers = (

@@ -99,6 +99,7 @@ class InMemoryAttendanceRepository implements AttendanceRepository {
       },
     ];
     return {
+      id: 'attendance-snapshot' as never,
       groupId: input.groupId,
       gameId: input.gameId,
       revision: input.expectedRevision + 1,
