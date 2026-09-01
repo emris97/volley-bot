@@ -28,10 +28,7 @@ export {
   type GameTemplateSnapshot,
   type RoundingMode,
 } from './games/game-template.js';
-export {
-  createGameFromTemplate,
-  transitionGame,
-} from './games/game-policy.js';
+export { createGameFromTemplate, transitionGame } from './games/game-policy.js';
 export {
   InvalidRegistrationError,
   RegistrationMutationNotAllowedError,
@@ -57,3 +54,10 @@ export {
   type AttendanceSnapshotId,
   type AttendanceSnapshot,
 } from './attendance/attendance.js';
+export { rubles, type Money } from './payments/money.js';
+export {
+  calculateSettlement,
+  type SettlementCalculation,
+  type SettlementCharge,
+  type SettlementInput,
+} from './payments/settlement.js';
