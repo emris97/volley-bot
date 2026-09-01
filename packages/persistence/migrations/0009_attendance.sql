@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS attendance_snapshots (
   revision INTEGER NOT NULL,
   finalized BOOLEAN NOT NULL DEFAULT FALSE,
   excluded_registration_ids JSONB NOT NULL DEFAULT '[]'::JSONB,
+  roster_candidates JSONB NOT NULL DEFAULT '[]'::JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT attendance_snapshots_revision_check CHECK (revision > 0),
   CONSTRAINT attendance_snapshots_game_revision_unique UNIQUE (game_id, revision)
@@ -14,6 +15,9 @@ CREATE TABLE IF NOT EXISTS attendance_snapshots (
 
 CREATE INDEX IF NOT EXISTS attendance_snapshots_group_game_revision_idx
   ON attendance_snapshots(group_id, game_id, revision);
+
+ALTER TABLE attendance_snapshots
+  ADD COLUMN IF NOT EXISTS roster_candidates JSONB NOT NULL DEFAULT '[]'::JSONB;
 
 CREATE TABLE IF NOT EXISTS attendance_entries (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

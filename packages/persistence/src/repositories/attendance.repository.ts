@@ -77,6 +77,16 @@ export class AttendanceRepository {
           ),
         );
       const excluded = new Set(input.excludedRegistrationIds);
+      const rosterCandidates = roster.map((registration) => ({
+        participantRef: `registration:${registration.id}`,
+        sourceRegistrationId: registration.id,
+        displayName:
+          registration.guestDisplayName ??
+          registration.memberDisplayName ??
+          `Participant ${registration.id}`,
+        billable: true,
+        included: !excluded.has(asRegistrationId(registration.id)),
+      }));
       const [snapshot] = await transaction
         .insert(attendanceSnapshots)
         .values({
@@ -85,26 +95,22 @@ export class AttendanceRepository {
           revision: input.expectedRevision + 1,
           finalized: input.finalize,
           excludedRegistrationIds: [...excluded],
+          rosterCandidates,
         })
         .returning();
       if (snapshot === undefined)
         throw new Error('Attendance snapshot insert returned no row');
 
       const entries = [
-        ...roster
-          .filter(
-            (registration) => !excluded.has(asRegistrationId(registration.id)),
-          )
-          .map((registration) => ({
+        ...rosterCandidates
+          .filter((candidate) => candidate.included)
+          .map((candidate) => ({
             snapshotId: snapshot.id,
             groupId: input.groupId,
-            participantRef: `registration:${registration.id}`,
-            sourceRegistrationId: registration.id,
-            displayName:
-              registration.guestDisplayName ??
-              registration.memberDisplayName ??
-              `Participant ${registration.id}`,
-            billable: true,
+            participantRef: candidate.participantRef,
+            sourceRegistrationId: candidate.sourceRegistrationId,
+            displayName: candidate.displayName,
+            billable: candidate.billable,
             addedManually: false,
           })),
         ...input.manualParticipants.map((participant) => ({
@@ -191,41 +197,18 @@ const readSnapshot = async (
         eq(attendanceEntries.snapshotId, snapshot.id),
       ),
     );
-  const roster = await database
-    .select({
-      id: registrations.id,
-      guestDisplayName: registrations.guestDisplayName,
-      memberDisplayName: users.displayName,
-    })
-    .from(registrations)
-    .leftJoin(users, eq(users.id, registrations.userId))
-    .where(
-      and(
-        eq(registrations.groupId, groupId),
-        eq(registrations.gameId, gameId),
-        eq(registrations.state, 'ROSTERED'),
-      ),
-    );
-  const includedRegistrationIds = new Set(
-    entries.flatMap((entry) =>
-      entry.sourceRegistrationId === null ? [] : [entry.sourceRegistrationId],
-    ),
-  );
   return {
     id: asAttendanceSnapshotId(snapshot.id),
     groupId,
     gameId,
     revision: snapshot.revision,
     finalized: snapshot.finalized,
-    rosterCandidates: roster.map((registration) => ({
-      participantRef: `registration:${registration.id}`,
-      sourceRegistrationId: asRegistrationId(registration.id),
-      displayName:
-        registration.guestDisplayName ??
-        registration.memberDisplayName ??
-        `Participant ${registration.id}`,
-      billable: true,
-      included: includedRegistrationIds.has(registration.id),
+    rosterCandidates: snapshot.rosterCandidates.map((candidate) => ({
+      participantRef: candidate.participantRef,
+      sourceRegistrationId: asRegistrationId(candidate.sourceRegistrationId),
+      displayName: candidate.displayName,
+      billable: candidate.billable,
+      included: candidate.included,
     })),
     entries: entries.map(toAttendanceEntry),
   };

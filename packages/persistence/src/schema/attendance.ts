@@ -31,6 +31,18 @@ export const attendanceSnapshots = pgTable(
       .$type<string[]>()
       .default([])
       .notNull(),
+    rosterCandidates: jsonb('roster_candidates')
+      .$type<
+        Array<{
+          participantRef: string;
+          sourceRegistrationId: string;
+          displayName: string;
+          billable: boolean;
+          included: boolean;
+        }>
+      >()
+      .default([])
+      .notNull(),
     createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
       .defaultNow()
       .notNull(),

@@ -81,6 +81,23 @@ describe('AttendanceRepository', () => {
         included: false,
       }),
     );
+    const laterRegistrationId = await insertRosteredRegistration(
+      pool,
+      groupId,
+      completedGameId,
+      actorUserId,
+      'later',
+    );
+    const independentlyRead = await repository.findSnapshot(
+      groupId,
+      preview.id,
+    );
+    expect(independentlyRead?.rosterCandidates).toEqual(
+      preview.rosterCandidates,
+    );
+    expect(independentlyRead?.rosterCandidates).not.toContainEqual(
+      expect.objectContaining({ sourceRegistrationId: laterRegistrationId }),
+    );
 
     const stale = await repository.confirm({
       groupId,
@@ -193,13 +210,14 @@ const insertRosteredRegistration = async (
   groupId: ReturnType<typeof asGroupId>,
   gameId: ReturnType<typeof asGameId>,
   userId: ReturnType<typeof asUserId>,
+  suffix = 'initial',
 ) => {
   const result = await pool.query<{ id: string }>(
     `INSERT INTO registrations (
       group_id, game_id, user_id, kind, membership_priority, state,
       idempotency_key, confirmed_at
     ) VALUES ($1, $2, $3, 'MEMBER', 1, 'ROSTERED', $4, NOW()) RETURNING id`,
-    [groupId, gameId, userId, `attendance:${gameId}`],
+    [groupId, gameId, userId, `attendance:${gameId}:${suffix}`],
   );
   return asRegistrationId(result.rows[0]!.id);
 };

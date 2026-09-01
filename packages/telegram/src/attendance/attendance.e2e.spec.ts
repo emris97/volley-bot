@@ -13,6 +13,9 @@ import { AttendanceHandlers } from './attendance.handlers.js';
 const groupId = asGroupId('018f6ba0-62d2-7bd1-8f13-12e0c8424611');
 const gameId = asGameId('018f6ba0-62d2-7bd1-8f13-12e0c8424610');
 const registrationId = asRegistrationId('018f6ba0-62d2-7bd1-8f13-12e0c8424620');
+const secondRegistrationId = asRegistrationId(
+  '018f6ba0-62d2-7bd1-8f13-12e0c8424621',
+);
 
 it('toggles an excluded roster member back in and finalizes through callback data', async () => {
   const calls: Array<{
@@ -42,6 +45,13 @@ it('toggles an excluded roster member back in and finalizes through callback dat
             displayName: 'Absent player',
             billable: true,
             included: !excluded,
+          },
+          {
+            participantRef: `registration:${secondRegistrationId}`,
+            sourceRegistrationId: secondRegistrationId,
+            displayName: 'Present player',
+            billable: true,
+            included: true,
           },
         ],
         entries: excluded
@@ -92,6 +102,10 @@ it('toggles an excluded roster member back in and finalizes through callback dat
   expect(corrected.snapshot.entries).toContainEqual(
     expect.objectContaining({ sourceRegistrationId: registrationId }),
   );
+  expect(corrected.snapshot.rosterCandidates[0]).toMatchObject({
+    sourceRegistrationId: registrationId,
+    included: true,
+  });
   expect(calls[1]).toMatchObject({
     excludedRegistrationIds: [],
     finalize: false,
