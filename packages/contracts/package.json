@@ -7,6 +7,13 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./v1": {
+      "types": "./dist/v1/index.d.ts",
+      "import": "./dist/v1/index.js"
     }
+  },
+  "dependencies": {
+    "zod": "4.4.3"
   }
 }

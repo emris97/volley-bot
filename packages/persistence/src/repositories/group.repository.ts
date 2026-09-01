@@ -70,6 +70,34 @@ export class GroupRepository {
     return row === undefined ? null : toGroup(row);
   }
 
+  public async findUserIdByTelegramUserId(
+    telegramUserId: TelegramId,
+  ): Promise<UserId | null> {
+    const [row] = await this.database
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.telegramUserId, toDatabaseTelegramId(telegramUserId)))
+      .limit(1);
+    return row === undefined ? null : asUserId(row.id);
+  }
+
+  public async findMembershipByUserId(
+    groupId: GroupId,
+    userId: UserId,
+  ): Promise<Pick<GroupMembership, 'role' | 'membershipStatus'> | null> {
+    const [row] = await this.database
+      .select({
+        membershipStatus: groupMembers.membershipStatus,
+        role: groupMembers.role,
+      })
+      .from(groupMembers)
+      .where(
+        and(eq(groupMembers.groupId, groupId), eq(groupMembers.userId, userId)),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
   public async findTimeZone(groupId: GroupId): Promise<string | null> {
     const [row] = await this.database
       .select({ timeZone: groups.timeZone })

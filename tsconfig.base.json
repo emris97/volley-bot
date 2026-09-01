@@ -16,6 +16,7 @@
       "@volley/application": ["packages/application/src/index.ts"],
       "@volley/config": ["packages/config/src/index.ts"],
       "@volley/contracts": ["packages/contracts/src/index.ts"],
+      "@volley/contracts/*": ["packages/contracts/src/*"],
       "@volley/domain": ["packages/domain/src/index.ts"],
       "@volley/persistence": ["packages/persistence/src/index.ts"],
       "@volley/telegram": ["packages/telegram/src/index.ts"]
