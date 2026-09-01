@@ -45,7 +45,16 @@ export class OutboxDispatcher {
         await this.publisher.publish({
           id: `outbox:${event.id}`,
           type: event.type,
-          payload: event.payload,
+          payload: {
+            ...event.payload,
+            ...(event.groupId === undefined ? {} : { groupId: event.groupId }),
+            ...(event.aggregateType === undefined
+              ? {}
+              : { aggregateType: event.aggregateType }),
+            ...(event.aggregateId === undefined
+              ? {}
+              : { aggregateId: event.aggregateId }),
+          },
           occurredAt: event.occurredAt,
         });
       } catch (error) {

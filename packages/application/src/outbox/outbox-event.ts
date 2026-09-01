@@ -3,6 +3,9 @@ export interface ClaimedOutboxEvent {
   type: string;
   payload: Record<string, unknown>;
   occurredAt: Date;
+  groupId?: string;
+  aggregateType?: string;
+  aggregateId?: string;
 }
 
 export interface PublishedJob {

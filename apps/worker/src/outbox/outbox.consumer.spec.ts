@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { Queue } from 'bullmq';
 import {
   OutboxDispatcher,
   type ClaimedOutboxEvent,
   type JobPublisher,
   type OutboxClaimStore,
 } from '@volley/application';
+import { BullMqJobPublisher } from './outbox.consumer.js';
 
 describe('OutboxDispatcher', () => {
   it('publishes retries with the same deterministic BullMQ job id', async () => {
@@ -75,6 +77,28 @@ describe('OutboxDispatcher', () => {
     expect(result).toEqual({ claimed: 2, published: 1, failed: 1 });
     expect(store.release).toHaveBeenCalledWith(first.id, 'redis unavailable');
     expect(store.markPublished).toHaveBeenCalledWith(second.id);
+  });
+});
+
+describe('BullMqJobPublisher', () => {
+  it('uses a BullMQ-safe deterministic id for an outbox event', async () => {
+    const queue = { add: vi.fn().mockResolvedValue(undefined) };
+    const publisher = new BullMqJobPublisher(queue as unknown as Queue);
+
+    await publisher.publish({
+      id: 'outbox:018f6ba0-62d2-7bd1-8f13-12e0c8424610',
+      type: 'GAME_CREATED',
+      payload: {},
+      occurredAt: new Date('2026-09-01T12:00:00.000Z'),
+    });
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'GAME_CREATED',
+      {},
+      expect.objectContaining({
+        jobId: 'outbox:018f6ba0-62d2-7bd1-8f13-12e0c8424610:event',
+      }),
+    );
   });
 });
 

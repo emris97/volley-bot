@@ -6,6 +6,10 @@ export {
 } from './repositories/group.repository.js';
 export { GameRepository } from './repositories/game.repository.js';
 export {
+  GameMessageRepository,
+  type StoredGameMessageView,
+} from './repositories/game-message.repository.js';
+export {
   GameCreationDraftRepository,
   type StoredGameCreationDraft,
 } from './repositories/game-creation-draft.repository.js';

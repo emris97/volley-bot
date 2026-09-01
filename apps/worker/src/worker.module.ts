@@ -9,17 +9,22 @@ import {
   GAME_SCHEDULER_WORKER,
   GameSchedulerModule,
 } from './scheduling/game-scheduler.module.js';
+import {
+  GAME_MESSAGE_WORKER,
+  GameMessageWorkerModule,
+} from './telegram/game-message.consumer.js';
 
 @Module({
-  imports: [OutboxModule, GameSchedulerModule],
+  imports: [OutboxModule, GameSchedulerModule, GameMessageWorkerModule],
   providers: [
     {
       provide: MANAGED_WORKERS,
-      inject: [OUTBOX_WORKER, GAME_SCHEDULER_WORKER],
+      inject: [OUTBOX_WORKER, GAME_SCHEDULER_WORKER, GAME_MESSAGE_WORKER],
       useFactory: (
         outbox: ManagedWorker,
         scheduler: ManagedWorker,
-      ): readonly ManagedWorker[] => [outbox, scheduler],
+        gameMessages: ManagedWorker,
+      ): readonly ManagedWorker[] => [outbox, scheduler, gameMessages],
     },
     WorkerLifecycleService,
   ],

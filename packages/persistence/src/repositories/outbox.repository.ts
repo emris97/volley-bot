@@ -7,6 +7,9 @@ interface ClaimedRow extends Record<string, unknown> {
   event_type: string;
   payload: Record<string, unknown>;
   occurred_at: Date;
+  group_id: string;
+  aggregate_type: string;
+  aggregate_id: string;
 }
 
 export class OutboxRepository {
@@ -40,7 +43,14 @@ export class OutboxRepository {
       SET claimed_at = ${now}, claim_expires_at = ${leaseUntil}
       FROM candidates
       WHERE event.id = candidates.id
-      RETURNING event.id, event.event_type, event.payload, event.occurred_at
+      RETURNING
+        event.id,
+        event.event_type,
+        event.payload,
+        event.occurred_at,
+        event.group_id,
+        event.aggregate_type,
+        event.aggregate_id
     `);
 
     return result.rows.map((row) => ({
@@ -48,6 +58,9 @@ export class OutboxRepository {
       type: row.event_type,
       payload: row.payload,
       occurredAt: row.occurred_at,
+      groupId: row.group_id,
+      aggregateType: row.aggregate_type,
+      aggregateId: row.aggregate_id,
     }));
   }
 
