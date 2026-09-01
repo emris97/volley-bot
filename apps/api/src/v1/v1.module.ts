@@ -81,6 +81,8 @@ class V1RuntimeLifecycle implements OnApplicationShutdown {
         new AuthorizationService({
           findMembership: (groupId, userId) =>
             runtime.groups.findMembershipByUserId(groupId, userId),
+          findMembershipByTelegramUserId: (groupId, telegramUserId) =>
+            runtime.groups.findMembership(groupId, telegramUserId),
         }),
     },
     {

@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { GameIdSchema } from './games.js';
 
 export const RegistrationIdSchema = z.uuid();
 export const RegistrationStateSchema = z.enum([
@@ -9,15 +8,25 @@ export const RegistrationStateSchema = z.enum([
   'CANCELLED',
 ]);
 
-export const ChangeRegistrationRequestSchema = z.strictObject({
-  state: RegistrationStateSchema,
-});
+export const ChangeRegistrationRequestSchema = z.discriminatedUnion('action', [
+  z.strictObject({
+    action: z.literal('ADD_NAMED'),
+    guestDisplayName: z.string(),
+    idempotencyKey: z.string(),
+    reason: z.string(),
+  }),
+  z.strictObject({
+    action: z.literal('CANCEL'),
+    registrationId: RegistrationIdSchema,
+    reason: z.string(),
+  }),
+]);
 
 export const RegistrationResponseSchema = z.strictObject({
-  id: RegistrationIdSchema,
-  gameId: GameIdSchema,
-  displayName: z.string().min(1),
+  registrationId: RegistrationIdSchema,
   state: RegistrationStateSchema,
+  rosterPosition: z.int().positive().optional(),
+  waitlistPosition: z.int().positive().optional(),
 });
 
 export type ChangeRegistrationRequest = z.infer<

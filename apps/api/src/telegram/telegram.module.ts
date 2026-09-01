@@ -6,6 +6,7 @@ import {
   type OnApplicationShutdown,
 } from '@nestjs/common';
 import {
+  AuthorizationService,
   ConfirmTentative,
   ChangeChargeStatus,
   ConfigureGroup,
@@ -85,6 +86,12 @@ class TelegramRuntimeLifecycle implements OnApplicationShutdown {
         const registrations = new RegistrationRepository(database);
         const guestDrafts = new GuestRegistrationDraftRepository(database);
         const payments = new PaymentRepository(database);
+        const authorization = new AuthorizationService({
+          findMembership: (groupId, userId) =>
+            groups.findMembershipByUserId(groupId, userId),
+          findMembershipByTelegramUserId: (groupId, telegramUserId) =>
+            groups.findMembership(groupId, telegramUserId),
+        });
         const bot = createTelegramBot(env.BOT_TOKEN);
         const telegram = new GrammyTelegramGateway(bot);
         const signer = new SignedStartToken(
@@ -109,7 +116,8 @@ class TelegramRuntimeLifecycle implements OnApplicationShutdown {
         };
         const handlers = new GroupOnboardingHandlers(
           new OnboardGroup(telegram, groups, links),
-          new ConfigureGroup(groups),
+          new ConfigureGroup(authorization, groups),
+          authorization,
           groups,
           signer,
           telegram,
@@ -124,12 +132,12 @@ class TelegramRuntimeLifecycle implements OnApplicationShutdown {
           bot,
           new PaymentHandlers(
             registrations,
-            new PreviewSettlement(groups, payments),
-            new FinalizeSettlement(groups, payments),
-            new ChangeChargeStatus(groups, payments),
-            new SendPaymentReminders(groups, payments),
+            new PreviewSettlement(authorization, payments),
+            new FinalizeSettlement(authorization, payments),
+            new ChangeChargeStatus(authorization, payments),
+            new SendPaymentReminders(authorization, payments),
             payments,
-            groups,
+            authorization,
           ),
         );
         registerGroupOnboardingHandlers(bot, handlers, guestHandlers);

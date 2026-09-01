@@ -1,5 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises';
 import {
+  AuthorizationService,
   ConfigureGroup,
   OnboardGroup,
   type TelegramGateway,
@@ -116,9 +117,16 @@ describe('group onboarding webhook', () => {
         return `https://t.me/${botInfo.username}?start=${token}`;
       },
     };
+    const authorization = new AuthorizationService({
+      findMembership: (requestedGroupId, userId) =>
+        groups.findMembershipByUserId(requestedGroupId, userId),
+      findMembershipByTelegramUserId: (requestedGroupId, telegramUserId) =>
+        groups.findMembership(requestedGroupId, telegramUserId),
+    });
     const handlers = new GroupOnboardingHandlers(
       new OnboardGroup(telegram, groups, links),
-      new ConfigureGroup(groups),
+      new ConfigureGroup(authorization, groups),
+      authorization,
       groups,
       signer,
       telegram,

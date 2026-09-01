@@ -131,31 +131,6 @@ export class GroupRepository {
         };
   }
 
-  public async requireOrganizer(
-    groupId: GroupId,
-    actorUserId: UserId,
-  ): Promise<void> {
-    const [membership] = await this.database
-      .select({
-        role: groupMembers.role,
-        membershipStatus: groupMembers.membershipStatus,
-      })
-      .from(groupMembers)
-      .where(
-        and(
-          eq(groupMembers.groupId, groupId),
-          eq(groupMembers.userId, actorUserId),
-        ),
-      )
-      .limit(1);
-    if (
-      membership?.membershipStatus !== 'ACTIVE' ||
-      !['OWNER', 'ADMIN', 'ORGANIZER'].includes(membership.role)
-    ) {
-      throw new Error('Organizer permission required');
-    }
-  }
-
   public async upsertFromTelegram(
     input: UpsertGroupFromTelegramInput,
   ): Promise<Group> {

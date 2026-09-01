@@ -4,6 +4,7 @@ export {
   AuthorizationDeniedError,
   AuthorizationService,
   type AuthorizationRepository,
+  type OrganizerAuthorization,
 } from './auth/authorization.service.js';
 export * from './groups/change-group-role.js';
 export * from './groups/configure-group.js';

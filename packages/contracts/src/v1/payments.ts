@@ -1,6 +1,4 @@
 import { z } from 'zod';
-import { GameIdSchema } from './games.js';
-
 export const ChargeStatusSchema = z.enum(['UNPAID', 'PAID', 'WAIVED']);
 
 export const ChangeChargeStatusRequestSchema = z.strictObject({
@@ -9,11 +7,13 @@ export const ChangeChargeStatusRequestSchema = z.strictObject({
 
 export const PaymentChargeResponseSchema = z.strictObject({
   id: z.uuid(),
-  gameId: GameIdSchema,
+  settlementId: z.uuid(),
   participantRef: z.string().min(1),
+  displayName: z.string(),
+  addedManually: z.boolean(),
   amountMinor: z.string().regex(/^\d+$/),
-  currency: z.literal('RUB'),
   status: ChargeStatusSchema,
+  createdAt: z.iso.datetime(),
 });
 
 export type ChangeChargeStatusRequest = z.infer<

@@ -116,6 +116,7 @@ describe('GET /api/v1/groups/:groupId/games/:gameId', () => {
     const authorizationRepository: AuthorizationRepository = {
       findMembership: async (groupId: GroupId, userId: UserId) =>
         memberships.get(`${groupId}:${userId}`) ?? null,
+      findMembershipByTelegramUserId: async () => null,
     };
     const queries: GameQueries = {
       getGame: async (groupId, gameId) =>

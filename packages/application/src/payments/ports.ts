@@ -7,6 +7,7 @@ import type {
   TelegramId,
   UserId,
 } from '@volley/domain';
+import type { OrganizerAuthorization } from '../auth/authorization.service.js';
 
 export type ChargeStatus = 'UNPAID' | 'PAID' | 'WAIVED';
 
@@ -170,6 +171,4 @@ export interface PaymentRepository {
   ): Promise<{ enqueued: number }>;
 }
 
-export interface PaymentAuthorization {
-  requireOrganizer(groupId: GroupId, actorUserId: UserId): Promise<void>;
-}
+export type PaymentAuthorization = OrganizerAuthorization;
