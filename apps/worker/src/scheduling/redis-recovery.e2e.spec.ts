@@ -87,12 +87,14 @@ describe('Redis recovery with durable Postgres metadata', () => {
     const scheduledJobs = new ScheduledJobRepository(database);
     const outbox = new OutboxRepository(database);
     const groupId = asGroupId(randomUUID());
-    const gameId = asGameId(randomUUID());
     await pool.query(
       "INSERT INTO groups (id, telegram_chat_id, title) VALUES ($1, '-1001', 'Recovery')",
       [groupId],
     );
-    await games.insert(game(groupId, gameId));
+    const createdGame = await games.insert(
+      game(groupId, asGameId(randomUUID())),
+    );
+    const gameId = createdGame.id!;
     const user = await pool.query<{ id: string }>(
       "INSERT INTO users (telegram_user_id, display_name) VALUES ('42', 'Игрок') RETURNING id",
     );
