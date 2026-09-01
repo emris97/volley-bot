@@ -5,6 +5,7 @@ export {
   type UpsertGroupFromTelegramInput,
 } from './repositories/group.repository.js';
 export { GameRepository } from './repositories/game.repository.js';
+export { AttendanceRepository } from './repositories/attendance.repository.js';
 export {
   GameMessageRepository,
   type StoredGameMessageView,

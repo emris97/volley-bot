@@ -45,6 +45,8 @@ describe('foundation migration', () => {
     expect(await applicationTables(pool)).toEqual(firstTables);
     expect(await appliedFoundationMigration(pool)).toEqual(firstMigration);
     expect(firstTables).toEqual([
+      'attendance_entries',
+      'attendance_snapshots',
       'audit_events',
       'game_creation_drafts',
       'game_templates',

@@ -1,4 +1,5 @@
 export { auditEvents } from './audit.js';
+export { attendanceEntries, attendanceSnapshots } from './attendance.js';
 export { games, gameTemplates } from './games.js';
 export { gameCreationDrafts } from './game-creation-drafts.js';
 export { groupMembers, groups } from './groups.js';

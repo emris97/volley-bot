@@ -50,3 +50,7 @@ export {
   type PlacementInput,
   type PlacementResult,
 } from './registrations/placement-policy.js';
+export {
+  type AttendanceEntry,
+  type AttendanceSnapshot,
+} from './attendance/attendance.js';
