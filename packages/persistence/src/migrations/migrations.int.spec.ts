@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { Pool } from 'pg';
 import {
   GenericContainer,
@@ -6,11 +5,7 @@ import {
   Wait,
 } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-
-const migrationUrl = new URL(
-  '../../migrations/0001_foundation.sql',
-  import.meta.url,
-);
+import { applyTestMigrations } from './migration-test-helper.js';
 
 describe('foundation migration', () => {
   let container: StartedTestContainer;
@@ -40,13 +35,12 @@ describe('foundation migration', () => {
   });
 
   it('applies to an empty database and is a no-op when repeated', async () => {
-    const sql = await readFile(migrationUrl, 'utf8');
-    await pool.query(sql);
+    await applyTestMigrations(pool);
 
     const firstTables = await applicationTables(pool);
     const firstMigration = await appliedFoundationMigration(pool);
 
-    await pool.query(sql);
+    await applyTestMigrations(pool);
 
     expect(await applicationTables(pool)).toEqual(firstTables);
     expect(await appliedFoundationMigration(pool)).toEqual(firstMigration);

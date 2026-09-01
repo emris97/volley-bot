@@ -10,11 +10,24 @@ import {
 } from '@volley/domain';
 import { and, eq } from 'drizzle-orm';
 import type { Database } from '../client.js';
-import { groupMembers, groups, users } from '../schema/index.js';
+import { auditEvents, groupMembers, groups, users } from '../schema/index.js';
 
 export interface UpsertGroupFromTelegramInput {
   telegramChatId: TelegramId;
   title: string;
+}
+
+export interface ConfigureGroupInput {
+  groupId: GroupId;
+  actorTelegramId: TelegramId;
+  timeZone: string;
+  memberPriorityEnabled: boolean;
+  tentativePromptMinutesBefore: number;
+  tentativeResponseMinutes: number;
+  reminderMinutesBefore: number;
+  currency: 'RUB';
+  roundingMode: 'EXACT' | 'UP_1' | 'UP_10' | 'UP_50';
+  pinGameMessages: boolean;
 }
 
 const toDatabaseTelegramId = (value: TelegramId): bigint => BigInt(value);
@@ -44,6 +57,15 @@ export class GroupRepository {
       .where(eq(groups.telegramChatId, toDatabaseTelegramId(telegramChatId)))
       .limit(1);
 
+    return row === undefined ? null : toGroup(row);
+  }
+
+  public async findById(groupId: GroupId): Promise<Group | null> {
+    const [row] = await this.database
+      .select()
+      .from(groups)
+      .where(eq(groups.id, groupId))
+      .limit(1);
     return row === undefined ? null : toGroup(row);
   }
 
@@ -85,6 +107,116 @@ export class GroupRepository {
     }
 
     return toGroup(row);
+  }
+
+  public async beginOnboarding(
+    groupId: GroupId,
+    actorTelegramId: TelegramId,
+  ): Promise<void> {
+    await this.database.transaction(async (transaction) => {
+      const [actor] = await transaction
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.telegramUserId, toDatabaseTelegramId(actorTelegramId)))
+        .limit(1);
+      if (actor === undefined) throw new Error('Onboarding actor not found');
+
+      await transaction
+        .update(groups)
+        .set({ onboardingState: 'CONFIGURING', updatedAt: new Date() })
+        .where(eq(groups.id, groupId));
+      await transaction.insert(auditEvents).values({
+        groupId,
+        actorUserId: actor.id,
+        eventType: 'GROUP_ONBOARDING_STARTED',
+        entityType: 'GROUP',
+        entityId: groupId,
+      });
+    });
+  }
+
+  public async configure(input: ConfigureGroupInput): Promise<void> {
+    await this.database.transaction(async (transaction) => {
+      const [actor] = await transaction
+        .select({ id: users.id })
+        .from(users)
+        .where(
+          eq(users.telegramUserId, toDatabaseTelegramId(input.actorTelegramId)),
+        )
+        .limit(1);
+      if (actor === undefined) throw new Error('Configuration actor not found');
+
+      await transaction
+        .update(groups)
+        .set({
+          timeZone: input.timeZone,
+          memberPriorityEnabled: input.memberPriorityEnabled,
+          tentativePromptMinutesBefore: input.tentativePromptMinutesBefore,
+          tentativeResponseMinutes: input.tentativeResponseMinutes,
+          reminderMinutesBefore: input.reminderMinutesBefore,
+          currency: input.currency,
+          roundingMode: input.roundingMode,
+          pinGameMessages: input.pinGameMessages,
+          onboardingState: 'CONFIGURED',
+          onboardingData: {},
+          updatedAt: new Date(),
+        })
+        .where(eq(groups.id, input.groupId));
+      await transaction.insert(auditEvents).values({
+        groupId: input.groupId,
+        actorUserId: actor.id,
+        eventType: 'GROUP_CONFIGURED',
+        entityType: 'GROUP',
+        entityId: input.groupId,
+        payload: { timeZone: input.timeZone },
+      });
+    });
+  }
+
+  public async saveWizardProgress(
+    groupId: GroupId,
+    progress: Record<string, unknown>,
+  ): Promise<void> {
+    await this.database
+      .update(groups)
+      .set({ onboardingData: progress, updatedAt: new Date() })
+      .where(eq(groups.id, groupId));
+  }
+
+  public async getWizardProgress(
+    groupId: GroupId,
+  ): Promise<Record<string, unknown>> {
+    const [row] = await this.database
+      .select({ onboardingData: groups.onboardingData })
+      .from(groups)
+      .where(eq(groups.id, groupId))
+      .limit(1);
+    if (row === undefined) throw new Error('Group not found');
+    return row.onboardingData;
+  }
+
+  public async recordRoleChange(input: {
+    groupId: GroupId;
+    actorTelegramId: TelegramId;
+    targetTelegramId: TelegramId;
+    role: 'ORGANIZER' | 'MEMBER';
+  }): Promise<void> {
+    const [actor] = await this.database
+      .select({ id: users.id })
+      .from(users)
+      .where(
+        eq(users.telegramUserId, toDatabaseTelegramId(input.actorTelegramId)),
+      )
+      .limit(1);
+    if (actor === undefined) throw new Error('Role change actor not found');
+    await this.database.insert(auditEvents).values({
+      groupId: input.groupId,
+      actorUserId: actor.id,
+      eventType: 'GROUP_ROLE_CHANGED',
+      entityType: 'GROUP',
+      entityId: input.groupId,
+      payload: { targetTelegramId: input.targetTelegramId, role: input.role },
+    });
   }
 
   public async upsertMembership(

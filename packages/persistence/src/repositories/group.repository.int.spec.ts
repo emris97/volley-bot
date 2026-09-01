@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { Pool } from 'pg';
 import {
   GenericContainer,
@@ -8,12 +7,8 @@ import {
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { asTelegramId } from '@volley/domain';
 import { createDatabase } from '../client.js';
+import { applyTestMigrations } from '../migrations/migration-test-helper.js';
 import { GroupRepository } from './group.repository.js';
-
-const migrationUrl = new URL(
-  '../../migrations/0001_foundation.sql',
-  import.meta.url,
-);
 
 describe('GroupRepository', () => {
   let container: StartedTestContainer;
@@ -36,7 +31,7 @@ describe('GroupRepository', () => {
     pool = new Pool({
       connectionString: `postgresql://postgres:postgres@${container.getHost()}:${container.getMappedPort(5432)}/volley`,
     });
-    await pool.query(await readFile(migrationUrl, 'utf8'));
+    await applyTestMigrations(pool);
     repo = new GroupRepository(createDatabase(pool));
   }, 60_000);
 

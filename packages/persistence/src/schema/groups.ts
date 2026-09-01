@@ -9,6 +9,8 @@ import {
   boolean,
   check,
   index,
+  integer,
+  jsonb,
   pgTable,
   primaryKey,
   text,
@@ -30,6 +32,25 @@ export const groups = pgTable(
       .$type<OnboardingState>()
       .default('PENDING')
       .notNull(),
+    onboardingData: jsonb('onboarding_data')
+      .$type<Record<string, unknown>>()
+      .default({})
+      .notNull(),
+    memberPriorityEnabled: boolean('member_priority_enabled')
+      .default(false)
+      .notNull(),
+    tentativePromptMinutesBefore: integer('tentative_prompt_minutes_before')
+      .default(1440)
+      .notNull(),
+    tentativeResponseMinutes: integer('tentative_response_minutes')
+      .default(60)
+      .notNull(),
+    reminderMinutesBefore: integer('reminder_minutes_before')
+      .default(120)
+      .notNull(),
+    currency: text('currency').default('RUB').notNull(),
+    roundingMode: text('rounding_mode').default('EXACT').notNull(),
+    pinGameMessages: boolean('pin_game_messages').default(true).notNull(),
     createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -42,6 +63,15 @@ export const groups = pgTable(
     check(
       'groups_onboarding_state_check',
       sql`${table.onboardingState} in ('PENDING', 'CONFIGURING', 'CONFIGURED')`,
+    ),
+    check('groups_currency_check', sql`${table.currency} in ('RUB')`),
+    check(
+      'groups_rounding_mode_check',
+      sql`${table.roundingMode} in ('EXACT', 'UP_1', 'UP_10', 'UP_50')`,
+    ),
+    check(
+      'groups_timing_values_check',
+      sql`${table.tentativePromptMinutesBefore} >= 0 and ${table.tentativeResponseMinutes} >= 0 and ${table.reminderMinutesBefore} >= 0`,
     ),
   ],
 );
