@@ -1,10 +1,26 @@
-import { Controller, Get, Global, Header, Module } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Global,
+  Header,
+  Inject,
+  Module,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { JsonLogger, MetricsRegistry } from '@volley/application';
 import { parseEnv } from '@volley/config';
+import {
+  WORKER_DEPENDENCIES,
+  type WorkerDependencies,
+} from '../infrastructure/worker-dependencies.module.js';
 
 @Controller()
 class WorkerObservabilityController {
-  public constructor(private readonly metrics: MetricsRegistry) {}
+  public constructor(
+    private readonly metrics: MetricsRegistry,
+    @Inject(WORKER_DEPENDENCIES)
+    private readonly dependencies: WorkerDependencies,
+  ) {}
 
   @Get('health/live')
   public live(): { status: 'ok' } {
@@ -12,8 +28,20 @@ class WorkerObservabilityController {
   }
 
   @Get('health/ready')
-  public ready(): { status: 'ok' } {
-    return { status: 'ok' };
+  public async ready(): Promise<{ status: 'ok' }> {
+    try {
+      if (this.dependencies.redis.status !== 'ready') {
+        throw new Error('Redis is not ready');
+      }
+      const [, redisResponse] = await Promise.all([
+        this.dependencies.pool.query('SELECT 1'),
+        this.dependencies.redis.ping(),
+      ]);
+      if (redisResponse !== 'PONG') throw new Error('Redis ping failed');
+      return { status: 'ok' };
+    } catch {
+      throw new ServiceUnavailableException({ status: 'unavailable' });
+    }
   }
 
   @Get('metrics')

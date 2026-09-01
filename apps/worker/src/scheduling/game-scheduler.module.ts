@@ -15,7 +15,6 @@ import {
   ScheduledJobRepository,
 } from '@volley/persistence';
 import { Queue, Worker } from 'bullmq';
-import { Pool } from 'pg';
 import {
   createTelegramBot,
   GrammyTelegramGateway,
@@ -23,6 +22,10 @@ import {
   TelegramPrivateChatUnavailableError,
 } from '@volley/telegram';
 import { NotificationConsumer } from '../notifications/notification.consumer.js';
+import {
+  WORKER_DEPENDENCIES,
+  type WorkerDependencies,
+} from '../infrastructure/worker-dependencies.module.js';
 import {
   BullMqDelayedJobScheduler,
   GameSchedulerConsumer,
@@ -35,17 +38,21 @@ export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
   providers: [
     {
       provide: GAME_SCHEDULER_WORKER,
-      inject: [MetricsRegistry, JsonLogger],
-      useFactory: (metrics: MetricsRegistry, logger: JsonLogger) => {
+      inject: [WORKER_DEPENDENCIES, MetricsRegistry, JsonLogger],
+      useFactory: (
+        dependencies: WorkerDependencies,
+        metrics: MetricsRegistry,
+        logger: JsonLogger,
+      ) => {
         const env = parseEnv(process.env);
-        const pool = new Pool({ connectionString: env.DATABASE_URL });
-        const database = createDatabase(pool);
+        const database = createDatabase(dependencies.pool);
         const games = new GameRepository(database);
         const registrations = new RegistrationRepository(database);
         const notifications = new NotificationRepository(database);
         const scheduledJobs = new ScheduledJobRepository(database);
-        const connection = redisConnection(env.REDIS_URL);
-        const queue = new Queue('volley-game-scheduler', { connection });
+        const queue = new Queue('volley-game-scheduler', {
+          connection: dependencies.redis,
+        });
         const scheduler = new BullMqDelayedJobScheduler(
           queue,
           () => new Date(),
@@ -105,7 +112,7 @@ export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
             await consumer.process(job, bullJob.attemptsMade);
             await scheduledJobs.markCompleted(job.groupId, job.gameId, job.id);
           },
-          { connection, autorun: false },
+          { connection: dependencies.redis, autorun: false },
         );
 
         const reconcileAll = async (): Promise<void> => {
@@ -126,7 +133,6 @@ export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
 
         return new GameSchedulerRuntime(worker, reconcileAll, async () => {
           await queue.close();
-          await pool.end();
         });
       },
     },
@@ -134,15 +140,6 @@ export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
   exports: [GAME_SCHEDULER_WORKER],
 })
 export class GameSchedulerModule {}
-
-const redisConnection = (redisUrl: string) => {
-  const redis = new URL(redisUrl);
-  return {
-    host: redis.hostname,
-    port: Number(redis.port || 6379),
-    password: redis.password || undefined,
-  };
-};
 
 const deserializeJob = (value: unknown): RequiredJob => {
   if (typeof value !== 'object' || value === null) {

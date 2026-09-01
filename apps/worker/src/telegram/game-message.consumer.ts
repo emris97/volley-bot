@@ -18,7 +18,10 @@ import {
   type RenderedTelegramMessage,
 } from '@volley/telegram';
 import { Queue, Worker } from 'bullmq';
-import { Pool } from 'pg';
+import {
+  WORKER_DEPENDENCIES,
+  type WorkerDependencies,
+} from '../infrastructure/worker-dependencies.module.js';
 import type { ManagedWorker } from '../worker-lifecycle.service.js';
 import { NotificationConsumer } from '../notifications/notification.consumer.js';
 import { observeWorkerJob } from '../observability/worker-job-observability.js';
@@ -200,12 +203,18 @@ export const GAME_MESSAGE_WORKER = Symbol('GAME_MESSAGE_WORKER');
   providers: [
     {
       provide: GAME_MESSAGE_WORKER,
-      inject: [MetricsRegistry, JsonLogger],
-      useFactory: (metrics: MetricsRegistry, logger: JsonLogger) => {
+      inject: [WORKER_DEPENDENCIES, MetricsRegistry, JsonLogger],
+      useFactory: (
+        dependencies: WorkerDependencies,
+        metrics: MetricsRegistry,
+        logger: JsonLogger,
+      ) => {
         const env = parseEnv(process.env);
-        const pool = new Pool({ connectionString: env.DATABASE_URL });
-        const database = createDatabase(pool);
-        const repository = new GameMessageRepository(database, pool);
+        const database = createDatabase(dependencies.pool);
+        const repository = new GameMessageRepository(
+          database,
+          dependencies.pool,
+        );
         const notifications = new NotificationRepository(database);
         const telegram = new GrammyTelegramGateway(
           createTelegramBot(env.BOT_TOKEN),
@@ -266,10 +275,10 @@ export const GAME_MESSAGE_WORKER = Symbol('GAME_MESSAGE_WORKER');
           metrics,
         );
         const canonicalQueue = new Queue('volley-game-messages', {
-          connection: redisConnection(env.REDIS_URL),
+          connection: dependencies.redis,
         });
         const notificationQueue = new Queue('volley-notifications', {
-          connection: redisConnection(env.REDIS_URL),
+          connection: dependencies.redis,
         });
         const router = new OutboxEventRouter(
           canonicalQueue,
@@ -287,7 +296,6 @@ export const GAME_MESSAGE_WORKER = Symbol('GAME_MESSAGE_WORKER');
           metrics,
           logger,
         );
-        const connection = redisConnection(env.REDIS_URL);
         const routerWorker = new Worker(
           'volley-outbox',
           async (job) =>
@@ -297,7 +305,7 @@ export const GAME_MESSAGE_WORKER = Symbol('GAME_MESSAGE_WORKER');
               requiredJobId(job.id),
               job.attemptsMade,
             ),
-          { connection, autorun: false },
+          { connection: dependencies.redis, autorun: false },
         );
         const messageWorker = new Worker(
           'volley-game-messages',
@@ -308,7 +316,7 @@ export const GAME_MESSAGE_WORKER = Symbol('GAME_MESSAGE_WORKER');
               requiredJobId(job.id),
               job.attemptsMade,
             ),
-          { connection, autorun: false },
+          { connection: dependencies.redis, autorun: false },
         );
         const promotionWorker = new Worker(
           'volley-notifications',
@@ -318,7 +326,7 @@ export const GAME_MESSAGE_WORKER = Symbol('GAME_MESSAGE_WORKER');
               requiredJobId(job.id),
               job.attemptsMade,
             ),
-          { connection, autorun: false },
+          { connection: dependencies.redis, autorun: false },
         );
         return new GameMessageWorkerRuntime(
           [routerWorker, messageWorker, promotionWorker],
@@ -327,7 +335,6 @@ export const GAME_MESSAGE_WORKER = Symbol('GAME_MESSAGE_WORKER');
               canonicalQueue.close(),
               notificationQueue.close(),
             ]);
-            await pool.end();
           },
         );
       },
@@ -341,15 +348,6 @@ const messageOptions = (message: RenderedTelegramMessage) => ({
   parseMode: message.parseMode,
   keyboard: message.keyboard,
 });
-
-const redisConnection = (redisUrl: string) => {
-  const redis = new URL(redisUrl);
-  return {
-    host: redis.hostname,
-    port: Number(redis.port || 6379),
-    password: redis.password || undefined,
-  };
-};
 
 const childJobOptions = (jobId: string) => ({
   jobId,

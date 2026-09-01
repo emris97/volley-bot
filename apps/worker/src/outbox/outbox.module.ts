@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { parseEnv } from '@volley/config';
 import {
   createDatabase,
   OutboxRepository,
@@ -8,7 +7,10 @@ import {
 import { OutboxDispatcher } from '@volley/application';
 import { MetricsRegistry } from '@volley/application';
 import { Queue } from 'bullmq';
-import { Pool } from 'pg';
+import {
+  WORKER_DEPENDENCIES,
+  type WorkerDependencies,
+} from '../infrastructure/worker-dependencies.module.js';
 import { BullMqJobPublisher, OutboxConsumer } from './outbox.consumer.js';
 
 export const OUTBOX_WORKER = Symbol('OUTBOX_WORKER');
@@ -17,19 +19,15 @@ export const OUTBOX_WORKER = Symbol('OUTBOX_WORKER');
   providers: [
     {
       provide: OUTBOX_WORKER,
-      inject: [MetricsRegistry],
-      useFactory: (metrics: MetricsRegistry) => {
-        const env = parseEnv(process.env);
-        const pool = new Pool({ connectionString: env.DATABASE_URL });
-        const redis = new URL(env.REDIS_URL);
+      inject: [WORKER_DEPENDENCIES, MetricsRegistry],
+      useFactory: (
+        dependencies: WorkerDependencies,
+        metrics: MetricsRegistry,
+      ) => {
         const queue = new Queue('volley-outbox', {
-          connection: {
-            host: redis.hostname,
-            port: Number(redis.port || 6379),
-            password: redis.password || undefined,
-          },
+          connection: dependencies.redis,
         });
-        const database = createDatabase(pool);
+        const database = createDatabase(dependencies.pool);
         const payments = new PaymentRepository(database);
         const dispatcher = new OutboxDispatcher(
           new OutboxRepository(database),
@@ -39,7 +37,6 @@ export const OUTBOX_WORKER = Symbol('OUTBOX_WORKER');
           dispatcher,
           async () => {
             await queue.close();
-            await pool.end();
           },
           1_000,
           () => payments.purgeExpiredState({ batchSize: 500 }),

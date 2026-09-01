@@ -1,9 +1,14 @@
 import { createRequire } from 'node:module';
-import type { INestApplication } from '@nestjs/common';
+import { EventEmitter } from 'node:events';
+import { Logger, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { MetricsRegistry } from '@volley/application';
 import type { Queue } from 'bullmq';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import {
+  WORKER_DEPENDENCIES,
+  WorkerDependencies,
+} from '../infrastructure/worker-dependencies.module.js';
 import { BullMqJobPublisher } from '../outbox/outbox.consumer.js';
 import { OUTBOX_WORKER } from '../outbox/outbox.module.js';
 import { GAME_SCHEDULER_WORKER } from '../scheduling/game-scheduler.module.js';
@@ -19,6 +24,16 @@ const { FastifyAdapter } = apiRequire('@nestjs/platform-fastify') as {
 
 let app: INestApplication | undefined;
 let previousEnv: NodeJS.ProcessEnv;
+
+interface TestWorker {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+interface TestDependencies extends TestWorker {
+  pool: { query(sql: string): Promise<unknown> };
+  redis: { status: string; ping(): Promise<string> };
+}
 
 beforeEach(() => {
   previousEnv = { ...process.env };
@@ -40,23 +55,9 @@ afterEach(async () => {
 });
 
 it('scrapes metrics produced by a production worker adapter', async () => {
-  const idleWorker = {
-    start: vi.fn().mockResolvedValue(undefined),
-    stop: vi.fn().mockResolvedValue(undefined),
-  };
-  const module = await Test.createTestingModule({ imports: [WorkerModule] })
-    .overrideProvider(OUTBOX_WORKER)
-    .useValue(idleWorker)
-    .overrideProvider(GAME_SCHEDULER_WORKER)
-    .useValue(idleWorker)
-    .overrideProvider(GAME_MESSAGE_WORKER)
-    .useValue(idleWorker)
-    .compile();
-  app = module.createNestApplication(new FastifyAdapter() as never);
-  await app.init();
-  await app.getHttpAdapter().getInstance().ready();
+  const module = await createProductionWorkerApp(healthyDependencies());
 
-  const initial = await app
+  const initial = await app!
     .getHttpAdapter()
     .getInstance()
     .inject({ method: 'GET', url: '/metrics' });
@@ -80,7 +81,7 @@ it('scrapes metrics produced by a production worker adapter', async () => {
     occurredAt: new Date('2026-09-02T12:00:00.000Z'),
   });
 
-  const response = await app
+  const response = await app!
     .getHttpAdapter()
     .getInstance()
     .inject({ method: 'GET', url: '/metrics' });
@@ -88,4 +89,161 @@ it('scrapes metrics produced by a production worker adapter', async () => {
   expect(response.headers['content-type']).toContain('text/plain');
   expect(response.body).toContain('volley_queue_depth{queue="outbox"} 2');
   expect(response.body).toContain('volley_outbox_lag_seconds_sum 1');
+});
+
+it('reports ready when PostgreSQL and Redis are reachable', async () => {
+  await createProductionWorkerApp(healthyDependencies());
+
+  const response = await injectReady();
+
+  expect(response.statusCode).toBe(200);
+  expect(response.json()).toEqual({ status: 'ok' });
+});
+
+it('reports unavailable when the worker PostgreSQL dependency fails', async () => {
+  await createProductionWorkerApp({
+    ...healthyDependencies(),
+    pool: {
+      query: vi
+        .fn()
+        .mockRejectedValue(
+          new Error('postgresql://operator:database-secret@database/volley'),
+        ),
+    },
+  });
+
+  const response = await injectReady();
+
+  expect(response.statusCode).toBe(503);
+  expect(response.json()).toEqual({ status: 'unavailable' });
+  expect(response.body).not.toContain('database-secret');
+});
+
+it('reports unavailable when the worker Redis dependency fails', async () => {
+  await createProductionWorkerApp({
+    ...healthyDependencies(),
+    redis: {
+      status: 'ready',
+      ping: vi
+        .fn()
+        .mockRejectedValue(
+          new Error('redis://operator:redis-secret@redis:6379'),
+        ),
+    },
+  });
+
+  const response = await injectReady();
+
+  expect(response.statusCode).toBe(503);
+  expect(response.json()).toEqual({ status: 'unavailable' });
+  expect(response.body).not.toContain('redis-secret');
+});
+
+it('keeps the worker live and non-ready after an idle PostgreSQL client error', async () => {
+  const pool = Object.assign(new EventEmitter(), {
+    query: vi.fn().mockRejectedValue(new Error('database unavailable')),
+    end: vi.fn().mockResolvedValue(undefined),
+  });
+  const redis = {
+    status: 'ready',
+    ping: vi.fn().mockResolvedValue('PONG'),
+    quit: vi.fn().mockResolvedValue('OK'),
+    disconnect: vi.fn(),
+  };
+  const logger = vi
+    .spyOn(Logger.prototype, 'error')
+    .mockImplementation(() => undefined);
+  await createProductionWorkerApp(
+    new WorkerDependencies(pool as never, redis as never),
+  );
+
+  expect(() =>
+    pool.emit(
+      'error',
+      new Error('postgresql://operator:idle-client-secret@postgres/volley'),
+    ),
+  ).not.toThrow();
+  const live = await app!.getHttpAdapter().getInstance().inject({
+    method: 'GET',
+    url: '/health/live',
+  });
+  const ready = await injectReady();
+
+  expect(live.statusCode).toBe(200);
+  expect(live.json()).toEqual({ status: 'ok' });
+  expect(ready.statusCode).toBe(503);
+  expect(ready.json()).toEqual({ status: 'unavailable' });
+  expect(logger).toHaveBeenCalledWith('PostgreSQL pool connection lost');
+  expect(JSON.stringify(logger.mock.calls)).not.toContain('idle-client-secret');
+});
+
+it('closes shared dependencies once after production consumers drain', async () => {
+  let releaseConsumer!: () => void;
+  const consumerStopped = new Promise<void>((resolve) => {
+    releaseConsumer = resolve;
+  });
+  const heldConsumer = {
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn(() => consumerStopped),
+  };
+  const dependencies = healthyDependencies();
+  await createProductionWorkerApp(dependencies, {
+    gameMessages: heldConsumer,
+  });
+
+  const close = app!.close();
+  await vi.waitFor(() => expect(heldConsumer.stop).toHaveBeenCalledOnce());
+  expect(dependencies.stop).not.toHaveBeenCalled();
+
+  releaseConsumer();
+  await close;
+  app = undefined;
+
+  expect(dependencies.stop).toHaveBeenCalledOnce();
+});
+
+const createProductionWorkerApp = async (
+  dependencies: TestDependencies,
+  workers: {
+    outbox?: TestWorker;
+    scheduler?: TestWorker;
+    gameMessages?: TestWorker;
+  } = {},
+) => {
+  const idleWorker = {
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+  };
+  const module = await Test.createTestingModule({ imports: [WorkerModule] })
+    .overrideProvider(WORKER_DEPENDENCIES)
+    .useValue(dependencies)
+    .overrideProvider(OUTBOX_WORKER)
+    .useValue(workers.outbox ?? idleWorker)
+    .overrideProvider(GAME_SCHEDULER_WORKER)
+    .useValue(workers.scheduler ?? idleWorker)
+    .overrideProvider(GAME_MESSAGE_WORKER)
+    .useValue(workers.gameMessages ?? idleWorker)
+    .compile();
+  app = module.createNestApplication(new FastifyAdapter() as never);
+  await app.init();
+  await app.getHttpAdapter().getInstance().ready();
+  return module;
+};
+
+const injectReady = () =>
+  app!.getHttpAdapter().getInstance().inject({
+    method: 'GET',
+    url: '/health/ready',
+  });
+
+const healthyDependencies = () => ({
+  pool: {
+    query: vi.fn().mockResolvedValue({ rows: [{ ready: 1 }] }),
+  },
+  redis: {
+    status: 'ready',
+    ping: vi.fn().mockResolvedValue('PONG'),
+  },
+  start: vi.fn().mockResolvedValue(undefined),
+  stop: vi.fn().mockResolvedValue(undefined),
 });

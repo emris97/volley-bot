@@ -14,9 +14,15 @@ import {
   GameMessageWorkerModule,
 } from './telegram/game-message.consumer.js';
 import { WorkerObservabilityModule } from './observability/worker-observability.module.js';
+import {
+  WORKER_DEPENDENCIES,
+  WorkerDependenciesModule,
+  type WorkerDependencies,
+} from './infrastructure/worker-dependencies.module.js';
 
 @Module({
   imports: [
+    WorkerDependenciesModule,
     WorkerObservabilityModule,
     OutboxModule,
     GameSchedulerModule,
@@ -25,12 +31,23 @@ import { WorkerObservabilityModule } from './observability/worker-observability.
   providers: [
     {
       provide: MANAGED_WORKERS,
-      inject: [OUTBOX_WORKER, GAME_SCHEDULER_WORKER, GAME_MESSAGE_WORKER],
+      inject: [
+        WORKER_DEPENDENCIES,
+        OUTBOX_WORKER,
+        GAME_SCHEDULER_WORKER,
+        GAME_MESSAGE_WORKER,
+      ],
       useFactory: (
+        dependencies: WorkerDependencies,
         outbox: ManagedWorker,
         scheduler: ManagedWorker,
         gameMessages: ManagedWorker,
-      ): readonly ManagedWorker[] => [outbox, scheduler, gameMessages],
+      ): readonly ManagedWorker[] => [
+        dependencies,
+        outbox,
+        scheduler,
+        gameMessages,
+      ],
     },
     WorkerLifecycleService,
   ],
