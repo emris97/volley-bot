@@ -85,7 +85,7 @@ describe('AttendanceRepository', () => {
       pool,
       groupId,
       completedGameId,
-      actorUserId,
+      await insertUser(pool, '43', 'Later player'),
       'later',
     );
     const independentlyRead = await repository.findSnapshot(
