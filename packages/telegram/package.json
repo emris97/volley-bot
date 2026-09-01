@@ -10,8 +10,14 @@
     }
   },
   "dependencies": {
+    "@nestjs/common": "11.1.28",
     "@volley/application": "workspace:*",
     "@volley/domain": "workspace:*",
     "grammy": "1.45.1"
+  },
+  "devDependencies": {
+    "@volley/persistence": "workspace:*",
+    "pg": "8.22.0",
+    "testcontainers": "12.0.4"
   }
 }

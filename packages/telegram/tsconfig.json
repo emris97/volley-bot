@@ -7,5 +7,9 @@
     "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../application" }, { "path": "../domain" }]
+  "references": [
+    { "path": "../application" },
+    { "path": "../domain" },
+    { "path": "../persistence" }
+  ]
 }

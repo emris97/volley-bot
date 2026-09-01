@@ -11,6 +11,12 @@ const validPayload = {
 };
 
 describe('SignedStartToken', () => {
+  it('fits the Telegram deep-link payload limit', () => {
+    const signer = new SignedStartToken('a-secret-with-at-least-32-characters');
+
+    expect(signer.sign(validPayload)).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+  });
+
   it('round-trips an authentic configuration payload', () => {
     const signer = new SignedStartToken('a-secret-with-at-least-32-characters');
 
