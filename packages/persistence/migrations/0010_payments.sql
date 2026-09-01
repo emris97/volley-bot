@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS payment_drafts (
   total_amount TEXT NOT NULL,
   currency TEXT NOT NULL,
   rounding_mode TEXT NOT NULL,
+  finalized_settlement_id UUID,
   expires_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT payment_drafts_attendance_revision_check
@@ -22,6 +23,29 @@ CREATE TABLE IF NOT EXISTS payment_drafts (
 
 CREATE INDEX IF NOT EXISTS payment_drafts_group_expires_idx
   ON payment_drafts(group_id, expires_at);
+
+ALTER TABLE payment_drafts
+  ADD COLUMN IF NOT EXISTS finalized_settlement_id UUID;
+
+CREATE TABLE IF NOT EXISTS payment_input_sessions (
+  group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  game_id UUID NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  actor_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  attendance_revision INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  rounding_mode TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT payment_input_sessions_actor_unique UNIQUE (actor_user_id),
+  CONSTRAINT payment_input_sessions_attendance_revision_check
+    CHECK (attendance_revision > 0),
+  CONSTRAINT payment_input_sessions_currency_check CHECK (currency IN ('RUB')),
+  CONSTRAINT payment_input_sessions_rounding_mode_check
+    CHECK (rounding_mode IN ('EXACT', 'UP_1', 'UP_10', 'UP_50'))
+);
+
+CREATE INDEX IF NOT EXISTS payment_input_sessions_group_expires_idx
+  ON payment_input_sessions(group_id, expires_at);
 
 CREATE TABLE IF NOT EXISTS settlements (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -55,6 +79,19 @@ CREATE INDEX IF NOT EXISTS settlements_group_game_revision_idx
   ON settlements(group_id, game_id, revision);
 CREATE UNIQUE INDEX IF NOT EXISTS settlements_active_game_unique
   ON settlements(game_id) WHERE superseded_at IS NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'payment_drafts_finalized_settlement_fk'
+  ) THEN
+    ALTER TABLE payment_drafts
+      ADD CONSTRAINT payment_drafts_finalized_settlement_fk
+      FOREIGN KEY (finalized_settlement_id)
+      REFERENCES settlements(id) ON DELETE RESTRICT;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS settlement_charges (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

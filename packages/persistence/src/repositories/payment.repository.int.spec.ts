@@ -1,4 +1,4 @@
-import { asGameId, asGroupId, asUserId } from '@volley/domain';
+import { asGameId, asGroupId, asTelegramId, asUserId } from '@volley/domain';
 import { Pool } from 'pg';
 import {
   GenericContainer,
@@ -36,7 +36,7 @@ describe('PaymentRepository', () => {
 
   beforeEach(async () => {
     await pool.query(
-      'TRUNCATE payment_drafts, charge_status_events, settlement_charges, settlements, outbox_events, audit_events, attendance_entries, attendance_snapshots, registrations, games, group_members, groups, users CASCADE',
+      'TRUNCATE payment_input_sessions, payment_drafts, charge_status_events, settlement_charges, settlements, outbox_events, audit_events, attendance_entries, attendance_snapshots, registrations, games, group_members, groups, users CASCADE',
     );
   });
 
@@ -281,6 +281,27 @@ describe('PaymentRepository', () => {
 
   it('persists preview callback state with tenant-scoped lookup and deletion', async () => {
     const fixture = await insertFixture(pool);
+    const input = await repository.beginInput({
+      groupId: fixture.groupId,
+      gameId: fixture.gameId,
+      actorUserId: fixture.actorUserId,
+    });
+    const restartedRepository = new PaymentRepository(createDatabase(pool));
+    await expect(
+      restartedRepository.findInputByTelegramUserId(asTelegramId('42')),
+    ).resolves.toMatchObject({
+      groupId: fixture.groupId,
+      gameId: fixture.gameId,
+      actorUserId: fixture.actorUserId,
+      attendanceRevision: 1,
+      currency: 'RUB',
+      roundingMode: 'EXACT',
+    });
+    await restartedRepository.clearInput(input.groupId, input.actorUserId);
+    await expect(
+      repository.findInputByTelegramUserId(asTelegramId('42')),
+    ).resolves.toBeNull();
+
     const draft = await repository.saveDraft({
       groupId: fixture.groupId,
       gameId: fixture.gameId,
@@ -307,6 +328,68 @@ describe('PaymentRepository', () => {
     await expect(
       repository.findDraft(fixture.groupId, draft.id),
     ).resolves.toBeNull();
+  });
+
+  it('concurrent confirmations of one draft converge on one settlement revision', async () => {
+    const fixture = await insertFixture(pool);
+    const draft = await repository.saveDraft({
+      groupId: fixture.groupId,
+      gameId: fixture.gameId,
+      actorUserId: fixture.actorUserId,
+      attendanceRevision: 1,
+      totalAmount: '100.00',
+      currency: 'RUB',
+      roundingMode: 'EXACT',
+    });
+    const confirm = () =>
+      repository.finalizeDraft(
+        {
+          groupId: fixture.groupId,
+          gameId: fixture.gameId,
+          attendanceRevision: 1,
+          draftId: draft.id,
+          actorUserId: fixture.actorUserId,
+        },
+        async (snapshot, changes) =>
+          changes.createRevision({
+            actorUserId: fixture.actorUserId,
+            totalMinor: 10000n,
+            currency: 'RUB',
+            roundingMode: 'EXACT',
+            allocationOrder: snapshot.entries
+              .filter((entry) => entry.billable)
+              .map((entry) => entry.participantRef)
+              .toSorted(),
+            collectedMinor: 10000n,
+            surplusMinor: 0n,
+            charges: snapshot.entries
+              .filter((entry) => entry.billable)
+              .toSorted((left, right) =>
+                left.participantRef.localeCompare(right.participantRef),
+              )
+              .map((entry) => ({
+                participantRef: entry.participantRef,
+                displayName: entry.displayName,
+                addedManually: entry.addedManually,
+                amountMinor: 5000n,
+              })),
+          }),
+      );
+
+    const [first, second] = await Promise.all([confirm(), confirm()]);
+
+    expect(second.id).toBe(first.id);
+    await expect(
+      pool.query('SELECT id FROM settlements'),
+    ).resolves.toMatchObject({ rowCount: 1 });
+    await expect(
+      pool.query(
+        'SELECT finalized_settlement_id FROM payment_drafts WHERE id = $1',
+        [draft.id],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ finalized_settlement_id: first.id }],
+    });
   });
 });
 

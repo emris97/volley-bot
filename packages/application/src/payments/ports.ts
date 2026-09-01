@@ -4,6 +4,7 @@ import type {
   GameId,
   GroupId,
   RoundingMode,
+  TelegramId,
   UserId,
 } from '@volley/domain';
 
@@ -84,9 +85,13 @@ export interface PaymentDraft {
   currency: 'RUB';
   roundingMode: RoundingMode;
   expiresAt: Date;
+  finalizedSettlementId: string | null;
 }
 
-export type SavePaymentDraftInput = Omit<PaymentDraft, 'id' | 'expiresAt'>;
+export type SavePaymentDraftInput = Omit<
+  PaymentDraft,
+  'id' | 'expiresAt' | 'finalizedSettlementId'
+>;
 
 export interface PaymentDraftRepository {
   saveDraft(input: SavePaymentDraftInput): Promise<PaymentDraft>;
@@ -94,21 +99,69 @@ export interface PaymentDraftRepository {
   deleteDraft(groupId: GroupId, draftId: string): Promise<void>;
 }
 
+export interface PaymentInputSession {
+  groupId: GroupId;
+  gameId: GameId;
+  actorUserId: UserId;
+  attendanceRevision: number;
+  currency: 'RUB';
+  roundingMode: RoundingMode;
+  expiresAt: Date;
+}
+
+export interface PaymentInputRepository {
+  beginInput(input: {
+    groupId: GroupId;
+    gameId: GameId;
+    actorUserId: UserId;
+  }): Promise<PaymentInputSession>;
+  findInputByTelegramUserId(
+    telegramUserId: TelegramId,
+  ): Promise<PaymentInputSession | null>;
+  clearInput(groupId: GroupId, actorUserId: UserId): Promise<void>;
+}
+
+export interface ActiveSettlementReader {
+  findActiveSettlement(
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<Settlement | null>;
+}
+
+export interface PaymentTelegramRepository
+  extends
+    PaymentDraftRepository,
+    PaymentInputRepository,
+    ActiveSettlementReader {}
+
 export interface PaymentRepository {
   findFinalizedAttendance(
     groupId: GroupId,
     gameId: GameId,
     attendanceRevision: number,
   ): Promise<AttendanceSnapshot | null>;
-  withLockedFinalizedAttendance<T>(
+  withLockedFinalizedAttendance(
     groupId: GroupId,
     gameId: GameId,
     attendanceRevision: number,
     callback: (
       snapshot: AttendanceSnapshot,
       changes: LockedSettlementChanges,
-    ) => Promise<T>,
-  ): Promise<T>;
+    ) => Promise<Settlement>,
+  ): Promise<Settlement>;
+  finalizeDraft(
+    input: {
+      groupId: GroupId;
+      gameId: GameId;
+      attendanceRevision: number;
+      draftId: string;
+      actorUserId: UserId;
+    },
+    callback: (
+      snapshot: AttendanceSnapshot,
+      changes: LockedSettlementChanges,
+    ) => Promise<Settlement>,
+  ): Promise<Settlement>;
   changeChargeStatus(
     input: ChangeChargeStatusInput,
   ): Promise<SettlementChargeRecord>;

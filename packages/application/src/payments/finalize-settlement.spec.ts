@@ -170,6 +170,9 @@ const memoryPayments = (
     };
     return callback(snapshot, changes);
   },
+  finalizeDraft: async () => {
+    throw new Error('unused');
+  },
   changeChargeStatus: async () => {
     throw new Error('unused');
   },

@@ -35,6 +35,7 @@ export const paymentDrafts = pgTable(
     totalAmount: text('total_amount').notNull(),
     currency: text('currency').$type<'RUB'>().notNull(),
     roundingMode: text('rounding_mode').$type<RoundingMode>().notNull(),
+    finalizedSettlementId: uuid('finalized_settlement_id'),
     expiresAt: timestamp('expires_at', {
       mode: 'date',
       withTimezone: true,
@@ -59,6 +60,50 @@ export const paymentDrafts = pgTable(
     check('payment_drafts_currency_check', sql`${table.currency} in ('RUB')`),
     check(
       'payment_drafts_rounding_mode_check',
+      sql`${table.roundingMode} in ('EXACT', 'UP_1', 'UP_10', 'UP_50')`,
+    ),
+  ],
+);
+
+export const paymentInputSessions = pgTable(
+  'payment_input_sessions',
+  {
+    groupId: uuid('group_id')
+      .notNull()
+      .references(() => groups.id, { onDelete: 'cascade' }),
+    gameId: uuid('game_id')
+      .notNull()
+      .references(() => games.id, { onDelete: 'cascade' }),
+    actorUserId: uuid('actor_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    attendanceRevision: integer('attendance_revision').notNull(),
+    currency: text('currency').$type<'RUB'>().notNull(),
+    roundingMode: text('rounding_mode').$type<RoundingMode>().notNull(),
+    expiresAt: timestamp('expires_at', {
+      mode: 'date',
+      withTimezone: true,
+    }).notNull(),
+    createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('payment_input_sessions_actor_unique').on(table.actorUserId),
+    index('payment_input_sessions_group_expires_idx').on(
+      table.groupId,
+      table.expiresAt,
+    ),
+    check(
+      'payment_input_sessions_attendance_revision_check',
+      sql`${table.attendanceRevision} > 0`,
+    ),
+    check(
+      'payment_input_sessions_currency_check',
+      sql`${table.currency} in ('RUB')`,
+    ),
+    check(
+      'payment_input_sessions_rounding_mode_check',
       sql`${table.roundingMode} in ('EXACT', 'UP_1', 'UP_10', 'UP_50')`,
     ),
   ],

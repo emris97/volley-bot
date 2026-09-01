@@ -7,10 +7,14 @@ import {
 } from '@nestjs/common';
 import {
   ConfirmTentative,
+  ChangeChargeStatus,
   ConfigureGroup,
+  FinalizeSettlement,
   OnboardGroup,
   RegisterGuest,
   RegisterParticipant,
+  PreviewSettlement,
+  SendPaymentReminders,
   WithdrawRegistration,
   type ConfigurationLinkFactory,
 } from '@volley/application';
@@ -19,6 +23,7 @@ import {
   createDatabase,
   GuestRegistrationDraftRepository,
   GroupRepository,
+  PaymentRepository,
   RegistrationRepository,
 } from '@volley/persistence';
 import {
@@ -28,10 +33,12 @@ import {
   GrammyTelegramGateway,
   GuestFlowHandlers,
   GroupOnboardingHandlers,
+  PaymentHandlers,
   RegistrationHandlers,
   registerRegistrationHandlers,
   registerTentativeHandlers,
   registerGroupOnboardingHandlers,
+  registerPaymentHandlers,
   SignedStartToken,
   TelegramMembershipResolver,
   TentativeHandlers,
@@ -77,6 +84,7 @@ class TelegramRuntimeLifecycle implements OnApplicationShutdown {
         const groups = new GroupRepository(database);
         const registrations = new RegistrationRepository(database);
         const guestDrafts = new GuestRegistrationDraftRepository(database);
+        const payments = new PaymentRepository(database);
         const bot = createTelegramBot(env.BOT_TOKEN);
         const telegram = new GrammyTelegramGateway(bot);
         const signer = new SignedStartToken(
@@ -111,6 +119,18 @@ class TelegramRuntimeLifecycle implements OnApplicationShutdown {
           guestDrafts,
           registrations,
           new RegisterGuest(registrations),
+        );
+        registerPaymentHandlers(
+          bot,
+          new PaymentHandlers(
+            registrations,
+            new PreviewSettlement(groups, payments),
+            new FinalizeSettlement(groups, payments),
+            new ChangeChargeStatus(groups, payments),
+            new SendPaymentReminders(groups, payments),
+            payments,
+            groups,
+          ),
         );
         registerGroupOnboardingHandlers(bot, handlers, guestHandlers);
         registerRegistrationHandlers(

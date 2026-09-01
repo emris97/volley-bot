@@ -1,6 +1,16 @@
-import type { PaymentDraft, PaymentDraftRepository } from '@volley/application';
+import type {
+  PaymentDraft,
+  PaymentInputSession,
+  Settlement,
+  PaymentTelegramRepository,
+} from '@volley/application';
 import { asGameId, asGroupId, asTelegramId, asUserId } from '@volley/domain';
+import type { Update, UserFromGetMe } from 'grammy/types';
 import { expect, it, vi } from 'vitest';
+import {
+  createLazyTelegramUpdateHandler,
+  createTelegramBot,
+} from '../bot.factory.js';
 import {
   PaymentHandlers,
   registerPaymentHandlers,
@@ -11,6 +21,21 @@ const gameId = asGameId('018f6ba0-62d2-7bd1-8f13-12e0c8424610');
 const actorUserId = asUserId('018f6ba0-62d2-7bd1-8f13-12e0c8424613');
 const telegramUserId = asTelegramId('42');
 const draftId = '018f6ba0-62d2-7bd1-8f13-12e0c8424688';
+const botInfo: UserFromGetMe = {
+  id: 999,
+  is_bot: true,
+  first_name: 'Volley',
+  username: 'volley_test_bot',
+  can_join_groups: true,
+  can_read_all_group_messages: false,
+  supports_inline_queries: false,
+  can_connect_to_business: false,
+  has_main_web_app: false,
+  has_topics_enabled: false,
+  allows_users_to_create_topics: false,
+  can_manage_bots: false,
+  supports_join_request_queries: false,
+};
 
 interface TestCallbackContext {
   callbackQuery: {
@@ -77,13 +102,15 @@ it('drives restart-safe confirmation, status, and reminder callbacks through fre
       createdAt: new Date('2026-08-31T00:00:00Z'),
     })),
   };
+  let activeSettlement: Settlement = settlement;
   let storedDraft: PaymentDraft | null = null;
-  const drafts: PaymentDraftRepository = {
+  const drafts: PaymentTelegramRepository = {
     saveDraft: async (input) => {
       storedDraft = {
         id: draftId,
         ...input,
         expiresAt: new Date('2026-08-31T01:00:00Z'),
+        finalizedSettlementId: null,
       };
       return storedDraft;
     },
@@ -100,6 +127,12 @@ it('drives restart-safe confirmation, status, and reminder callbacks through fre
         storedDraft = null;
       }
     },
+    findActiveSettlement: async () => activeSettlement,
+    beginInput: async () => {
+      throw new Error('unused');
+    },
+    findInputByTelegramUserId: async () => null,
+    clearInput: async () => undefined,
   };
   const createHandlers = () =>
     new PaymentHandlers(
@@ -116,7 +149,15 @@ it('drives restart-safe confirmation, status, and reminder callbacks through fre
       {
         execute: async (command) => {
           statuses.push(command);
-          return { ...settlement.charges[1]!, status: command.status };
+          const changed = {
+            ...activeSettlement.charges[1]!,
+            status: command.status,
+          };
+          activeSettlement = {
+            ...activeSettlement,
+            charges: [activeSettlement.charges[0]!, changed],
+          };
+          return changed;
         },
       },
       {
@@ -126,6 +167,7 @@ it('drives restart-safe confirmation, status, and reminder callbacks through fre
         },
       },
       drafts,
+      { requireOrganizer: async () => undefined },
     );
 
   const preview = await createHandlers().preview({
@@ -167,19 +209,35 @@ it('drives restart-safe confirmation, status, and reminder callbacks through fre
   const paidData = confirmed.buttons.filter(
     (button) => button.text === 'Оплачено',
   )[1]!.callbackData;
-  await createHandlers().handleCallback({
+  const afterPaid = await createHandlers().handleCallback({
     telegramUserId,
     privateChat: true,
     data: paidData,
   });
-  const reminderData = confirmed.buttons.find(
+  expect(afterPaid.buttons.map((button) => button.text)).toEqual(
+    expect.arrayContaining([
+      'Оплачено',
+      'Не оплачено',
+      'Оплата не требуется',
+      'Напомнить',
+    ]),
+  );
+  const reminderData = afterPaid.buttons.find(
     (button) => button.text === 'Напомнить',
   )!.callbackData;
-  await createHandlers().handleCallback({
+  const afterReminder = await createHandlers().handleCallback({
     telegramUserId,
     privateChat: true,
     data: reminderData,
   });
+  expect(afterReminder.buttons.map((button) => button.text)).toEqual(
+    expect.arrayContaining([
+      'Оплачено',
+      'Не оплачено',
+      'Оплата не требуется',
+      'Напомнить',
+    ]),
+  );
 
   expect(finalized).toEqual([
     expect.objectContaining({
@@ -206,6 +264,35 @@ it('drives restart-safe confirmation, status, and reminder callbacks through fre
 
 it('registers payment callbacks and rejects callback updates outside a private chat', async () => {
   const externalCalls: unknown[] = [];
+  const activeSettlement: Settlement = {
+    id: '018f6ba0-62d2-7bd1-8f13-12e0c8424690',
+    groupId,
+    gameId,
+    attendanceSnapshotId: '018f6ba0-62d2-7bd1-8f13-12e0c8424699' as never,
+    attendanceRevision: 1,
+    revision: 1,
+    totalMinor: 10000n,
+    currency: 'RUB',
+    roundingMode: 'EXACT',
+    allocationOrder: ['registration:player'],
+    collectedMinor: 10000n,
+    surplusMinor: 0n,
+    supersededAt: null,
+    createdBy: actorUserId,
+    createdAt: new Date('2026-08-31T00:00:00Z'),
+    charges: [
+      {
+        id: '018f6ba0-62d2-7bd1-8f13-12e0c8424621',
+        settlementId: '018f6ba0-62d2-7bd1-8f13-12e0c8424690',
+        participantRef: 'registration:player',
+        displayName: 'Player',
+        addedManually: false,
+        amountMinor: 10000n,
+        status: 'UNPAID',
+        createdAt: new Date('2026-08-31T00:00:00Z'),
+      },
+    ],
+  };
   let registered:
     | {
         pattern: RegExp;
@@ -213,6 +300,8 @@ it('registers payment callbacks and rejects callback updates outside a private c
       }
     | undefined;
   const bot = {
+    command: () => undefined,
+    on: () => undefined,
     callbackQuery: (
       pattern: RegExp,
       handler: (context: TestCallbackContext) => Promise<void>,
@@ -258,7 +347,14 @@ it('registers payment callbacks and rejects callback updates outside a private c
       deleteDraft: async () => {
         throw new Error('unused');
       },
+      beginInput: async () => {
+        throw new Error('unused');
+      },
+      findInputByTelegramUserId: async () => null,
+      clearInput: async () => undefined,
+      findActiveSettlement: async () => activeSettlement,
     },
+    { requireOrganizer: async () => undefined },
   );
   registerPaymentHandlers(bot as never, handlers);
   expect(registered?.pattern.test('pay:r:bad')).toBe(true);
@@ -296,5 +392,212 @@ it('registers payment callbacks and rejects callback updates outside a private c
   expect(answerCallbackQuery).toHaveBeenCalledOnce();
 });
 
+it('runs registered private payment command through durable decimal input and fresh confirmation', async () => {
+  const apiCalls: Array<{ method: string; payload: Record<string, unknown> }> =
+    [];
+  const finalized: unknown[] = [];
+  let inputSession: PaymentInputSession | null = null;
+  let draft: PaymentDraft | null = null;
+  const previewResult = {
+    attendanceRevision: 1,
+    participantCount: 1,
+    totalMinor: 10000n,
+    collectedMinor: 10000n,
+    surplusMinor: 0n,
+    currency: 'RUB' as const,
+    roundingMode: 'EXACT' as const,
+    allocationOrder: ['registration:player'],
+    charges: [
+      {
+        participantRef: 'registration:player',
+        displayName: 'Player',
+        addedManually: false,
+        amountMinor: 10000n,
+      },
+    ],
+  };
+  const settlement = {
+    id: '018f6ba0-62d2-7bd1-8f13-12e0c8424690',
+    groupId,
+    gameId,
+    attendanceSnapshotId: '018f6ba0-62d2-7bd1-8f13-12e0c8424699' as never,
+    attendanceRevision: 1,
+    revision: 1,
+    totalMinor: 10000n,
+    currency: 'RUB' as const,
+    roundingMode: 'EXACT' as const,
+    allocationOrder: ['registration:player'],
+    collectedMinor: 10000n,
+    surplusMinor: 0n,
+    supersededAt: null,
+    createdBy: actorUserId,
+    createdAt: new Date('2026-08-31T00:00:00Z'),
+    charges: [
+      {
+        id: '018f6ba0-62d2-7bd1-8f13-12e0c8424621',
+        settlementId: '018f6ba0-62d2-7bd1-8f13-12e0c8424690',
+        ...previewResult.charges[0]!,
+        status: 'UNPAID' as const,
+        createdAt: new Date('2026-08-31T00:00:00Z'),
+      },
+    ],
+  };
+  const state: PaymentTelegramRepository = {
+    beginInput: async (input) => {
+      inputSession = {
+        ...input,
+        attendanceRevision: 1,
+        currency: 'RUB',
+        roundingMode: 'EXACT',
+        expiresAt: new Date('2026-08-31T01:00:00Z'),
+      };
+      return inputSession;
+    },
+    findInputByTelegramUserId: async (id) =>
+      id === telegramUserId ? inputSession : null,
+    clearInput: async () => {
+      inputSession = null;
+    },
+    saveDraft: async (input) => {
+      draft = {
+        id: draftId,
+        ...input,
+        expiresAt: new Date('2026-08-31T01:00:00Z'),
+        finalizedSettlementId: null,
+      };
+      return draft;
+    },
+    findDraft: async (_groupId, requestedDraftId) =>
+      draft?.id === requestedDraftId ? draft : null,
+    deleteDraft: async () => undefined,
+    findActiveSettlement: async () => settlement,
+  };
+  const createOperationalBot = () => {
+    const bot = createTelegramBot('123456:abcdefghijklmnopqrstuvwxyz', botInfo);
+    registerPaymentHandlers(
+      bot,
+      new PaymentHandlers(
+        {
+          resolve: async () => ({ groupId, gameId, userId: actorUserId }),
+        },
+        { execute: async () => previewResult },
+        {
+          execute: async (command) => {
+            finalized.push(command);
+            return settlement;
+          },
+        },
+        {
+          execute: async () => {
+            throw new Error('unused');
+          },
+        },
+        {
+          execute: async () => {
+            throw new Error('unused');
+          },
+        },
+        state,
+        { requireOrganizer: async () => undefined },
+      ),
+    );
+    bot.api.config.use(async (_previous, method, payload) => {
+      apiCalls.push({ method, payload: payload as Record<string, unknown> });
+      return {
+        ok: true,
+        result:
+          method === 'answerCallbackQuery'
+            ? true
+            : {
+                message_id: 100,
+                date: 1_788_134_400,
+                chat: { id: Number(telegramUserId), type: 'private' },
+                text: 'ok',
+              },
+      } as never;
+    });
+    return createLazyTelegramUpdateHandler(bot);
+  };
+
+  await createOperationalBot().handleUpdate(paymentCommandUpdate(1));
+  expect(apiCalls.at(-1)).toMatchObject({
+    method: 'sendMessage',
+    payload: { text: expect.stringMatching(/сумм.*руб/i) },
+  });
+
+  await createOperationalBot().handleUpdate(paymentAmountUpdate(2, '100.00'));
+  const previewCall = apiCalls.at(-1)!;
+  expect(previewCall).toMatchObject({
+    method: 'sendMessage',
+    payload: { text: expect.stringMatching(/предпросмотр/i) },
+  });
+  const keyboard = (
+    previewCall.payload.reply_markup as {
+      inline_keyboard: Array<Array<{ callback_data: string }>>;
+    }
+  ).inline_keyboard;
+  const confirmData = keyboard[0]![0]!.callback_data;
+
+  await createOperationalBot().handleUpdate(
+    paymentCallbackUpdate(3, confirmData),
+  );
+  expect(apiCalls.at(-2)).toMatchObject({
+    method: 'editMessageText',
+    payload: { text: expect.stringMatching(/расчёт #1/i) },
+  });
+  expect(finalized).toEqual([
+    expect.objectContaining({
+      groupId,
+      gameId,
+      actorUserId,
+      draftId,
+      totalAmount: '100.00',
+    }),
+  ]);
+});
+
 const compactUuid = (value: string): string =>
   Buffer.from(value.replaceAll('-', ''), 'hex').toString('base64url');
+
+const paymentCommandUpdate = (updateId: number): Update => ({
+  update_id: updateId,
+  message: {
+    message_id: updateId,
+    date: 1_788_134_400,
+    chat: { id: Number(telegramUserId), type: 'private', first_name: 'Admin' },
+    from: { id: Number(telegramUserId), is_bot: false, first_name: 'Admin' },
+    text: `/payment ${gameId}`,
+    entities: [{ offset: 0, length: 8, type: 'bot_command' }],
+  },
+});
+
+const paymentAmountUpdate = (updateId: number, text: string): Update => ({
+  update_id: updateId,
+  message: {
+    message_id: updateId,
+    date: 1_788_134_400,
+    chat: { id: Number(telegramUserId), type: 'private', first_name: 'Admin' },
+    from: { id: Number(telegramUserId), is_bot: false, first_name: 'Admin' },
+    text,
+  },
+});
+
+const paymentCallbackUpdate = (updateId: number, data: string): Update => ({
+  update_id: updateId,
+  callback_query: {
+    id: String(updateId),
+    chat_instance: 'test',
+    from: { id: Number(telegramUserId), is_bot: false, first_name: 'Admin' },
+    data,
+    message: {
+      message_id: updateId,
+      date: 1_788_134_400,
+      chat: {
+        id: Number(telegramUserId),
+        type: 'private',
+        first_name: 'Admin',
+      },
+      text: 'preview',
+    },
+  },
+});

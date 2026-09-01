@@ -9,6 +9,7 @@ export { AttendanceRepository } from './repositories/attendance.repository.js';
 export {
   PaymentRepository,
   type StoredPaymentDraft,
+  type StoredPaymentInputSession,
   type StoredSettlement,
   type StoredSettlementCharge,
 } from './repositories/payment.repository.js';

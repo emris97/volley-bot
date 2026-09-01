@@ -1,7 +1,8 @@
 import type {
   ChangeChargeStatus,
   FinalizeSettlement,
-  PaymentDraftRepository,
+  PaymentAuthorization,
+  PaymentTelegramRepository,
   PreviewSettlement,
   PreviewSettlementResult,
   SendPaymentReminders,
@@ -9,7 +10,13 @@ import type {
   SettlementCommand,
   SettlementChargeRecord,
 } from '@volley/application';
-import type { GameId, GroupId, TelegramId, UserId } from '@volley/domain';
+import {
+  asGameId,
+  type GameId,
+  type GroupId,
+  type TelegramId,
+  type UserId,
+} from '@volley/domain';
 import type { Bot, Context } from 'grammy';
 import { toTelegramId } from '../group-onboarding.handlers.js';
 
@@ -48,15 +55,56 @@ export class PaymentHandlers {
       SendPaymentReminders,
       'execute'
     >,
-    private readonly drafts: PaymentDraftRepository,
+    private readonly state: PaymentTelegramRepository,
+    private readonly authorization: PaymentAuthorization,
   ) {}
 
-  public start(input: PrivatePaymentInput): PaymentView {
+  public async start(input: PrivatePaymentInput): Promise<PaymentView> {
     requirePrivateChat(input.privateChat);
+    const actor = await this.actors.resolve(input.gameId, input.telegramUserId);
+    await this.authorization.requireOrganizer(actor.groupId, actor.userId);
+    await this.state.beginInput({
+      groupId: actor.groupId,
+      gameId: actor.gameId,
+      actorUserId: actor.userId,
+    });
     return {
       text: 'Введите общую сумму в рублях, например 2800.00',
       buttons: [],
     };
+  }
+
+  public async handleText(input: {
+    telegramUserId: TelegramId;
+    privateChat: boolean;
+    text: string;
+  }): Promise<PaymentView | null> {
+    requirePrivateChat(input.privateChat);
+    const session = await this.state.findInputByTelegramUserId(
+      input.telegramUserId,
+    );
+    if (session === null) return null;
+    const actor = await this.actors.resolve(
+      session.gameId,
+      input.telegramUserId,
+    );
+    if (
+      actor.groupId !== session.groupId ||
+      actor.userId !== session.actorUserId
+    ) {
+      throw new Error('Payment input identity mismatch');
+    }
+    const view = await this.preview({
+      telegramUserId: input.telegramUserId,
+      gameId: session.gameId,
+      privateChat: true,
+      attendanceRevision: session.attendanceRevision,
+      totalAmount: input.text,
+      currency: session.currency,
+      roundingMode: session.roundingMode,
+    });
+    await this.state.clearInput(session.groupId, session.actorUserId);
+    return view;
   }
 
   public async preview(input: SettlementFlowInput): Promise<PaymentView> {
@@ -64,7 +112,7 @@ export class PaymentHandlers {
     const actor = await this.actors.resolve(input.gameId, input.telegramUserId);
     const command = toSettlementCommand(input, actor);
     const preview = await this.previewSettlement.execute(command);
-    const draft = await this.drafts.saveDraft({
+    const draft = await this.state.saveDraft({
       groupId: command.groupId,
       gameId: command.gameId,
       actorUserId: command.actorUserId,
@@ -131,10 +179,7 @@ export class PaymentHandlers {
     }
 
     if (callback.action === 'confirm') {
-      const draft = await this.drafts.findDraft(
-        actor.groupId,
-        callback.draftId,
-      );
+      const draft = await this.state.findDraft(actor.groupId, callback.draftId);
       if (
         draft === null ||
         draft.gameId !== actor.gameId ||
@@ -150,31 +195,38 @@ export class PaymentHandlers {
         totalAmount: draft.totalAmount,
         currency: draft.currency,
         roundingMode: draft.roundingMode,
+        draftId: draft.id,
       });
-      await this.drafts.deleteDraft(actor.groupId, callback.draftId);
       return renderSettlement(settlement, actor.gameId);
     }
     if (callback.action === 'status') {
-      const charge = await this.changeChargeStatus.execute({
+      await this.changeChargeStatus.execute({
         groupId: actor.groupId,
         chargeId: callback.chargeId,
         actorUserId: actor.userId,
         status: callback.status,
       });
-      return {
-        text: `${charge.displayName}: ${formatMinor(charge.amountMinor)} RUB — ${charge.status}`,
-        buttons: [],
-      };
+      return this.renderActiveSettlement(actor.groupId, actor.gameId);
     }
     const result = await this.sendPaymentReminders.execute({
       groupId: actor.groupId,
       actorUserId: actor.userId,
       chargeIds: [callback.chargeId],
     });
+    const view = await this.renderActiveSettlement(actor.groupId, actor.gameId);
     return {
-      text: `Напоминаний поставлено в очередь: ${result.enqueued}`,
-      buttons: [],
+      ...view,
+      text: `Напоминаний поставлено в очередь: ${result.enqueued}\n${view.text}`,
     };
+  }
+
+  private async renderActiveSettlement(
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<PaymentView> {
+    const settlement = await this.state.findActiveSettlement(groupId, gameId);
+    if (settlement === null) throw new Error('Active settlement not found');
+    return renderSettlement(settlement, gameId);
   }
 }
 
@@ -345,6 +397,39 @@ export const registerPaymentHandlers = (
   bot: Bot<Context>,
   handlers: PaymentHandlers,
 ): Bot<Context> => {
+  bot.command('payment', async (context) => {
+    if (context.from === undefined)
+      throw new Error('Message sender is required');
+    const gameId = parseGameId(context.match ?? '');
+    const view = await handlers.start({
+      telegramUserId: toTelegramId(context.from.id),
+      gameId,
+      privateChat: context.chat.type === 'private',
+    });
+    await context.reply(view.text);
+  });
+  bot.on('message:text', async (context, next) => {
+    if (context.from === undefined || context.message.text.startsWith('/')) {
+      await next();
+      return;
+    }
+    const view = await handlers.handleText({
+      telegramUserId: toTelegramId(context.from.id),
+      privateChat: context.chat.type === 'private',
+      text: context.message.text,
+    });
+    if (view === null) {
+      await next();
+      return;
+    }
+    await context.reply(view.text, {
+      reply_markup: {
+        inline_keyboard: view.buttons.map((button) => [
+          { text: button.text, callback_data: button.callbackData },
+        ]),
+      },
+    });
+  });
   bot.callbackQuery(/^pay:/, async (context) => {
     const view = await handlers.handleCallback({
       telegramUserId: toTelegramId(context.callbackQuery.from.id),
@@ -361,4 +446,12 @@ export const registerPaymentHandlers = (
     await context.answerCallbackQuery({ text: 'payment:updated' });
   });
   return bot;
+};
+
+const parseGameId = (value: string): GameId => {
+  const trimmed = value.trim();
+  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(trimmed)) {
+    throw new Error('Valid game id required');
+  }
+  return asGameId(trimmed);
 };

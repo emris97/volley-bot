@@ -12,32 +12,53 @@ export class FinalizeSettlement {
     private readonly payments: PaymentRepository,
   ) {}
 
-  public async execute(command: SettlementCommand): Promise<Settlement> {
+  public async execute(
+    command: SettlementCommand & { draftId?: string },
+  ): Promise<Settlement> {
     await this.authorization.requireOrganizer(
       command.groupId,
       command.actorUserId,
     );
-    return this.payments.withLockedFinalizedAttendance(
-      command.groupId,
-      command.gameId,
-      command.attendanceRevision,
-      async (snapshot, changes) => {
-        const preview = calculatePreview(
-          command,
-          requireFinalizedSnapshot(snapshot),
+    const finalize = async (
+      snapshot: Parameters<
+        Parameters<PaymentRepository['withLockedFinalizedAttendance']>[3]
+      >[0],
+      changes: Parameters<
+        Parameters<PaymentRepository['withLockedFinalizedAttendance']>[3]
+      >[1],
+    ) => {
+      const preview = calculatePreview(
+        command,
+        requireFinalizedSnapshot(snapshot),
+      );
+      return changes.createRevision({
+        actorUserId: command.actorUserId,
+        totalMinor: preview.totalMinor,
+        currency: preview.currency,
+        roundingMode: preview.roundingMode,
+        allocationOrder: preview.allocationOrder,
+        collectedMinor: preview.collectedMinor,
+        surplusMinor: preview.surplusMinor,
+        charges: preview.charges,
+      });
+    };
+    return command.draftId === undefined
+      ? this.payments.withLockedFinalizedAttendance(
+          command.groupId,
+          command.gameId,
+          command.attendanceRevision,
+          finalize,
+        )
+      : this.payments.finalizeDraft(
+          {
+            groupId: command.groupId,
+            gameId: command.gameId,
+            attendanceRevision: command.attendanceRevision,
+            draftId: command.draftId,
+            actorUserId: command.actorUserId,
+          },
+          finalize,
         );
-        return changes.createRevision({
-          actorUserId: command.actorUserId,
-          totalMinor: preview.totalMinor,
-          currency: preview.currency,
-          roundingMode: preview.roundingMode,
-          allocationOrder: preview.allocationOrder,
-          collectedMinor: preview.collectedMinor,
-          surplusMinor: preview.surplusMinor,
-          charges: preview.charges,
-        });
-      },
-    );
   }
 }
 

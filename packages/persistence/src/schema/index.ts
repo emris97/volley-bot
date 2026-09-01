@@ -8,6 +8,7 @@ export { outboxEvents } from './outbox.js';
 export {
   chargeStatusEvents,
   paymentDrafts,
+  paymentInputSessions,
   settlementCharges,
   settlements,
 } from './payments.js';

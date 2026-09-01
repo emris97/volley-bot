@@ -90,6 +90,9 @@ const unusedPayments: PaymentRepository = {
   withLockedFinalizedAttendance: async () => {
     throw new Error('unused');
   },
+  finalizeDraft: async () => {
+    throw new Error('unused');
+  },
   changeChargeStatus: async () => {
     throw new Error('unused');
   },

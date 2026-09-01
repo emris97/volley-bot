@@ -9,6 +9,7 @@ import {
   type GameId,
   type GroupId,
   type RoundingMode,
+  type TelegramId,
   type UserId,
 } from '@volley/domain';
 import { and, desc, eq, gt, inArray, isNull } from 'drizzle-orm';
@@ -21,9 +22,11 @@ import {
   games,
   outboxEvents,
   paymentDrafts,
+  paymentInputSessions,
   registrations,
   settlementCharges,
   settlements,
+  users,
 } from '../schema/index.js';
 
 type ChargeStatus = 'UNPAID' | 'PAID' | 'WAIVED';
@@ -35,6 +38,17 @@ export interface StoredPaymentDraft {
   actorUserId: UserId;
   attendanceRevision: number;
   totalAmount: string;
+  currency: 'RUB';
+  roundingMode: RoundingMode;
+  expiresAt: Date;
+  finalizedSettlementId: string | null;
+}
+
+export interface StoredPaymentInputSession {
+  groupId: GroupId;
+  gameId: GameId;
+  actorUserId: UserId;
+  attendanceRevision: number;
   currency: 'RUB';
   roundingMode: RoundingMode;
   expiresAt: Date;
@@ -136,6 +150,124 @@ export class PaymentRepository {
       );
   }
 
+  public async beginInput(input: {
+    groupId: GroupId;
+    gameId: GameId;
+    actorUserId: UserId;
+  }): Promise<StoredPaymentInputSession> {
+    return this.database.transaction(async (transaction) => {
+      const [game] = await transaction
+        .select({
+          currency: games.currency,
+          roundingMode: games.roundingMode,
+        })
+        .from(games)
+        .where(
+          and(eq(games.groupId, input.groupId), eq(games.id, input.gameId)),
+        )
+        .limit(1);
+      if (game === undefined) throw new Error('Game not found');
+      if (game.currency !== 'RUB') {
+        throw new Error('Settlement currency must be RUB');
+      }
+      const [attendance] = await transaction
+        .select({ revision: attendanceSnapshots.revision })
+        .from(attendanceSnapshots)
+        .where(
+          and(
+            eq(attendanceSnapshots.groupId, input.groupId),
+            eq(attendanceSnapshots.gameId, input.gameId),
+            eq(attendanceSnapshots.finalized, true),
+          ),
+        )
+        .orderBy(desc(attendanceSnapshots.revision))
+        .limit(1);
+      if (attendance === undefined) {
+        throw new Error('Finalized attendance revision required');
+      }
+      const expiresAt = new Date(Date.now() + 30 * 60_000);
+      const [session] = await transaction
+        .insert(paymentInputSessions)
+        .values({
+          ...input,
+          attendanceRevision: attendance.revision,
+          currency: 'RUB',
+          roundingMode: game.roundingMode,
+          expiresAt,
+        })
+        .onConflictDoUpdate({
+          target: paymentInputSessions.actorUserId,
+          set: {
+            groupId: input.groupId,
+            gameId: input.gameId,
+            attendanceRevision: attendance.revision,
+            currency: 'RUB',
+            roundingMode: game.roundingMode,
+            expiresAt,
+            createdAt: new Date(),
+          },
+        })
+        .returning();
+      if (session === undefined) {
+        throw new Error('Payment input session insert returned no row');
+      }
+      return toStoredPaymentInputSession(session);
+    });
+  }
+
+  public async findInputByTelegramUserId(
+    telegramUserId: TelegramId,
+  ): Promise<StoredPaymentInputSession | null> {
+    const [session] = await this.database
+      .select({ session: paymentInputSessions })
+      .from(paymentInputSessions)
+      .innerJoin(users, eq(users.id, paymentInputSessions.actorUserId))
+      .where(
+        and(
+          eq(users.telegramUserId, BigInt(telegramUserId)),
+          gt(paymentInputSessions.expiresAt, new Date()),
+        ),
+      )
+      .limit(1);
+    return session === undefined
+      ? null
+      : toStoredPaymentInputSession(session.session);
+  }
+
+  public async clearInput(
+    groupId: GroupId,
+    actorUserId: UserId,
+  ): Promise<void> {
+    await this.database
+      .delete(paymentInputSessions)
+      .where(
+        and(
+          eq(paymentInputSessions.groupId, groupId),
+          eq(paymentInputSessions.actorUserId, actorUserId),
+        ),
+      );
+  }
+
+  public async findActiveSettlement(
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<StoredSettlement | null> {
+    const [settlement] = await this.database
+      .select()
+      .from(settlements)
+      .where(
+        and(
+          eq(settlements.groupId, groupId),
+          eq(settlements.gameId, gameId),
+          isNull(settlements.supersededAt),
+        ),
+      )
+      .limit(1);
+    return settlement === undefined
+      ? null
+      : readStoredSettlement(this.database, settlement);
+  }
+
   public async findFinalizedAttendance(
     groupId: GroupId,
     gameId: GameId,
@@ -158,7 +290,7 @@ export class PaymentRepository {
       : readAttendanceSnapshot(this.database, snapshot);
   }
 
-  public async withLockedFinalizedAttendance<T>(
+  public async withLockedFinalizedAttendance(
     groupId: GroupId,
     gameId: GameId,
     attendanceRevision: number,
@@ -167,8 +299,53 @@ export class PaymentRepository {
       changes: {
         createRevision(input: CreateRevisionInput): Promise<StoredSettlement>;
       },
-    ) => Promise<T>,
-  ): Promise<T> {
+    ) => Promise<StoredSettlement>,
+  ): Promise<StoredSettlement> {
+    return this.finalizeLocked(
+      groupId,
+      gameId,
+      attendanceRevision,
+      null,
+      callback,
+    );
+  }
+
+  public async finalizeDraft(
+    input: {
+      groupId: GroupId;
+      gameId: GameId;
+      attendanceRevision: number;
+      draftId: string;
+      actorUserId: UserId;
+    },
+    callback: (
+      snapshot: AttendanceSnapshot,
+      changes: {
+        createRevision(input: CreateRevisionInput): Promise<StoredSettlement>;
+      },
+    ) => Promise<StoredSettlement>,
+  ): Promise<StoredSettlement> {
+    return this.finalizeLocked(
+      input.groupId,
+      input.gameId,
+      input.attendanceRevision,
+      { id: input.draftId, actorUserId: input.actorUserId },
+      callback,
+    );
+  }
+
+  private async finalizeLocked(
+    groupId: GroupId,
+    gameId: GameId,
+    attendanceRevision: number,
+    draftContext: { id: string; actorUserId: UserId } | null,
+    callback: (
+      snapshot: AttendanceSnapshot,
+      changes: {
+        createRevision(input: CreateRevisionInput): Promise<StoredSettlement>;
+      },
+    ) => Promise<StoredSettlement>,
+  ): Promise<StoredSettlement> {
     return this.database.transaction(async (transaction) => {
       const [game] = await transaction
         .select({ id: games.id })
@@ -195,6 +372,32 @@ export class PaymentRepository {
         throw new Error('Finalized attendance revision required');
       }
       const snapshot = await readAttendanceSnapshot(transaction, snapshotRow);
+      const lockedDraft =
+        draftContext === null
+          ? null
+          : await lockPaymentDraft(transaction, {
+              groupId,
+              gameId,
+              attendanceRevision,
+              draftId: draftContext.id,
+              actorUserId: draftContext.actorUserId,
+            });
+      if (lockedDraft !== null && lockedDraft.finalizedSettlementId !== null) {
+        const [finalized] = await transaction
+          .select()
+          .from(settlements)
+          .where(
+            and(
+              eq(settlements.groupId, groupId),
+              eq(settlements.id, lockedDraft.finalizedSettlementId),
+            ),
+          )
+          .limit(1);
+        if (finalized === undefined) {
+          throw new Error('Finalized draft settlement not found');
+        }
+        return readStoredSettlement(transaction, finalized);
+      }
       let revisionCreated = false;
       return callback(snapshot, {
         createRevision: async (input) => {
@@ -290,6 +493,19 @@ export class PaymentRepository {
               chargeCount: chargeRows.length,
             },
           });
+          if (lockedDraft !== null) {
+            await transaction
+              .update(paymentDrafts)
+              .set({ finalizedSettlementId: settlement.id })
+              .where(
+                and(
+                  eq(paymentDrafts.groupId, groupId),
+                  eq(paymentDrafts.id, lockedDraft.id),
+                  eq(paymentDrafts.actorUserId, lockedDraft.actorUserId),
+                  isNull(paymentDrafts.finalizedSettlementId),
+                ),
+              );
+          }
           return toStoredSettlement(settlement, chargeRows);
         },
       });
@@ -648,6 +864,62 @@ const lockGame = async (
   if (game === undefined) throw new Error('Game not found');
 };
 
+const lockPaymentDraft = async (
+  database: Database,
+  input: {
+    groupId: GroupId;
+    gameId: GameId;
+    attendanceRevision: number;
+    draftId: string;
+    actorUserId: UserId;
+  },
+) => {
+  const [draft] = await database
+    .select()
+    .from(paymentDrafts)
+    .where(
+      and(
+        eq(paymentDrafts.groupId, input.groupId),
+        eq(paymentDrafts.gameId, input.gameId),
+        eq(paymentDrafts.attendanceRevision, input.attendanceRevision),
+        eq(paymentDrafts.id, input.draftId),
+        eq(paymentDrafts.actorUserId, input.actorUserId),
+        gt(paymentDrafts.expiresAt, new Date()),
+      ),
+    )
+    .for('update')
+    .limit(1);
+  if (draft === undefined) throw new Error('Payment preview not found');
+  return draft;
+};
+
+const readStoredSettlement = async (
+  database: Database,
+  settlement: typeof settlements.$inferSelect,
+): Promise<StoredSettlement> => {
+  const charges = await database
+    .select()
+    .from(settlementCharges)
+    .where(
+      and(
+        eq(settlementCharges.groupId, settlement.groupId),
+        eq(settlementCharges.settlementId, settlement.id),
+      ),
+    );
+  const order = new Map(
+    settlement.allocationOrder.map((participantRef, index) => [
+      participantRef,
+      index,
+    ]),
+  );
+  charges.sort(
+    (left, right) =>
+      (order.get(left.participantRef) ?? Number.MAX_SAFE_INTEGER) -
+      (order.get(right.participantRef) ?? Number.MAX_SAFE_INTEGER),
+  );
+  return toStoredSettlement(settlement, charges);
+};
+
 const toStoredPaymentDraft = (
   draft: typeof paymentDrafts.$inferSelect,
 ): StoredPaymentDraft => ({
@@ -660,4 +932,17 @@ const toStoredPaymentDraft = (
   currency: draft.currency,
   roundingMode: draft.roundingMode,
   expiresAt: draft.expiresAt,
+  finalizedSettlementId: draft.finalizedSettlementId,
+});
+
+const toStoredPaymentInputSession = (
+  session: typeof paymentInputSessions.$inferSelect,
+): StoredPaymentInputSession => ({
+  groupId: asGroupId(session.groupId),
+  gameId: asGameId(session.gameId),
+  actorUserId: asUserId(session.actorUserId),
+  attendanceRevision: session.attendanceRevision,
+  currency: session.currency,
+  roundingMode: session.roundingMode,
+  expiresAt: session.expiresAt,
 });
