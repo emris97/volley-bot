@@ -16,3 +16,5 @@ export * from './registrations/ports.js';
 export * from './registrations/register-guest.js';
 export * from './registrations/register-participant.js';
 export * from './registrations/withdraw-registration.js';
+export * from './scheduling/reconcile-game-jobs.js';
+export * from './scheduling/schedule-policy.js';

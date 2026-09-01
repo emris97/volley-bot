@@ -54,6 +54,7 @@ describe('foundation migration', () => {
       'guest_registration_drafts',
       'outbox_events',
       'registrations',
+      'scheduled_jobs',
       'users',
       'volley_schema_migrations',
     ]);

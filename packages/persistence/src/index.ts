@@ -21,4 +21,5 @@ export {
   type RegistrationResult,
 } from './repositories/registration.repository.js';
 export { OutboxRepository } from './repositories/outbox.repository.js';
+export { ScheduledJobRepository } from './repositories/scheduled-job.repository.js';
 export * from './schema/index.js';

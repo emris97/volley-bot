@@ -4,13 +4,14 @@ import { createDatabase, OutboxRepository } from '@volley/persistence';
 import { OutboxDispatcher } from '@volley/application';
 import { Queue } from 'bullmq';
 import { Pool } from 'pg';
-import { MANAGED_WORKERS } from '../worker-lifecycle.service.js';
 import { BullMqJobPublisher, OutboxConsumer } from './outbox.consumer.js';
+
+export const OUTBOX_WORKER = Symbol('OUTBOX_WORKER');
 
 @Module({
   providers: [
     {
-      provide: MANAGED_WORKERS,
+      provide: OUTBOX_WORKER,
       useFactory: () => {
         const env = parseEnv(process.env);
         const pool = new Pool({ connectionString: env.DATABASE_URL });
@@ -26,15 +27,13 @@ import { BullMqJobPublisher, OutboxConsumer } from './outbox.consumer.js';
           new OutboxRepository(createDatabase(pool)),
           new BullMqJobPublisher(queue),
         );
-        return [
-          new OutboxConsumer(dispatcher, async () => {
-            await queue.close();
-            await pool.end();
-          }),
-        ];
+        return new OutboxConsumer(dispatcher, async () => {
+          await queue.close();
+          await pool.end();
+        });
       },
     },
   ],
-  exports: [MANAGED_WORKERS],
+  exports: [OUTBOX_WORKER],
 })
 export class OutboxModule {}

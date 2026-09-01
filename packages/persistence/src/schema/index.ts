@@ -5,4 +5,5 @@ export { groupMembers, groups } from './groups.js';
 export { guestRegistrationDrafts } from './guest-registration-drafts.js';
 export { outboxEvents } from './outbox.js';
 export { registrations } from './registrations.js';
+export { scheduledJobs } from './scheduled-jobs.js';
 export { users } from './users.js';

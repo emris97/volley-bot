@@ -48,6 +48,30 @@ export interface RegisterGuestInput {
 export class RegistrationRepository {
   public constructor(private readonly database: Database) {}
 
+  public async listCandidates(
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<readonly RegistrationCandidate[]> {
+    const rows = await this.database
+      .select()
+      .from(registrations)
+      .where(
+        and(
+          eq(registrations.groupId, groupId),
+          eq(registrations.gameId, gameId),
+          ne(registrations.state, 'CANCELLED'),
+        ),
+      );
+    return rows.map((row) => ({
+      id: asRegistrationId(row.id),
+      kind: row.kind,
+      state: row.state,
+      manualRank: row.manualRank,
+      membershipPriority: row.membershipPriority,
+      confirmedAt: row.confirmedAt,
+    }));
+  }
+
   public async resolve(gameId: GameId, telegramUserId: TelegramId) {
     return this.database.transaction(async (transaction) => {
       const [game] = await transaction
