@@ -15,6 +15,7 @@ export const notificationDeliveries = pgTable(
     registrationId: uuid('registration_id')
       .notNull()
       .references(() => registrations.id, { onDelete: 'cascade' }),
+    claimToken: uuid('claim_token'),
     claimedAt: timestamp('claimed_at', {
       mode: 'date',
       withTimezone: true,

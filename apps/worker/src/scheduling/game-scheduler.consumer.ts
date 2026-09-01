@@ -91,7 +91,7 @@ export class BullMqDelayedJobScheduler implements DelayedJobScheduler {
     await this.queue.add(job.kind, job, {
       jobId: job.id,
       delay: Math.max(0, job.runAt.getTime() - this.now().getTime()),
-      attempts: 8,
+      attempts: 12,
       backoff: { type: 'exponential', delay: 1_000 },
       removeOnComplete: { age: 86_400, count: 10_000 },
       removeOnFail: { age: 604_800 },

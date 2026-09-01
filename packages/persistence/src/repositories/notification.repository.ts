@@ -8,6 +8,7 @@ import {
   type RegistrationId,
   type TelegramId,
 } from '@volley/domain';
+import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import type { Database } from '../client.js';
 import { notificationDeliveries, users } from '../schema/index.js';
@@ -76,23 +77,31 @@ export class NotificationRepository {
     deterministicJobId: string,
     registrationId: RegistrationId,
     now = new Date(),
-    leaseMs = 60_000,
-  ): Promise<'CLAIMED' | 'DELIVERED' | 'BUSY'> {
+    leaseMs = 300_000,
+  ): Promise<
+    | { status: 'CLAIMED'; claimToken: string }
+    | { status: 'DELIVERED' }
+    | { status: 'BUSY' }
+  > {
     const leaseUntil = new Date(now.getTime() + leaseMs);
-    const result = await this.database.execute<{ id: string }>(sql`
+    const claimToken = randomUUID();
+    const result = await this.database.execute<{ claim_token: string }>(sql`
       INSERT INTO notification_deliveries (
         deterministic_job_id,
         registration_id,
+        claim_token,
         claimed_at,
         claim_expires_at
       ) VALUES (
         ${deterministicJobId},
         ${registrationId},
+        ${claimToken},
         ${now},
         ${leaseUntil}
       )
       ON CONFLICT (deterministic_job_id, registration_id)
       DO UPDATE SET
+        claim_token = EXCLUDED.claim_token,
         claimed_at = EXCLUDED.claimed_at,
         claim_expires_at = EXCLUDED.claim_expires_at
       WHERE notification_deliveries.delivered_at IS NULL
@@ -100,9 +109,11 @@ export class NotificationRepository {
           notification_deliveries.claim_expires_at IS NULL
           OR notification_deliveries.claim_expires_at <= ${now}
         )
-      RETURNING id
+      RETURNING claim_token
     `);
-    if (result.rows.length === 1) return 'CLAIMED';
+    if (result.rows.length === 1) {
+      return { status: 'CLAIMED', claimToken };
+    }
     const [current] = await this.database
       .select({ deliveredAt: notificationDeliveries.deliveredAt })
       .from(notificationDeliveries)
@@ -113,39 +124,48 @@ export class NotificationRepository {
         ),
       )
       .limit(1);
-    return current?.deliveredAt === null ? 'BUSY' : 'DELIVERED';
+    return {
+      status: current?.deliveredAt === null ? 'BUSY' : 'DELIVERED',
+    };
   }
 
   public async markDelivered(
     deterministicJobId: string,
     registrationId: RegistrationId,
+    claimToken: string,
   ): Promise<void> {
-    await this.database
+    const rows = await this.database
       .update(notificationDeliveries)
       .set({
         deliveredAt: new Date(),
         claimedAt: null,
         claimExpiresAt: null,
+        claimToken: null,
       })
       .where(
         and(
           eq(notificationDeliveries.deterministicJobId, deterministicJobId),
           eq(notificationDeliveries.registrationId, registrationId),
+          eq(notificationDeliveries.claimToken, claimToken),
         ),
-      );
+      )
+      .returning({ id: notificationDeliveries.id });
+    if (rows.length === 0) throw new Error('Notification delivery claim lost');
   }
 
   public async releaseDelivery(
     deterministicJobId: string,
     registrationId: RegistrationId,
+    claimToken: string,
   ): Promise<void> {
     await this.database
       .update(notificationDeliveries)
-      .set({ claimedAt: null, claimExpiresAt: null })
+      .set({ claimedAt: null, claimExpiresAt: null, claimToken: null })
       .where(
         and(
           eq(notificationDeliveries.deterministicJobId, deterministicJobId),
           eq(notificationDeliveries.registrationId, registrationId),
+          eq(notificationDeliveries.claimToken, claimToken),
         ),
       );
   }

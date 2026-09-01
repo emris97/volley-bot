@@ -147,7 +147,7 @@ export class OutboxRepository {
     const result = await this.database.execute<ClaimedRow>(sql`
       WITH latest_game_refresh AS (
         SELECT DISTINCT ON (aggregate_id)
-          id || ':canonical-recovery' AS id,
+          md5(aggregate_id::text || ':canonical-recovery')::uuid::text AS id,
           'GAME_RECOVERY_REFRESH' AS event_type,
           payload,
           occurred_at,
@@ -164,10 +164,8 @@ export class OutboxRepository {
             'WAITLIST_PROMOTED'
           )
         ORDER BY aggregate_id, occurred_at DESC, id DESC
-      ), recovery_events AS (
-        SELECT * FROM latest_game_refresh
-        UNION ALL
-        SELECT
+      ), latest_promotions AS (
+        SELECT DISTINCT ON (payload ->> 'registrationId')
           id::text,
           event_type,
           payload,
@@ -177,6 +175,14 @@ export class OutboxRepository {
           aggregate_id
         FROM outbox_events
         WHERE event_type = 'WAITLIST_PROMOTED'
+        ORDER BY
+          payload ->> 'registrationId',
+          occurred_at DESC,
+          id DESC
+      ), recovery_events AS (
+        SELECT * FROM latest_game_refresh
+        UNION ALL
+        SELECT * FROM latest_promotions
       )
       SELECT *
       FROM recovery_events

@@ -36,12 +36,12 @@ describe('GameMessageConsumer', () => {
     expect(canonicalQueue.add).toHaveBeenCalledWith(
       'WAITLIST_PROMOTED',
       expect.anything(),
-      expect.objectContaining({ jobId: 'outbox:event:event:canonical' }),
+      expect.objectContaining({ jobId: 'outbox:event:canonical' }),
     );
     expect(notificationQueue.add).toHaveBeenCalledWith(
       'WAITLIST_PROMOTED',
       expect.anything(),
-      expect.objectContaining({ jobId: 'outbox:event:event:notification' }),
+      expect.objectContaining({ jobId: 'outbox:event:notification' }),
     );
   });
 });

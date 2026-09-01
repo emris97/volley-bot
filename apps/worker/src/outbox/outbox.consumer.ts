@@ -11,14 +11,19 @@ export class BullMqJobPublisher implements JobPublisher {
     const jobId = `${job.id}:event`;
     const existing = await this.queue.getJob(jobId);
     if (existing !== undefined) {
-      if ((await existing.getState()) === 'failed') await existing.retry();
-      return;
+      const state = await existing.getState();
+      if (state === 'failed') {
+        await existing.retry();
+        return;
+      }
+      if (state !== 'completed') return;
+      await existing.remove();
     }
     await this.queue.add(job.type, job.payload, {
       // BullMQ 6 reserves two-segment colon IDs; three segments remain valid
       // for backwards-compatible repeatable-job keys.
       jobId,
-      attempts: 8,
+      attempts: 12,
       backoff: { type: 'exponential', delay: 1_000 },
       removeOnComplete: { age: 86_400, count: 10_000 },
       removeOnFail: { age: 604_800 },

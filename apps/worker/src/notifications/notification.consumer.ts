@@ -27,14 +27,20 @@ export interface NotificationRecipientRepository {
   claimDelivery(
     deterministicJobId: string,
     registrationId: RegistrationId,
-  ): Promise<'CLAIMED' | 'DELIVERED' | 'BUSY'>;
+  ): Promise<
+    | { status: 'CLAIMED'; claimToken: string }
+    | { status: 'DELIVERED' }
+    | { status: 'BUSY' }
+  >;
   markDelivered(
     deterministicJobId: string,
     registrationId: RegistrationId,
+    claimToken: string,
   ): Promise<void>;
   releaseDelivery(
     deterministicJobId: string,
     registrationId: RegistrationId,
+    claimToken: string,
   ): Promise<void>;
 }
 
@@ -133,12 +139,15 @@ export class NotificationConsumer {
     recipient: NotificationRecipientRecord,
     intent: NotificationIntent,
   ): Promise<void> {
+    // Telegram sendMessage has no caller-supplied idempotency key. This lease
+    // prevents concurrent and acknowledged duplicates; a process crash after
+    // Telegram accepts the message but before markDelivered remains at-least-once.
     const claim = await this.recipients.claimDelivery(
       deterministicJobId,
       recipient.registrationId,
     );
-    if (claim === 'DELIVERED') return;
-    if (claim === 'BUSY') {
+    if (claim.status === 'DELIVERED') return;
+    if (claim.status === 'BUSY') {
       throw new Error('Notification delivery is already claimed');
     }
     try {
@@ -146,11 +155,13 @@ export class NotificationConsumer {
       await this.recipients.markDelivered(
         deterministicJobId,
         recipient.registrationId,
+        claim.claimToken,
       );
     } catch (error) {
       await this.recipients.releaseDelivery(
         deterministicJobId,
         recipient.registrationId,
+        claim.claimToken,
       );
       throw error;
     }

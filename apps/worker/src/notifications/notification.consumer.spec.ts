@@ -26,7 +26,9 @@ describe('NotificationConsumer', () => {
         listTentative: vi.fn(),
         listRostered: vi.fn(),
         findByRegistration: vi.fn().mockResolvedValue(recipient),
-        claimDelivery: vi.fn().mockResolvedValue('CLAIMED'),
+        claimDelivery: vi
+          .fn()
+          .mockResolvedValue({ status: 'CLAIMED', claimToken: 'claim' }),
         markDelivered: vi.fn(),
         releaseDelivery: vi.fn(),
       },
@@ -69,10 +71,10 @@ describe('NotificationConsumer', () => {
         .fn()
         .mockImplementation(async (jobId, registrationId) => {
           const key = `${jobId}:${registrationId}`;
-          if (delivered.has(key)) return 'DELIVERED';
-          if (claimed.has(key)) return 'BUSY';
+          if (delivered.has(key)) return { status: 'DELIVERED' };
+          if (claimed.has(key)) return { status: 'BUSY' };
           claimed.add(key);
-          return 'CLAIMED';
+          return { status: 'CLAIMED', claimToken: key };
         }),
       markDelivered: vi
         .fn()
@@ -124,7 +126,7 @@ describe('NotificationConsumer', () => {
         listTentative: vi.fn().mockResolvedValue([current]),
         listRostered: vi.fn(),
         findByRegistration: vi.fn(),
-        claimDelivery: vi.fn().mockResolvedValue('BUSY'),
+        claimDelivery: vi.fn().mockResolvedValue({ status: 'BUSY' }),
         markDelivered: vi.fn(),
         releaseDelivery: vi.fn(),
       },

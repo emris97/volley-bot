@@ -8,8 +8,10 @@ import {
   type TelegramId,
 } from '@volley/domain';
 import { and, eq, ne } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/node-postgres';
 import type { Pool } from 'pg';
 import type { Database } from '../client.js';
+import * as schema from '../schema/index.js';
 import { games, groups, registrations, users } from '../schema/index.js';
 
 export interface StoredGameMessageView {
@@ -66,24 +68,33 @@ export class GameMessageRepository {
       ): Promise<void>;
     }) => Promise<T>,
   ): Promise<T> {
-    const repository = {
-      load: (lockedGroupId: GroupId, lockedGameId: GameId) =>
-        this.load(lockedGroupId, lockedGameId),
-      setCanonicalMessageId: (
-        lockedGroupId: GroupId,
-        lockedGameId: GameId,
-        messageId: bigint,
-      ) => this.setCanonicalMessageId(lockedGroupId, lockedGameId, messageId),
-    };
-    if (this.pool === undefined) return callback(repository);
+    if (this.pool === undefined) {
+      return callback({
+        load: (lockedGroupId, lockedGameId) =>
+          this.load(lockedGroupId, lockedGameId),
+        setCanonicalMessageId: (lockedGroupId, lockedGameId, messageId) =>
+          this.setCanonicalMessageId(lockedGroupId, lockedGameId, messageId),
+      });
+    }
 
     const client = await this.pool.connect();
+    const lockedDatabase = drizzle(client, { schema }) as Database;
     const lockIdentity = `${groupId}:${gameId}`;
     try {
       await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [
         lockIdentity,
       ]);
-      return await callback(repository);
+      return await callback({
+        load: (lockedGroupId, lockedGameId) =>
+          this.loadWith(lockedDatabase, lockedGroupId, lockedGameId),
+        setCanonicalMessageId: (lockedGroupId, lockedGameId, messageId) =>
+          this.setCanonicalWith(
+            lockedDatabase,
+            lockedGroupId,
+            lockedGameId,
+            messageId,
+          ),
+      });
     } finally {
       try {
         await client.query(

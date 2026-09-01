@@ -141,7 +141,9 @@ describe('Redis recovery with durable Postgres metadata', () => {
     await vi.waitFor(
       async () => {
         expect(
-          await canonicalQueue.getJob(`${outboxJobId}:canonical`),
+          await canonicalQueue.getJob(
+            outboxJobId.replace(/:event$/, ':canonical'),
+          ),
         ).toBeDefined();
       },
       { timeout: 10_000 },

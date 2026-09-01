@@ -122,6 +122,28 @@ describe('BullMqJobPublisher', () => {
     expect(failed.retry).toHaveBeenCalledOnce();
     expect(queue.add).not.toHaveBeenCalled();
   });
+
+  it('replays a completed router job so failed children can be revived', async () => {
+    const completed = {
+      getState: vi.fn().mockResolvedValue('completed'),
+      remove: vi.fn(),
+    };
+    const queue = {
+      getJob: vi.fn().mockResolvedValue(completed),
+      add: vi.fn(),
+    };
+    const publisher = new BullMqJobPublisher(queue as unknown as Queue);
+
+    await publisher.publish({
+      id: 'outbox:018f6ba0-62d2-7bd1-8f13-12e0c8424610',
+      type: 'GAME_RECOVERY_REFRESH',
+      payload: {},
+      occurredAt: new Date(),
+    });
+
+    expect(completed.remove).toHaveBeenCalledOnce();
+    expect(queue.add).toHaveBeenCalledOnce();
+  });
 });
 
 const event = (id: string): ClaimedOutboxEvent => ({

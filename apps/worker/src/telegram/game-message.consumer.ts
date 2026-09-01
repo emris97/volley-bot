@@ -46,7 +46,7 @@ export class OutboxEventRouter {
         this.canonicalQueue,
         eventType,
         payload,
-        `${sourceJobId}:canonical`,
+        childJobId(sourceJobId, 'canonical'),
       );
     }
     if (eventType === 'WAITLIST_PROMOTED') {
@@ -54,7 +54,7 @@ export class OutboxEventRouter {
         this.notificationQueue,
         eventType,
         payload,
-        `${sourceJobId}:notification`,
+        childJobId(sourceJobId, 'notification'),
       );
     }
   }
@@ -257,7 +257,7 @@ const redisConnection = (redisUrl: string) => {
 
 const childJobOptions = (jobId: string) => ({
   jobId,
-  attempts: 8,
+  attempts: 12,
   backoff: { type: 'exponential' as const, delay: 1_000 },
   removeOnComplete: { age: 86_400, count: 10_000 },
   removeOnFail: { age: 604_800 },
@@ -280,4 +280,20 @@ const ensureChildJob = async (
 const requiredJobId = (jobId: string | undefined): string => {
   if (jobId === undefined) throw new Error('BullMQ job identity is required');
   return jobId;
+};
+
+const childJobId = (
+  sourceJobId: string,
+  consumer: 'canonical' | 'notification',
+): string => {
+  const [prefix, eventId, suffix, ...rest] = sourceJobId.split(':');
+  if (
+    prefix !== 'outbox' ||
+    eventId === undefined ||
+    suffix !== 'event' ||
+    rest.length > 0
+  ) {
+    throw new Error('Invalid outbox parent job identity');
+  }
+  return `outbox:${eventId}:${consumer}`;
 };
