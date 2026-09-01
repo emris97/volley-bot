@@ -6,4 +6,10 @@ export {
 } from './repositories/group.repository.js';
 export { GameRepository } from './repositories/game.repository.js';
 export { TemplateRepository } from './repositories/template.repository.js';
+export {
+  RegistrationRepository,
+  type RegisterGuestInput,
+  type RegisterParticipantInput,
+  type RegistrationResult,
+} from './repositories/registration.repository.js';
 export * from './schema/index.js';

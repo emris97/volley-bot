@@ -43,3 +43,17 @@ export interface GameRepository {
 export interface UnitOfWork {
   transaction<T>(callback: () => Promise<T>): Promise<T>;
 }
+
+export interface GameUpdateRepository {
+  updateGame(input: {
+    groupId: GroupId;
+    gameId: GameId;
+    actorUserId: UserId;
+    expectedRevision: number;
+    changes: { capacity?: number };
+  }): Promise<{
+    scheduleRevision: number;
+    rosterCount: number;
+    waitlistCount: number;
+  }>;
+}

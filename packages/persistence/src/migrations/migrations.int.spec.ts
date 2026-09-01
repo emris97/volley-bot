@@ -51,6 +51,7 @@ describe('foundation migration', () => {
       'group_members',
       'groups',
       'outbox_events',
+      'registrations',
       'users',
       'volley_schema_migrations',
     ]);
