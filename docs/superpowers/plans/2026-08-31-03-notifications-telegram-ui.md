@@ -30,7 +30,7 @@
 - Modify: `packages/application/src/index.ts`
 - Create: `packages/persistence/src/repositories/outbox.repository.ts`
 - Modify: `packages/persistence/src/schema/outbox.ts`
-- Create: `packages/persistence/migrations/0004_outbox_leases.sql`
+- Create: `packages/persistence/migrations/0006_outbox_leases.sql`
 - Modify: `packages/persistence/src/index.ts`
 - Create: `apps/worker/src/outbox/outbox.module.ts`
 - Create: `apps/worker/src/outbox/outbox.consumer.ts`
@@ -114,7 +114,7 @@ git commit -m "feat: dispatch transactional outbox events"
 - Create: `apps/worker/src/scheduling/game-scheduler.module.ts`
 - Create: `packages/persistence/src/schema/scheduled-jobs.ts`
 - Modify: `packages/persistence/src/schema/index.ts`
-- Create: `packages/persistence/migrations/0005_scheduled_jobs.sql`
+- Create: `packages/persistence/migrations/0007_scheduled_jobs.sql`
 - Create: `packages/persistence/src/repositories/scheduled-job.repository.ts`
 - Modify: `apps/worker/src/worker.module.ts`
 - Test: `packages/application/src/scheduling/schedule-policy.spec.ts`

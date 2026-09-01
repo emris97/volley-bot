@@ -100,14 +100,18 @@ export class GroupOnboardingHandlers {
     privateChatId: TelegramId;
     token: string;
     now?: Date;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const payload = this.signer.verify(input.token, input.now);
+    if (payload.purpose !== 'configure-group') {
+      return false;
+    }
     if (payload.administratorTelegramId !== input.telegramUserId) {
       throw new Error('Start token belongs to another administrator');
     }
     await this.assertAdministrator(payload.groupId, input.telegramUserId);
     const progress = await this.groups.getWizardProgress(payload.groupId);
     await this.sendNextPrompt(input.privateChatId, progress as WizardProgress);
+    return true;
   }
 
   async handleCallback(input: {

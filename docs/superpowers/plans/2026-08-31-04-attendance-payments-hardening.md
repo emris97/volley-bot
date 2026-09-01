@@ -30,7 +30,7 @@
 - Modify: `packages/domain/src/index.ts`
 - Create: `packages/persistence/src/schema/attendance.ts`
 - Modify: `packages/persistence/src/schema/index.ts`
-- Create: `packages/persistence/migrations/0006_attendance.sql`
+- Create: `packages/persistence/migrations/0008_attendance.sql`
 - Create: `packages/application/src/attendance/confirm-attendance.ts`
 - Create: `packages/application/src/attendance/ports.ts`
 - Modify: `packages/application/src/index.ts`
@@ -199,7 +199,7 @@ git commit -m "feat: calculate game cost per participant"
 **Files:**
 - Create: `packages/persistence/src/schema/payments.ts`
 - Modify: `packages/persistence/src/schema/index.ts`
-- Create: `packages/persistence/migrations/0007_payments.sql`
+- Create: `packages/persistence/migrations/0009_payments.sql`
 - Create: `packages/application/src/payments/ports.ts`
 - Create: `packages/application/src/payments/preview-settlement.ts`
 - Create: `packages/application/src/payments/finalize-settlement.ts`

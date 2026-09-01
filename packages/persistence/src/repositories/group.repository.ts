@@ -7,6 +7,7 @@ import {
   type GroupMembership,
   type GroupRole,
   type TelegramId,
+  type UserId,
 } from '@volley/domain';
 import { and, eq } from 'drizzle-orm';
 import type { Database } from '../client.js';
@@ -67,6 +68,64 @@ export class GroupRepository {
       .where(eq(groups.id, groupId))
       .limit(1);
     return row === undefined ? null : toGroup(row);
+  }
+
+  public async findTimeZone(groupId: GroupId): Promise<string | null> {
+    const [row] = await this.database
+      .select({ timeZone: groups.timeZone })
+      .from(groups)
+      .where(eq(groups.id, groupId))
+      .limit(1);
+    return row?.timeZone ?? null;
+  }
+
+  public async findTelegramIdentity(
+    groupId: GroupId,
+    userId: UserId,
+  ): Promise<{
+    telegramChatId: TelegramId;
+    telegramUserId: TelegramId;
+  } | null> {
+    const [row] = await this.database
+      .select({
+        telegramChatId: groups.telegramChatId,
+        telegramUserId: users.telegramUserId,
+      })
+      .from(groups)
+      .innerJoin(users, eq(users.id, userId))
+      .where(eq(groups.id, groupId))
+      .limit(1);
+    return row === undefined
+      ? null
+      : {
+          telegramChatId: fromDatabaseTelegramId(row.telegramChatId),
+          telegramUserId: fromDatabaseTelegramId(row.telegramUserId),
+        };
+  }
+
+  public async requireOrganizer(
+    groupId: GroupId,
+    actorUserId: UserId,
+  ): Promise<void> {
+    const [membership] = await this.database
+      .select({
+        role: groupMembers.role,
+        membershipStatus: groupMembers.membershipStatus,
+      })
+      .from(groupMembers)
+      .where(
+        and(
+          eq(groupMembers.groupId, groupId),
+          eq(groupMembers.userId, actorUserId),
+        ),
+      )
+      .limit(1);
+    if (
+      membership?.membershipStatus !== 'ACTIVE' ||
+      !['OWNER', 'ADMIN', 'ORGANIZER'].includes(membership.role)
+    ) {
+      throw new Error('Organizer permission required');
+    }
   }
 
   public async upsertFromTelegram(

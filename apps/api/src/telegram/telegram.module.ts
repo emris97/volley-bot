@@ -8,17 +8,30 @@ import {
 import {
   ConfigureGroup,
   OnboardGroup,
+  RegisterGuest,
+  RegisterParticipant,
+  WithdrawRegistration,
   type ConfigurationLinkFactory,
 } from '@volley/application';
 import { parseEnv, type AppEnv } from '@volley/config';
-import { createDatabase, GroupRepository } from '@volley/persistence';
 import {
+  createDatabase,
+  GuestRegistrationDraftRepository,
+  GroupRepository,
+  RegistrationRepository,
+} from '@volley/persistence';
+import {
+  CallbackCodec,
   createLazyTelegramUpdateHandler,
   createTelegramBot,
   GrammyTelegramGateway,
+  GuestFlowHandlers,
   GroupOnboardingHandlers,
+  RegistrationHandlers,
+  registerRegistrationHandlers,
   registerGroupOnboardingHandlers,
   SignedStartToken,
+  TelegramMembershipResolver,
   TELEGRAM_UPDATE_HANDLER,
   TELEGRAM_WEBHOOK_SECRET,
   WebhookController,
@@ -57,7 +70,10 @@ class TelegramRuntimeLifecycle implements OnApplicationShutdown {
       inject: [TELEGRAM_ENV],
       useFactory: (env: AppEnv): TelegramRuntime => {
         const pool = new Pool({ connectionString: env.DATABASE_URL });
-        const groups = new GroupRepository(createDatabase(pool));
+        const database = createDatabase(pool);
+        const groups = new GroupRepository(database);
+        const registrations = new RegistrationRepository(database);
+        const guestDrafts = new GuestRegistrationDraftRepository(database);
         const bot = createTelegramBot(env.BOT_TOKEN);
         const telegram = new GrammyTelegramGateway(bot);
         const signer = new SignedStartToken(
@@ -87,7 +103,40 @@ class TelegramRuntimeLifecycle implements OnApplicationShutdown {
           signer,
           telegram,
         );
-        registerGroupOnboardingHandlers(bot, handlers);
+        const guestHandlers = new GuestFlowHandlers(
+          signer,
+          guestDrafts,
+          registrations,
+          new RegisterGuest(registrations),
+        );
+        registerGroupOnboardingHandlers(bot, handlers, guestHandlers);
+        registerRegistrationHandlers(
+          bot,
+          new RegistrationHandlers(
+            new CallbackCodec(),
+            registrations,
+            new RegisterParticipant(
+              new TelegramMembershipResolver(telegram, groups),
+              registrations,
+            ),
+            new WithdrawRegistration(registrations),
+            {
+              create: (gameId, inviterTelegramId): string => {
+                const token = signer.sign({
+                  purpose: 'add-guest',
+                  gameId,
+                  inviterTelegramId,
+                  expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+                });
+                const username = bot.botInfo.username;
+                if (username === undefined) {
+                  throw new Error('Telegram bot username is required');
+                }
+                return `https://t.me/${username}?start=${token}`;
+              },
+            },
+          ),
+        );
         return { bot: createLazyTelegramUpdateHandler(bot), pool };
       },
     },
