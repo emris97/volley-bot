@@ -409,7 +409,11 @@ export const registerPaymentHandlers = (
     await context.reply(view.text);
   });
   bot.on('message:text', async (context, next) => {
-    if (context.from === undefined || context.message.text.startsWith('/')) {
+    if (
+      context.chat.type !== 'private' ||
+      context.from === undefined ||
+      context.message.text.startsWith('/')
+    ) {
       await next();
       return;
     }

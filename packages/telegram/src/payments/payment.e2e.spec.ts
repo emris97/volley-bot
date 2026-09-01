@@ -556,6 +556,97 @@ it('runs registered private payment command through durable decimal input and fr
   ]);
 });
 
+it('passes ordinary group text to later middleware while private payment input remains active', async () => {
+  const apiCalls: Array<{ method: string; payload: Record<string, unknown> }> =
+    [];
+  const nextMiddleware = vi.fn();
+  const session: PaymentInputSession = {
+    groupId,
+    gameId,
+    actorUserId,
+    attendanceRevision: 1,
+    currency: 'RUB',
+    roundingMode: 'EXACT',
+    expiresAt: new Date('2026-08-31T01:00:00Z'),
+  };
+  const state: PaymentTelegramRepository = {
+    beginInput: async () => session,
+    findInputByTelegramUserId: async () => session,
+    clearInput: async () => undefined,
+    saveDraft: async (input) => ({
+      id: draftId,
+      ...input,
+      expiresAt: new Date('2026-08-31T01:00:00Z'),
+      finalizedSettlementId: null,
+    }),
+    findDraft: async () => null,
+    deleteDraft: async () => undefined,
+    findActiveSettlement: async () => null,
+  };
+  const bot = createTelegramBot('123456:abcdefghijklmnopqrstuvwxyz', botInfo);
+  registerPaymentHandlers(
+    bot,
+    new PaymentHandlers(
+      {
+        resolve: async () => ({ groupId, gameId, userId: actorUserId }),
+      },
+      {
+        execute: async () => ({
+          attendanceRevision: 1,
+          participantCount: 1,
+          totalMinor: 10000n,
+          collectedMinor: 10000n,
+          surplusMinor: 0n,
+          currency: 'RUB',
+          roundingMode: 'EXACT',
+          allocationOrder: ['registration:player'],
+          charges: [
+            {
+              participantRef: 'registration:player',
+              displayName: 'Player',
+              addedManually: false,
+              amountMinor: 10000n,
+            },
+          ],
+        }),
+      },
+      { execute: async () => Promise.reject(new Error('unused')) },
+      { execute: async () => Promise.reject(new Error('unused')) },
+      { execute: async () => Promise.reject(new Error('unused')) },
+      state,
+      { requireOrganizer: async () => undefined },
+    ),
+  );
+  bot.on('message:text', () => {
+    nextMiddleware();
+  });
+  bot.api.config.use(async (_previous, method, payload) => {
+    apiCalls.push({ method, payload: payload as Record<string, unknown> });
+    return {
+      ok: true,
+      result: {
+        message_id: 100,
+        date: 1_788_134_400,
+        chat: { id: Number(telegramUserId), type: 'private' },
+        text: 'ok',
+      },
+    } as never;
+  });
+  const updates = createLazyTelegramUpdateHandler(bot);
+
+  await expect(
+    updates.handleUpdate(paymentAmountUpdate(4, 'обычное сообщение', 'group')),
+  ).resolves.toBeUndefined();
+  expect(nextMiddleware).toHaveBeenCalledOnce();
+  expect(apiCalls).toEqual([]);
+
+  await updates.handleUpdate(paymentAmountUpdate(5, '100.00'));
+  expect(apiCalls.at(-1)).toMatchObject({
+    method: 'sendMessage',
+    payload: { text: expect.stringMatching(/предпросмотр/i) },
+  });
+});
+
 const compactUuid = (value: string): string =>
   Buffer.from(value.replaceAll('-', ''), 'hex').toString('base64url');
 
@@ -571,12 +662,19 @@ const paymentCommandUpdate = (updateId: number): Update => ({
   },
 });
 
-const paymentAmountUpdate = (updateId: number, text: string): Update => ({
+const paymentAmountUpdate = (
+  updateId: number,
+  text: string,
+  chatType: 'private' | 'group' = 'private',
+): Update => ({
   update_id: updateId,
   message: {
     message_id: updateId,
     date: 1_788_134_400,
-    chat: { id: Number(telegramUserId), type: 'private', first_name: 'Admin' },
+    chat:
+      chatType === 'private'
+        ? { id: Number(telegramUserId), type: 'private', first_name: 'Admin' }
+        : { id: -100, type: 'group', title: 'Volley' },
     from: { id: Number(telegramUserId), is_bot: false, first_name: 'Admin' },
     text,
   },
