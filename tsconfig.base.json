@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "allowSyntheticDefaultImports": true,
+    "baseUrl": ".",
+    "declaration": true,
+    "declarationMap": true,
+    "emitDecoratorMetadata": true,
+    "esModuleInterop": true,
+    "experimentalDecorators": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "paths": {
+      "@volley/application": ["packages/application/src/index.ts"],
+      "@volley/config": ["packages/config/src/index.ts"],
+      "@volley/contracts": ["packages/contracts/src/index.ts"],
+      "@volley/domain": ["packages/domain/src/index.ts"],
+      "@volley/persistence": ["packages/persistence/src/index.ts"],
+      "@volley/telegram": ["packages/telegram/src/index.ts"]
+    },
+    "resolvePackageJsonExports": true,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "strict": true,
+    "target": "ES2023"
+  }
+}

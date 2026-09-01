@@ -1,0 +1,17 @@
+{
+  "name": "@volley/persistence",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@volley/domain": "workspace:*",
+    "drizzle-orm": "0.45.2",
+    "pg": "8.22.0"
+  }
+}

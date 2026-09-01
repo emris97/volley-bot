@@ -1,0 +1,22 @@
+{
+  "name": "@volley/api",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@nestjs/common": "11.1.28",
+    "@nestjs/config": "4.0.4",
+    "@nestjs/core": "11.1.28",
+    "@nestjs/platform-fastify": "11.1.28",
+    "@volley/application": "workspace:*",
+    "@volley/config": "workspace:*",
+    "@volley/contracts": "workspace:*",
+    "@volley/domain": "workspace:*",
+    "@volley/persistence": "workspace:*",
+    "@volley/telegram": "workspace:*",
+    "fastify": "5.11.0",
+    "ioredis": "6.0.0",
+    "pg": "8.22.0",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  }
+}

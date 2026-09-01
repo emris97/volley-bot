@@ -1,0 +1,112 @@
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import {
+  asGroupId,
+  asTelegramId,
+  type GroupId,
+  type TelegramId,
+} from '@volley/domain';
+
+export interface ConfigureGroupStartPayload {
+  purpose: 'configure-group';
+  groupId: GroupId;
+  administratorTelegramId: TelegramId;
+  expiresAt: string;
+}
+
+const version = 1;
+const bodyLength = 29;
+const tagLength = 16;
+const tokenLength = bodyLength + tagLength;
+const maxTelegramId = (1n << 64n) - 1n;
+
+export class SignedStartToken {
+  constructor(private readonly secret: string) {
+    if (Buffer.byteLength(secret) < 32) {
+      throw new Error('Start token secret must contain at least 32 bytes');
+    }
+  }
+
+  sign(payload: ConfigureGroupStartPayload): string {
+    const groupId = uuidBytes(payload.groupId);
+    const administratorTelegramId = parseAdministratorId(
+      payload.administratorTelegramId,
+    );
+    const expiresAtSeconds = Math.floor(Date.parse(payload.expiresAt) / 1000);
+    if (
+      !Number.isSafeInteger(expiresAtSeconds) ||
+      expiresAtSeconds <= 0 ||
+      expiresAtSeconds > 0xffff_ffff
+    ) {
+      throw new Error('Invalid token expiry');
+    }
+
+    const body = Buffer.alloc(bodyLength);
+    body.writeUInt8(version, 0);
+    groupId.copy(body, 1);
+    body.writeBigUInt64BE(administratorTelegramId, 17);
+    body.writeUInt32BE(expiresAtSeconds, 25);
+    return Buffer.concat([body, this.signature(body)]).toString('base64url');
+  }
+
+  verify(token: string, now = new Date()): ConfigureGroupStartPayload {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(token)) {
+      throw new Error('Invalid token signature');
+    }
+    const bytes = Buffer.from(token, 'base64url');
+    if (
+      bytes.toString('base64url') !== token ||
+      bytes.length !== tokenLength ||
+      bytes.readUInt8(0) !== version
+    ) {
+      throw new Error('Invalid token signature');
+    }
+
+    const body = bytes.subarray(0, bodyLength);
+    const actualTag = bytes.subarray(bodyLength);
+    const expectedTag = this.signature(body);
+    if (!timingSafeEqual(actualTag, expectedTag)) {
+      throw new Error('Invalid token signature');
+    }
+
+    const expiresAtMilliseconds = body.readUInt32BE(25) * 1000;
+    if (expiresAtMilliseconds <= now.getTime()) {
+      throw new Error('Start token expired');
+    }
+
+    return {
+      purpose: 'configure-group',
+      groupId: asGroupId(formatUuid(body.subarray(1, 17))),
+      administratorTelegramId: asTelegramId(
+        body.readBigUInt64BE(17).toString(),
+      ),
+      expiresAt: new Date(expiresAtMilliseconds).toISOString(),
+    };
+  }
+
+  private signature(body: Buffer): Buffer {
+    return createHmac('sha256', this.secret)
+      .update(body)
+      .digest()
+      .subarray(0, tagLength);
+  }
+}
+
+const uuidBytes = (groupId: GroupId): Buffer => {
+  const compact = groupId.replaceAll('-', '');
+  if (!/^[0-9a-fA-F]{32}$/.test(compact)) {
+    throw new Error('Invalid group UUID');
+  }
+  return Buffer.from(compact, 'hex');
+};
+
+const formatUuid = (bytes: Buffer): string => {
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+
+const parseAdministratorId = (telegramId: TelegramId): bigint => {
+  if (!/^\d+$/.test(telegramId)) throw new Error('Invalid administrator ID');
+  const value = BigInt(telegramId);
+  if (value > maxTelegramId) throw new Error('Invalid administrator ID');
+  return value;
+};
