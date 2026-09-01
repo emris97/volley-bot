@@ -8,9 +8,14 @@ import {
   type GroupId,
   type UserId,
 } from '@volley/domain';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, or, sql } from 'drizzle-orm';
 import type { Database } from '../client.js';
-import { auditEvents, games, outboxEvents } from '../schema/index.js';
+import {
+  auditEvents,
+  games,
+  outboxEvents,
+  scheduledJobs,
+} from '../schema/index.js';
 
 const toGame = (row: typeof games.$inferSelect): Game => ({
   id: asGameId(row.id),
@@ -69,7 +74,10 @@ export class GameRepository {
 
   public async insert(game: Game, actorUserId?: UserId): Promise<Game> {
     return this.database.transaction(async (transaction) => {
-      const [row] = await transaction.insert(games).values(insertValues(game)).returning();
+      const [row] = await transaction
+        .insert(games)
+        .values(insertValues(game))
+        .returning();
       if (row === undefined) throw new Error('Game insert returned no row');
       await transaction.insert(outboxEvents).values({
         groupId: row.groupId,
@@ -90,12 +98,49 @@ export class GameRepository {
     });
   }
 
+  public async findById(
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<Game | null> {
+    const [row] = await this.database
+      .select()
+      .from(games)
+      .where(and(eq(games.groupId, groupId), eq(games.id, gameId)))
+      .limit(1);
+    return row === undefined ? null : toGame(row);
+  }
+
+  public async listForReconciliation(
+    limit: number,
+    afterId?: GameId,
+  ): Promise<readonly Game[]> {
+    const conditions = [
+      or(
+        inArray(games.state, ['SCHEDULED', 'OPEN', 'CLOSED']),
+        sql`EXISTS (
+          SELECT 1 FROM ${scheduledJobs}
+          WHERE ${scheduledJobs.gameId} = ${games.id}
+        )`,
+      )!,
+      ...(afterId === undefined ? [] : [gt(games.id, afterId)]),
+    ];
+    const rows = await this.database
+      .select()
+      .from(games)
+      .where(and(...conditions))
+      .orderBy(asc(games.id))
+      .limit(limit);
+    return rows.map(toGame);
+  }
+
   public async withLockedGame<T>(
     groupId: GroupId,
     gameId: GameId,
     callback: (
       game: Game,
-      changes: { updateState(state: GameState, actorUserId?: UserId): Promise<Game> },
+      changes: {
+        updateState(state: GameState, actorUserId?: UserId): Promise<Game>;
+      },
     ) => Promise<T>,
   ): Promise<T> {
     return this.database.transaction(async (transaction) => {

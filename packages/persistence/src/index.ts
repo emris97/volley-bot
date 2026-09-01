@@ -6,6 +6,10 @@ export {
 } from './repositories/group.repository.js';
 export { GameRepository } from './repositories/game.repository.js';
 export {
+  GameMessageRepository,
+  type StoredGameMessageView,
+} from './repositories/game-message.repository.js';
+export {
   GameCreationDraftRepository,
   type StoredGameCreationDraft,
 } from './repositories/game-creation-draft.repository.js';
@@ -20,4 +24,10 @@ export {
   type RegisterParticipantInput,
   type RegistrationResult,
 } from './repositories/registration.repository.js';
+export { OutboxRepository } from './repositories/outbox.repository.js';
+export {
+  NotificationRepository,
+  type NotificationRecipientRecord,
+} from './repositories/notification.repository.js';
+export { ScheduledJobRepository } from './repositories/scheduled-job.repository.js';
 export * from './schema/index.js';

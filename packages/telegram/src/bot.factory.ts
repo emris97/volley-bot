@@ -7,6 +7,7 @@ import {
   toTelegramId,
 } from './group-onboarding.handlers.js';
 import type { GuestFlowHandlers } from './registrations/guest-flow.handlers.js';
+import { TelegramMessageNotEditableError } from './messages/game-message-updater.js';
 
 export const createTelegramBot = (
   token: string,
@@ -110,7 +111,78 @@ export class GrammyTelegramGateway implements TelegramGateway {
     return { status: member.status };
   }
 
-  async sendMessage(chatId: TelegramId, message: string): Promise<void> {
-    await this.bot.api.sendMessage(Number(chatId), message);
+  async sendMessage(
+    chatId: TelegramId,
+    message: string,
+    options?: {
+      parseMode?: 'HTML';
+      keyboard?: readonly (readonly {
+        text: string;
+        callbackData: string;
+      }[])[];
+    },
+  ): Promise<{ messageId: bigint }> {
+    const sent = await this.bot.api.sendMessage(Number(chatId), message, {
+      parse_mode: options?.parseMode,
+      reply_markup:
+        options?.keyboard === undefined
+          ? undefined
+          : {
+              inline_keyboard: options.keyboard.map((row) =>
+                row.map((button) => ({
+                  text: button.text,
+                  callback_data: button.callbackData,
+                })),
+              ),
+            },
+    });
+    return { messageId: BigInt(sent.message_id) };
+  }
+
+  async editMessage(
+    chatId: TelegramId,
+    messageId: bigint,
+    message: string,
+    options?: {
+      parseMode?: 'HTML';
+      keyboard?: readonly (readonly {
+        text: string;
+        callbackData: string;
+      }[])[];
+    },
+  ): Promise<void> {
+    try {
+      await this.bot.api.editMessageText(
+        Number(chatId),
+        Number(messageId),
+        message,
+        {
+          parse_mode: options?.parseMode,
+          reply_markup:
+            options?.keyboard === undefined
+              ? undefined
+              : {
+                  inline_keyboard: options.keyboard.map((row) =>
+                    row.map((button) => ({
+                      text: button.text,
+                      callback_data: button.callbackData,
+                    })),
+                  ),
+                },
+        },
+      );
+    } catch (error) {
+      const description =
+        error instanceof Error ? error.message : String(error);
+      if (/message (?:can't be edited|to edit not found)/i.test(description)) {
+        throw new TelegramMessageNotEditableError(description);
+      }
+      if (/message is not modified/i.test(description)) return;
+      throw error;
+    }
+  }
+
+  async pinMessage(chatId: TelegramId, messageId: bigint): Promise<void> {
+    await this.bot.api.pinChatMessage(Number(chatId), Number(messageId));
   }
 }

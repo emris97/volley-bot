@@ -39,6 +39,7 @@ export const registrations = pgTable(
       mode: 'date',
       withTimezone: true,
     }),
+    confirmationRevision: integer('confirmation_revision').default(0).notNull(),
     cancelledAt: timestamp('cancelled_at', {
       mode: 'date',
       withTimezone: true,
@@ -77,6 +78,10 @@ export const registrations = pgTable(
     check(
       'registrations_confirmation_check',
       sql`(${table.state} = 'TENTATIVE' and ${table.confirmedAt} is null) or (${table.state} <> 'TENTATIVE')`,
+    ),
+    check(
+      'registrations_confirmation_revision_check',
+      sql`${table.confirmationRevision} >= 0`,
     ),
   ],
 );
