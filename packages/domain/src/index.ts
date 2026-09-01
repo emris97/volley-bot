@@ -14,3 +14,21 @@ export {
   type TelegramId,
   type UserId,
 } from './identity.js';
+export {
+  asGameId,
+  type Game,
+  type GameId,
+  type GameState,
+} from './games/game.js';
+export {
+  asGameTemplateId,
+  type Currency,
+  type GameTemplate,
+  type GameTemplateId,
+  type GameTemplateSnapshot,
+  type RoundingMode,
+} from './games/game-template.js';
+export {
+  createGameFromTemplate,
+  transitionGame,
+} from './games/game-policy.js';
