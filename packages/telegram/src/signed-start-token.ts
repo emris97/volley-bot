@@ -1,7 +1,9 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import {
+  asGameId,
   asGroupId,
   asTelegramId,
+  type GameId,
   type GroupId,
   type TelegramId,
 } from '@volley/domain';
@@ -13,7 +15,17 @@ export interface ConfigureGroupStartPayload {
   expiresAt: string;
 }
 
-const version = 1;
+export interface AddGuestStartPayload {
+  purpose: 'add-guest';
+  gameId: GameId;
+  inviterTelegramId: TelegramId;
+  expiresAt: string;
+}
+
+export type StartPayload = ConfigureGroupStartPayload | AddGuestStartPayload;
+
+const configurePurpose = 1;
+const addGuestPurpose = 2;
 const bodyLength = 29;
 const tagLength = 16;
 const tokenLength = bodyLength + tagLength;
@@ -26,10 +38,14 @@ export class SignedStartToken {
     }
   }
 
-  sign(payload: ConfigureGroupStartPayload): string {
-    const groupId = uuidBytes(payload.groupId);
+  sign(payload: StartPayload): string {
+    const entityId = uuidBytes(
+      payload.purpose === 'configure-group' ? payload.groupId : payload.gameId,
+    );
     const administratorTelegramId = parseAdministratorId(
-      payload.administratorTelegramId,
+      payload.purpose === 'configure-group'
+        ? payload.administratorTelegramId
+        : payload.inviterTelegramId,
     );
     const expiresAtSeconds = Math.floor(Date.parse(payload.expiresAt) / 1000);
     if (
@@ -41,14 +57,19 @@ export class SignedStartToken {
     }
 
     const body = Buffer.alloc(bodyLength);
-    body.writeUInt8(version, 0);
-    groupId.copy(body, 1);
+    body.writeUInt8(
+      payload.purpose === 'configure-group'
+        ? configurePurpose
+        : addGuestPurpose,
+      0,
+    );
+    entityId.copy(body, 1);
     body.writeBigUInt64BE(administratorTelegramId, 17);
     body.writeUInt32BE(expiresAtSeconds, 25);
     return Buffer.concat([body, this.signature(body)]).toString('base64url');
   }
 
-  verify(token: string, now = new Date()): ConfigureGroupStartPayload {
+  verify(token: string, now = new Date()): StartPayload {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(token)) {
       throw new Error('Invalid token signature');
     }
@@ -56,7 +77,7 @@ export class SignedStartToken {
     if (
       bytes.toString('base64url') !== token ||
       bytes.length !== tokenLength ||
-      bytes.readUInt8(0) !== version
+      ![configurePurpose, addGuestPurpose].includes(bytes.readUInt8(0))
     ) {
       throw new Error('Invalid token signature');
     }
@@ -73,14 +94,21 @@ export class SignedStartToken {
       throw new Error('Start token expired');
     }
 
-    return {
-      purpose: 'configure-group',
-      groupId: asGroupId(formatUuid(body.subarray(1, 17))),
-      administratorTelegramId: asTelegramId(
-        body.readBigUInt64BE(17).toString(),
-      ),
-      expiresAt: new Date(expiresAtMilliseconds).toISOString(),
-    };
+    const telegramId = asTelegramId(body.readBigUInt64BE(17).toString());
+    const expiresAt = new Date(expiresAtMilliseconds).toISOString();
+    return body.readUInt8(0) === configurePurpose
+      ? {
+          purpose: 'configure-group',
+          groupId: asGroupId(formatUuid(body.subarray(1, 17))),
+          administratorTelegramId: telegramId,
+          expiresAt,
+        }
+      : {
+          purpose: 'add-guest',
+          gameId: asGameId(formatUuid(body.subarray(1, 17))),
+          inviterTelegramId: telegramId,
+          expiresAt,
+        };
   }
 
   private signature(body: Buffer): Buffer {
@@ -91,8 +119,8 @@ export class SignedStartToken {
   }
 }
 
-const uuidBytes = (groupId: GroupId): Buffer => {
-  const compact = groupId.replaceAll('-', '');
+const uuidBytes = (entityId: GroupId | GameId): Buffer => {
+  const compact = entityId.replaceAll('-', '');
   if (!/^[0-9a-fA-F]{32}$/.test(compact)) {
     throw new Error('Invalid group UUID');
   }

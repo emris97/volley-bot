@@ -79,6 +79,30 @@ export class GroupRepository {
     return row?.timeZone ?? null;
   }
 
+  public async findTelegramIdentity(
+    groupId: GroupId,
+    userId: UserId,
+  ): Promise<{
+    telegramChatId: TelegramId;
+    telegramUserId: TelegramId;
+  } | null> {
+    const [row] = await this.database
+      .select({
+        telegramChatId: groups.telegramChatId,
+        telegramUserId: users.telegramUserId,
+      })
+      .from(groups)
+      .innerJoin(users, eq(users.id, userId))
+      .where(eq(groups.id, groupId))
+      .limit(1);
+    return row === undefined
+      ? null
+      : {
+          telegramChatId: fromDatabaseTelegramId(row.telegramChatId),
+          telegramUserId: fromDatabaseTelegramId(row.telegramUserId),
+        };
+  }
+
   public async requireOrganizer(
     groupId: GroupId,
     actorUserId: UserId,

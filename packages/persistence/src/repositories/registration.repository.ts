@@ -1,11 +1,14 @@
 import {
   asRegistrationId,
+  asGroupId,
+  asUserId,
   placeConfirmedRegistrations,
   type GameId,
   type GroupId,
   type RegistrationCandidate,
   type RegistrationId,
   type RegistrationState,
+  type TelegramId,
   type UserId,
 } from '@volley/domain';
 import { and, eq, ne } from 'drizzle-orm';
@@ -15,6 +18,7 @@ import {
   games,
   outboxEvents,
   registrations,
+  users,
 } from '../schema/index.js';
 
 export interface RegisterParticipantInput {
@@ -43,6 +47,44 @@ export interface RegisterGuestInput {
 
 export class RegistrationRepository {
   public constructor(private readonly database: Database) {}
+
+  public async resolve(gameId: GameId, telegramUserId: TelegramId) {
+    return this.database.transaction(async (transaction) => {
+      const [game] = await transaction
+        .select({ groupId: games.groupId })
+        .from(games)
+        .where(eq(games.id, gameId))
+        .limit(1);
+      if (game === undefined) throw new Error('Game not found');
+      const [user] = await transaction
+        .insert(users)
+        .values({ telegramUserId: BigInt(telegramUserId) })
+        .onConflictDoUpdate({
+          target: users.telegramUserId,
+          set: { updatedAt: new Date() },
+        })
+        .returning({ id: users.id });
+      if (user === undefined) throw new Error('User upsert returned no row');
+      const [active] = await transaction
+        .select({ id: registrations.id })
+        .from(registrations)
+        .where(
+          and(
+            eq(registrations.gameId, gameId),
+            eq(registrations.userId, user.id),
+            ne(registrations.state, 'CANCELLED'),
+          ),
+        )
+        .limit(1);
+      return {
+        groupId: asGroupId(game.groupId),
+        gameId,
+        userId: asUserId(user.id),
+        activeRegistrationId:
+          active === undefined ? null : asRegistrationId(active.id),
+      };
+    });
+  }
 
   public async registerParticipant(
     input: RegisterParticipantInput,
@@ -138,7 +180,17 @@ export class RegistrationRepository {
         aggregateId: input.gameId,
         payload: { registrationId: created.id, state: finalState },
       });
-      return resultFor(created.id, finalState, active);
+      const placed = [
+        ...placement.roster.map((item) => ({
+          ...item,
+          state: 'ROSTERED' as const,
+        })),
+        ...placement.waitlist.map((item) => ({
+          ...item,
+          state: 'WAITLISTED' as const,
+        })),
+      ];
+      return resultFor(created.id, finalState, placed);
     });
   }
 

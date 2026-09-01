@@ -1,4 +1,4 @@
-import { asGroupId, asTelegramId } from '@volley/domain';
+import { asGameId, asGroupId, asTelegramId } from '@volley/domain';
 import { describe, expect, it } from 'vitest';
 import { SignedStartToken } from './signed-start-token.js';
 
@@ -39,5 +39,20 @@ describe('SignedStartToken', () => {
         new Date('2026-08-31T12:16:00Z'),
       ),
     ).toThrow(/expired/i);
+  });
+
+  it('round-trips a compact add-guest payload', () => {
+    const signer = new SignedStartToken('a-secret-with-at-least-32-characters');
+    const payload = {
+      purpose: 'add-guest' as const,
+      gameId: asGameId('00000000-0000-4000-8000-000000000002'),
+      inviterTelegramId: asTelegramId('42'),
+      expiresAt: new Date('2026-08-31T12:15:00Z').toISOString(),
+    };
+
+    const token = signer.sign(payload);
+
+    expect(token).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    expect(signer.verify(token, now)).toEqual(payload);
   });
 });

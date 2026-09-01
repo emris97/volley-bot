@@ -1,6 +1,8 @@
 export { auditEvents } from './audit.js';
 export { games, gameTemplates } from './games.js';
+export { gameCreationDrafts } from './game-creation-drafts.js';
 export { groupMembers, groups } from './groups.js';
+export { guestRegistrationDrafts } from './guest-registration-drafts.js';
 export { outboxEvents } from './outbox.js';
 export { registrations } from './registrations.js';
 export { users } from './users.js';

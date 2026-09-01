@@ -16,9 +16,7 @@ import type {
 
 const groupId = asGroupId('10000000-0000-4000-8000-000000000001');
 const actorUserId = asUserId('20000000-0000-4000-8000-000000000001');
-const templateId = asGameTemplateId(
-  '30000000-0000-4000-8000-000000000001',
-);
+const templateId = asGameTemplateId('30000000-0000-4000-8000-000000000001');
 
 const template: GameTemplate = {
   id: templateId,
@@ -113,5 +111,57 @@ describe('CreateGame', () => {
         overrides: {},
       }),
     ).rejects.toThrow(/template not found/i);
+  });
+
+  it('creates a game from complete scratch settings', async () => {
+    const gamesInserted: Game[] = [];
+    const useCase = new CreateGame(
+      { requireOrganizer: async () => undefined },
+      {
+        findById: async () => null,
+        insert: async () => template,
+      },
+      {
+        insert: async (game) => {
+          gamesInserted.push(game);
+          return game;
+        },
+        withLockedGame: async () => {
+          throw new Error('unused');
+        },
+      },
+      { findTimeZone: async () => 'Europe/Astrakhan' },
+    );
+
+    const result = await useCase.execute({
+      groupId,
+      actorUserId,
+      startsAt: new Date('2026-09-01T16:00:00.000Z'),
+      overrides: {
+        name: 'One-off game',
+        venue: 'Beach court',
+        address: null,
+        startsAtLocalTime: '20:00',
+        durationMinutes: 90,
+        capacity: 8,
+        registrationOpensMinutesBefore: 1_440,
+        registrationClosesMinutesBefore: null,
+        tentativePromptMinutesBefore: 240,
+        tentativeResponseMinutes: 30,
+        reminderMinutesBefore: 60,
+        memberPriorityEnabled: false,
+        defaultTotalCostMinor: null,
+        currency: 'RUB',
+        roundingMode: 'EXACT',
+      },
+    });
+
+    expect(result).toMatchObject({
+      groupId,
+      sourceTemplateId: null,
+      name: 'One-off game',
+      capacity: 8,
+    });
+    expect(gamesInserted).toHaveLength(1);
   });
 });

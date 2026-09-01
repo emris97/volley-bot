@@ -34,26 +34,23 @@ export class CreateGame {
       command.groupId,
       command.actorUserId,
     );
-    if (command.templateId === undefined) {
-      throw new Error('Template is required until scratch defaults are provided');
-    }
-    const template = await this.templates.findById(
-      command.groupId,
-      command.templateId,
-    );
-    if (template === null) throw new Error('Template not found');
-
     const timeZone = await this.groups.findTimeZone(command.groupId);
     if (timeZone === null) throw new Error('Group not found');
-
-    const snapshot: GameTemplateSnapshot = {
-      ...template,
-      ...definedOverrides(command.overrides),
-    };
+    let snapshot: GameTemplateSnapshot;
+    if (command.templateId === undefined) {
+      snapshot = completeScratchSnapshot(command.overrides);
+    } else {
+      const template = await this.templates.findById(
+        command.groupId,
+        command.templateId,
+      );
+      if (template === null) throw new Error('Template not found');
+      snapshot = { ...template, ...definedOverrides(command.overrides) };
+    }
     const game: Game = {
       ...createGameFromTemplate(snapshot, command.startsAt, timeZone),
       groupId: command.groupId,
-      sourceTemplateId: command.templateId,
+      sourceTemplateId: command.templateId ?? null,
     };
     return this.games.insert(game, command.actorUserId);
   }
@@ -65,3 +62,32 @@ const definedOverrides = (
   Object.fromEntries(
     Object.entries(overrides).filter(([, value]) => value !== undefined),
   ) as Partial<GameTemplateSnapshot>;
+
+const completeScratchSnapshot = (
+  overrides: Partial<GameTemplateSnapshot>,
+): GameTemplateSnapshot => {
+  const requiredKeys: Array<keyof GameTemplateSnapshot> = [
+    'name',
+    'venue',
+    'address',
+    'startsAtLocalTime',
+    'durationMinutes',
+    'capacity',
+    'registrationOpensMinutesBefore',
+    'registrationClosesMinutesBefore',
+    'tentativePromptMinutesBefore',
+    'tentativeResponseMinutes',
+    'reminderMinutesBefore',
+    'memberPriorityEnabled',
+    'defaultTotalCostMinor',
+    'currency',
+    'roundingMode',
+  ];
+  const missing = requiredKeys.filter((key) => overrides[key] === undefined);
+  if (missing.length > 0) {
+    throw new Error(
+      `Scratch game settings are incomplete: ${missing.join(', ')}`,
+    );
+  }
+  return overrides as GameTemplateSnapshot;
+};

@@ -6,6 +6,7 @@ import {
   GroupOnboardingHandlers,
   toTelegramId,
 } from './group-onboarding.handlers.js';
+import type { GuestFlowHandlers } from './registrations/guest-flow.handlers.js';
 
 export const createTelegramBot = (
   token: string,
@@ -21,6 +22,7 @@ export const createTelegramBot = (
 export const registerGroupOnboardingHandlers = (
   bot: Bot<Context>,
   handlers: GroupOnboardingHandlers,
+  guestHandlers?: GuestFlowHandlers,
 ): Bot<Context> => {
   bot.on('my_chat_member', async (context) => {
     await handlers.handleMyChatMember({
@@ -33,13 +35,34 @@ export const registerGroupOnboardingHandlers = (
   bot.command('start', async (context) => {
     if (context.from === undefined)
       throw new Error('Message sender is required');
-    await handlers.handleStart({
+    const handled = await handlers.handleStart({
       telegramUserId: toTelegramId(context.from.id),
       privateChatId: toTelegramId(context.chat.id),
       token: context.match ?? '',
     });
+    if (!handled) {
+      if (guestHandlers === undefined)
+        throw new Error('Unsupported start token');
+      await guestHandlers.handleStart({
+        telegramUserId: toTelegramId(context.from.id),
+        token: context.match ?? '',
+      });
+      await context.reply('guest:name');
+    }
   });
-  bot.on('callback_query:data', async (context) => {
+  if (guestHandlers !== undefined) {
+    bot.on('message:text', async (context) => {
+      if (context.from === undefined || context.message.text.startsWith('/'))
+        return;
+      const handled = await guestHandlers.handleName({
+        telegramUserId: toTelegramId(context.from.id),
+        text: context.message.text,
+        updateId: context.update.update_id,
+      });
+      if (handled) await context.reply('guest:registered');
+    });
+  }
+  bot.callbackQuery(/^cfg:/, async (context) => {
     const chatId = context.callbackQuery.message?.chat.id;
     if (chatId === undefined) throw new Error('Callback message is required');
     await handlers.handleCallback({

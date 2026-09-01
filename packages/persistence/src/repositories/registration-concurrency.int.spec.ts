@@ -75,6 +75,12 @@ describe('RegistrationRepository concurrency', () => {
       'ROSTERED',
       'WAITLISTED',
     ] satisfies RegistrationState[]);
+    expect(
+      [first, second].find((item) => item.state === 'ROSTERED'),
+    ).toMatchObject({ rosterPosition: 1 });
+    expect(
+      [first, second].find((item) => item.state === 'WAITLISTED'),
+    ).toMatchObject({ waitlistPosition: 1 });
 
     const repeated = await registrations.registerParticipant({
       groupId,
