@@ -49,6 +49,9 @@ export class AttendanceRepository {
         )
         .orderBy(desc(attendanceSnapshots.revision))
         .limit(1);
+      if (latest?.finalized) {
+        return readSnapshot(transaction, input.groupId, input.gameId, latest);
+      }
       if (latest !== undefined && latest.revision !== input.expectedRevision) {
         return readSnapshot(transaction, input.groupId, input.gameId, latest);
       }
@@ -162,11 +165,41 @@ const readSnapshot = async (
         eq(attendanceEntries.snapshotId, snapshot.id),
       ),
     );
+  const roster = await database
+    .select({
+      id: registrations.id,
+      guestDisplayName: registrations.guestDisplayName,
+      memberDisplayName: users.displayName,
+    })
+    .from(registrations)
+    .leftJoin(users, eq(users.id, registrations.userId))
+    .where(
+      and(
+        eq(registrations.groupId, groupId),
+        eq(registrations.gameId, gameId),
+        eq(registrations.state, 'ROSTERED'),
+      ),
+    );
+  const includedRegistrationIds = new Set(
+    entries.flatMap((entry) =>
+      entry.sourceRegistrationId === null ? [] : [entry.sourceRegistrationId],
+    ),
+  );
   return {
     groupId,
     gameId,
     revision: snapshot.revision,
     finalized: snapshot.finalized,
+    rosterCandidates: roster.map((registration) => ({
+      participantRef: `registration:${registration.id}`,
+      sourceRegistrationId: asRegistrationId(registration.id),
+      displayName:
+        registration.guestDisplayName ??
+        registration.memberDisplayName ??
+        `Participant ${registration.id}`,
+      billable: true,
+      included: includedRegistrationIds.has(registration.id),
+    })),
     entries: entries.map(toAttendanceEntry),
   };
 };

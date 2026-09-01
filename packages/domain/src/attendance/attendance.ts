@@ -10,10 +10,19 @@ export interface AttendanceEntry {
   addedManually: boolean;
 }
 
+export interface AttendanceRosterCandidate {
+  participantRef: string;
+  sourceRegistrationId: RegistrationId;
+  displayName: string;
+  billable: boolean;
+  included: boolean;
+}
+
 export interface AttendanceSnapshot {
   groupId: GroupId;
   gameId: GameId;
   revision: number;
   finalized: boolean;
+  rosterCandidates: readonly AttendanceRosterCandidate[];
   entries: readonly AttendanceEntry[];
 }

@@ -103,6 +103,15 @@ class InMemoryAttendanceRepository implements AttendanceRepository {
       gameId: input.gameId,
       revision: input.expectedRevision + 1,
       finalized: input.finalize,
+      rosterCandidates: roster.map((entry) => ({
+        participantRef: entry.participantRef,
+        sourceRegistrationId: entry.sourceRegistrationId,
+        displayName: entry.displayName,
+        billable: entry.billable,
+        included: !input.excludedRegistrationIds.includes(
+          entry.sourceRegistrationId,
+        ),
+      })),
       entries: [
         ...roster.filter(
           (entry) =>

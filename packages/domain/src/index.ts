@@ -52,5 +52,6 @@ export {
 } from './registrations/placement-policy.js';
 export {
   type AttendanceEntry,
+  type AttendanceRosterCandidate,
   type AttendanceSnapshot,
 } from './attendance/attendance.js';
