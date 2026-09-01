@@ -33,7 +33,7 @@
 - Create: `packages/domain/src/games/game-policy.spec.ts`
 - Create: `packages/persistence/src/schema/games.ts`
 - Modify: `packages/persistence/src/schema/index.ts`
-- Create: `packages/persistence/migrations/0002_games.sql`
+- Create: `packages/persistence/migrations/0003_games.sql`
 
 **Interfaces:**
 - Produces: `GameState = 'DRAFT' | 'SCHEDULED' | 'OPEN' | 'CLOSED' | 'COMPLETED' | 'CANCELLED'`.
@@ -275,7 +275,7 @@ git commit -m "feat: add deterministic roster placement policy"
 **Files:**
 - Create: `packages/persistence/src/schema/registrations.ts`
 - Modify: `packages/persistence/src/schema/index.ts`
-- Create: `packages/persistence/migrations/0003_registrations.sql`
+- Create: `packages/persistence/migrations/0004_registrations.sql`
 - Create: `packages/application/src/registrations/ports.ts`
 - Create: `packages/application/src/registrations/register-participant.ts`
 - Create: `packages/application/src/registrations/register-guest.ts`
@@ -374,6 +374,7 @@ git commit -m "feat: add transactional registration and waitlist"
 ### Task 5: Add Telegram game creation and registration handlers
 
 **Files:**
+- Create: `packages/persistence/migrations/0005_game_creation_drafts.sql`
 - Create: `packages/telegram/src/callbacks/callback-codec.ts`
 - Create: `packages/telegram/src/games/game-creation.handlers.ts`
 - Create: `packages/telegram/src/games/game-management.handlers.ts`
