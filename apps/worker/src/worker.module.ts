@@ -1,13 +1,9 @@
 import { Module } from '@nestjs/common';
-import {
-  MANAGED_WORKERS,
-  WorkerLifecycleService,
-} from './worker-lifecycle.service.js';
+import { WorkerLifecycleService } from './worker-lifecycle.service.js';
+import { OutboxModule } from './outbox/outbox.module.js';
 
 @Module({
-  providers: [
-    { provide: MANAGED_WORKERS, useValue: [] },
-    WorkerLifecycleService,
-  ],
+  imports: [OutboxModule],
+  providers: [WorkerLifecycleService],
 })
 export class WorkerModule {}

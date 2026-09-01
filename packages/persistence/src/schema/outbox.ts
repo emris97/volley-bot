@@ -29,11 +29,16 @@ export const outboxEvents = pgTable(
       .defaultNow()
       .notNull(),
     claimedAt: timestamp('claimed_at', { mode: 'date', withTimezone: true }),
+    claimExpiresAt: timestamp('claim_expires_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
     publishedAt: timestamp('published_at', {
       mode: 'date',
       withTimezone: true,
     }),
     attemptCount: integer('attempt_count').default(0).notNull(),
+    lastError: text('last_error'),
   },
   (table) => [
     check('outbox_events_attempt_count_check', sql`${table.attemptCount} >= 0`),

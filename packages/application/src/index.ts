@@ -7,6 +7,8 @@ export * from './games/create-game.js';
 export * from './games/create-template.js';
 export * from './games/ports.js';
 export * from './games/update-game.js';
+export * from './outbox/outbox-dispatcher.js';
+export * from './outbox/outbox-event.js';
 export * from './ports/telegram.gateway.js';
 export * from './registrations/admin-change-registration.js';
 export * from './registrations/change-registration-order.js';

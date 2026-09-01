@@ -20,4 +20,5 @@ export {
   type RegisterParticipantInput,
   type RegistrationResult,
 } from './repositories/registration.repository.js';
+export { OutboxRepository } from './repositories/outbox.repository.js';
 export * from './schema/index.js';
