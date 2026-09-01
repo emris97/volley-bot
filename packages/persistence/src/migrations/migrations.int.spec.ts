@@ -48,6 +48,7 @@ describe('foundation migration', () => {
       'attendance_entries',
       'attendance_snapshots',
       'audit_events',
+      'charge_status_events',
       'game_creation_drafts',
       'game_templates',
       'games',
@@ -58,6 +59,8 @@ describe('foundation migration', () => {
       'outbox_events',
       'registrations',
       'scheduled_jobs',
+      'settlement_charges',
+      'settlements',
       'users',
       'volley_schema_migrations',
     ]);

@@ -14,5 +14,6 @@ export * from './registrations/registration.handlers.js';
 export * from './registrations/guest-flow.handlers.js';
 export * from './registrations/tentative.handlers.js';
 export * from './attendance/attendance.handlers.js';
+export * from './payments/payment.handlers.js';
 export * from './signed-start-token.js';
 export * from './webhook.controller.js';

@@ -7,6 +7,11 @@ export {
 export { GameRepository } from './repositories/game.repository.js';
 export { AttendanceRepository } from './repositories/attendance.repository.js';
 export {
+  PaymentRepository,
+  type StoredSettlement,
+  type StoredSettlementCharge,
+} from './repositories/payment.repository.js';
+export {
   GameMessageRepository,
   type StoredGameMessageView,
 } from './repositories/game-message.repository.js';
