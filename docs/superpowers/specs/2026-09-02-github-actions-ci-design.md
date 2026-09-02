@@ -1,6 +1,6 @@
 # GitHub Actions CI Design
 
-**Date:** 2026-09-02  
+**Date:** 2026-09-02
 **Status:** Approved for implementation
 
 ## Context

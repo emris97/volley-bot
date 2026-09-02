@@ -3,12 +3,17 @@ import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
 interface WorkflowStep {
-  uses?: string;
+  'continue-on-error'?: unknown;
+  if?: unknown;
+  name?: string;
   run?: string;
+  uses?: string;
   with?: Record<string, unknown>;
 }
 
 interface WorkflowJob {
+  'continue-on-error'?: unknown;
+  if?: unknown;
   needs?: string[];
   permissions?: Record<string, string>;
   'runs-on'?: string;
@@ -30,19 +35,47 @@ interface WorkflowDocument {
   permissions?: Record<string, string>;
 }
 
-const commandsFor = (job: WorkflowJob): string =>
-  (job.steps ?? [])
-    .flatMap((step) => (step.run === undefined ? [] : [step.run]))
-    .join('\n');
+const checkout = {
+  name: 'Check out repository',
+  uses: 'actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09',
+};
 
-const setupFor = (
-  job: WorkflowJob,
-  action: 'actions/setup-node' | 'pnpm/action-setup',
-): WorkflowStep | undefined =>
-  (job.steps ?? []).find((step) => step.uses?.startsWith(`${action}@`));
+const pnpmSetup = {
+  name: 'Set up pnpm',
+  uses: 'pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320',
+  with: {
+    run_install: false,
+    version: '11.19.0',
+  },
+};
+
+const nodeSetup = {
+  name: 'Set up Node.js',
+  uses: 'actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444',
+  with: {
+    cache: 'pnpm',
+    'cache-dependency-path': 'pnpm-lock.yaml',
+    'node-version': '24',
+  },
+};
+
+const commandsFor = (job: WorkflowJob): string[] =>
+  (job.steps ?? []).flatMap((step) =>
+    step.run === undefined ? [] : [step.run],
+  );
+
+const expectRequiredJob = (job: WorkflowJob): void => {
+  expect(job).not.toHaveProperty('if');
+  expect(job).not.toHaveProperty('continue-on-error');
+  expect(job.permissions).toBeUndefined();
+  for (const step of job.steps ?? []) {
+    expect(step).not.toHaveProperty('if');
+    expect(step).not.toHaveProperty('continue-on-error');
+  }
+};
 
 describe('GitHub Actions CI contract', () => {
-  it('runs the required read-only checks and never publishes or deploys', async () => {
+  it('runs the exact read-only checks and never publishes or deploys', async () => {
     const workflowText = await readFile('.github/workflows/ci.yml', 'utf8');
     const workflow = parse(workflowText) as WorkflowDocument;
 
@@ -83,36 +116,54 @@ describe('GitHub Actions CI contract', () => {
     expect(containerBuild.needs).toEqual(['quality', 'test']);
 
     for (const job of [quality, test, containerBuild]) {
-      expect(job.permissions).toBeUndefined();
+      expectRequiredJob(job);
     }
 
-    for (const job of [quality, test]) {
-      expect(setupFor(job, 'pnpm/action-setup')?.with).toMatchObject({
-        run_install: false,
-        version: '11.19.0',
-      });
-      expect(setupFor(job, 'actions/setup-node')?.with).toMatchObject({
-        cache: 'pnpm',
-        'cache-dependency-path': 'pnpm-lock.yaml',
-        'node-version': '24',
-      });
-      expect(commandsFor(job)).toContain('pnpm install --frozen-lockfile');
+    expect(quality.steps).toEqual([
+      checkout,
+      pnpmSetup,
+      nodeSetup,
+      { name: 'Install dependencies', run: 'pnpm install --frozen-lockfile' },
+      { name: 'Typecheck', run: 'pnpm typecheck' },
+      { name: 'Lint', run: 'pnpm lint' },
+      { name: 'Check formatting', run: 'pnpm format:check' },
+      { name: 'Build TypeScript', run: 'pnpm build' },
+    ]);
+    expect(test.steps).toEqual([
+      checkout,
+      pnpmSetup,
+      nodeSetup,
+      { name: 'Install dependencies', run: 'pnpm install --frozen-lockfile' },
+      { name: 'Run tests', run: 'pnpm test' },
+    ]);
+    expect(containerBuild.steps).toEqual([
+      checkout,
+      {
+        name: 'Validate Compose configuration',
+        run: 'docker compose --env-file .env.compose.example -f compose.yaml -f compose.dev.yaml config',
+      },
+      {
+        name: 'Build production images',
+        run: 'docker compose --env-file .env.compose.example -f compose.yaml build api worker',
+      },
+    ]);
+
+    const commands = Object.values(jobs).flatMap(commandsFor);
+    expect(commands).not.toEqual([]);
+    for (const command of commands) {
+      expect(command).not.toMatch(
+        /\b(?:secrets?|auth(?:enticate|entication|orization)?|login)\b/i,
+      );
+      expect(command).not.toMatch(
+        /\b(?:publish|release|upload(?:-artifact)?)\b/i,
+      );
+      expect(command).not.toMatch(/\bdocker\s+(?:login|push)\b/i);
+      expect(command).not.toMatch(/\bdocker(?:\s+\S+)*\s+--push\b/i);
+      expect(command).not.toMatch(/\bdeploy(?:ment)?\b/i);
+      expect(command).not.toMatch(
+        /\bdocker(?:\s+(?:compose|container))?\s+(?:up|start|run)\b/i,
+      );
     }
-
-    const qualityCommands = commandsFor(quality);
-    expect(qualityCommands).toContain('pnpm typecheck');
-    expect(qualityCommands).toContain('pnpm lint');
-    expect(qualityCommands).toContain('pnpm format:check');
-    expect(qualityCommands).toContain('pnpm build');
-    expect(commandsFor(test)).toContain('pnpm test');
-
-    const containerCommands = commandsFor(containerBuild);
-    expect(containerCommands).toContain(
-      'docker compose --env-file .env.compose.example -f compose.yaml -f compose.dev.yaml config',
-    );
-    expect(containerCommands).toContain(
-      'docker compose --env-file .env.compose.example -f compose.yaml build api worker',
-    );
 
     const referencedActions = Object.values(jobs).flatMap((job) =>
       (job.steps ?? []).flatMap((step) =>
@@ -138,7 +189,5 @@ describe('GitHub Actions CI contract', () => {
 
     expect(workflowText).not.toContain('pull_request_target');
     expect(workflowText).not.toMatch(/\bsecrets\./);
-    expect(containerCommands).not.toMatch(/docker (?:login|push)/);
-    expect(containerCommands).not.toMatch(/\bdeploy\b/i);
   });
 });
