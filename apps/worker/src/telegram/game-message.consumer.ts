@@ -1,10 +1,12 @@
 import { Logger, Module } from '@nestjs/common';
+import { JsonLogger, MetricsRegistry } from '@volley/application';
 import { parseEnv } from '@volley/config';
 import { asGameId, asGroupId, asRegistrationId } from '@volley/domain';
 import {
   createDatabase,
   GameMessageRepository,
   NotificationRepository,
+  PaymentReminderRepository,
   RegistrationRepository,
 } from '@volley/persistence';
 import {
@@ -12,14 +14,24 @@ import {
   GameMessageUpdater,
   GrammyTelegramGateway,
   NotificationSender,
+  PaymentReminderSender,
   TelegramPrivateChatUnavailableError,
   type GameMessageTelegramGateway,
   type RenderedTelegramMessage,
 } from '@volley/telegram';
 import { Queue, Worker } from 'bullmq';
-import { Pool } from 'pg';
+import {
+  WORKER_DEPENDENCIES,
+  type WorkerDependencies,
+} from '../infrastructure/worker-dependencies.module.js';
 import type { ManagedWorker } from '../worker-lifecycle.service.js';
 import { NotificationConsumer } from '../notifications/notification.consumer.js';
+import { PaymentReminderConsumer } from '../payments/payment-reminder.consumer.js';
+import { observeWorkerJob } from '../observability/worker-job-observability.js';
+import {
+  WORKER_RUN_STATE,
+  type WorkerRunStateRegistry,
+} from '../observability/worker-run-state.js';
 
 const refreshEventTypes = new Set([
   'GAME_CREATED',
@@ -34,68 +46,145 @@ export class OutboxEventRouter {
   public constructor(
     private readonly canonicalQueue: Pick<Queue, 'add' | 'getJob'>,
     private readonly notificationQueue: Pick<Queue, 'add' | 'getJob'>,
+    private readonly paymentReminderQueue: Pick<Queue, 'add' | 'getJob'>,
+    private readonly metrics?: MetricsRegistry,
+    private readonly jobLogger?: JsonLogger,
   ) {}
 
   public async process(
     eventType: string,
     payload: Record<string, unknown>,
     sourceJobId: string,
+    attemptsMade = 0,
   ): Promise<void> {
-    if (refreshEventTypes.has(eventType)) {
-      await ensureChildJob(
-        this.canonicalQueue,
-        eventType,
-        payload,
-        childJobId(sourceJobId, 'canonical'),
-      );
-    }
-    if (eventType === 'WAITLIST_PROMOTED') {
-      await ensureChildJob(
-        this.notificationQueue,
-        eventType,
-        payload,
-        childJobId(sourceJobId, 'notification'),
-      );
-    }
+    await observeWorkerJob(
+      this.metrics,
+      this.jobLogger,
+      {
+        queue: 'outbox',
+        jobId: sourceJobId,
+        groupId:
+          typeof payload.groupId === 'string' ? payload.groupId : undefined,
+        gameId:
+          typeof payload.aggregateId === 'string'
+            ? payload.aggregateId
+            : undefined,
+        attemptsMade,
+      },
+      async () => {
+        if (refreshEventTypes.has(eventType)) {
+          await ensureChildJob(
+            this.canonicalQueue,
+            eventType,
+            payload,
+            childJobId(sourceJobId, 'canonical'),
+          );
+        }
+        if (eventType === 'WAITLIST_PROMOTED') {
+          await ensureChildJob(
+            this.notificationQueue,
+            eventType,
+            payload,
+            childJobId(sourceJobId, 'notification'),
+          );
+        }
+        if (eventType === 'PAYMENT_REMINDER_REQUESTED') {
+          await ensureChildJob(
+            this.paymentReminderQueue,
+            eventType,
+            payload,
+            childJobId(sourceJobId, 'payment-reminder'),
+          );
+        }
+      },
+    );
   }
 }
 
 export class GameMessageConsumer {
-  public constructor(private readonly updater: GameMessageUpdater) {}
+  public constructor(
+    private readonly updater: GameMessageUpdater,
+    private readonly metrics?: MetricsRegistry,
+    private readonly jobLogger?: JsonLogger,
+  ) {}
 
   public async process(
     eventType: string,
     payload: Record<string, unknown>,
+    jobId = `${eventType}:unknown`,
+    attemptsMade = 0,
   ): Promise<void> {
-    if (!refreshEventTypes.has(eventType) || payload.aggregateType !== 'GAME') {
-      return;
-    }
-    if (
-      typeof payload.groupId !== 'string' ||
-      typeof payload.aggregateId !== 'string'
-    ) {
-      throw new Error('Game outbox event identity is required');
-    }
-    await this.updater.refresh(
-      asGroupId(payload.groupId),
-      asGameId(payload.aggregateId),
+    await observeWorkerJob(
+      this.metrics,
+      this.jobLogger,
+      {
+        queue: 'game-messages',
+        jobId,
+        groupId:
+          typeof payload.groupId === 'string' ? payload.groupId : undefined,
+        gameId:
+          typeof payload.aggregateId === 'string'
+            ? payload.aggregateId
+            : undefined,
+        attemptsMade,
+      },
+      async () => {
+        if (
+          !refreshEventTypes.has(eventType) ||
+          payload.aggregateType !== 'GAME'
+        ) {
+          return;
+        }
+        if (
+          typeof payload.groupId !== 'string' ||
+          typeof payload.aggregateId !== 'string'
+        ) {
+          throw new Error('Game outbox event identity is required');
+        }
+        await this.updater.refresh(
+          asGroupId(payload.groupId),
+          asGameId(payload.aggregateId),
+        );
+      },
     );
   }
 }
 
 export class WaitlistPromotionConsumer {
-  public constructor(private readonly notifications: NotificationConsumer) {}
+  public constructor(
+    private readonly notifications: NotificationConsumer,
+    private readonly metrics?: MetricsRegistry,
+    private readonly jobLogger?: JsonLogger,
+  ) {}
 
   public async process(
     payload: Record<string, unknown>,
     deterministicEventId: string,
+    attemptsMade = 0,
   ): Promise<void> {
-    if (typeof payload.registrationId !== 'string') {
-      throw new Error('Promoted registration identity is required');
-    }
-    await this.notifications.processWaitlistPromotion(
-      asRegistrationId(payload.registrationId),
-      deterministicEventId,
+    await observeWorkerJob(
+      this.metrics,
+      this.jobLogger,
+      {
+        queue: 'notifications',
+        jobId: deterministicEventId,
+        groupId:
+          typeof payload.groupId === 'string' ? payload.groupId : undefined,
+        gameId:
+          typeof payload.aggregateId === 'string'
+            ? payload.aggregateId
+            : undefined,
+        attemptsMade,
+      },
+      async () => {
+        if (typeof payload.registrationId !== 'string') {
+          throw new Error('Promoted registration identity is required');
+        }
+        await this.notifications.processWaitlistPromotion(
+          asRegistrationId(payload.registrationId),
+          deterministicEventId,
+        );
+      },
     );
   }
 }
@@ -105,22 +194,40 @@ export class GameMessageWorkerRuntime implements ManagedWorker {
   public constructor(
     private readonly workers: readonly Worker[],
     private readonly closeResources: () => Promise<void>,
+    private readonly runState?: WorkerRunStateRegistry,
   ) {}
 
   public async start(): Promise<void> {
     for (const worker of this.workers) {
-      void worker.run().catch((error: unknown) => {
+      this.runState?.markStarting(worker.name);
+      const run = worker.run();
+      this.runState?.observeRun(worker.name, run, (error) => {
         this.logger.error(
           `Telegram worker ${worker.name} stopped unexpectedly`,
-          error instanceof Error ? error.stack : String(error),
+          error.stack,
         );
       });
+      this.runState?.markRunning(worker.name);
+      if (this.runState === undefined) {
+        void run.catch((error: unknown) => {
+          this.logger.error(
+            `Telegram worker ${worker.name} stopped unexpectedly`,
+            error instanceof Error ? error.stack : String(error),
+          );
+        });
+      }
     }
   }
 
   public async stop(): Promise<void> {
+    for (const worker of this.workers) {
+      this.runState?.markStopping(worker.name);
+    }
     await Promise.all(this.workers.map((worker) => worker.close()));
     await this.closeResources();
+    for (const worker of this.workers) {
+      this.runState?.markStopped(worker.name);
+    }
   }
 }
 
@@ -130,12 +237,26 @@ export const GAME_MESSAGE_WORKER = Symbol('GAME_MESSAGE_WORKER');
   providers: [
     {
       provide: GAME_MESSAGE_WORKER,
-      useFactory: () => {
+      inject: [
+        WORKER_DEPENDENCIES,
+        MetricsRegistry,
+        JsonLogger,
+        WORKER_RUN_STATE,
+      ],
+      useFactory: (
+        dependencies: WorkerDependencies,
+        metrics: MetricsRegistry,
+        logger: JsonLogger,
+        runState: WorkerRunStateRegistry,
+      ) => {
         const env = parseEnv(process.env);
-        const pool = new Pool({ connectionString: env.DATABASE_URL });
-        const database = createDatabase(pool);
-        const repository = new GameMessageRepository(database, pool);
+        const database = createDatabase(dependencies.pool);
+        const repository = new GameMessageRepository(
+          database,
+          dependencies.pool,
+        );
         const notifications = new NotificationRepository(database);
+        const paymentReminders = new PaymentReminderRepository(database);
         const telegram = new GrammyTelegramGateway(
           createTelegramBot(env.BOT_TOKEN),
         );
@@ -192,47 +313,105 @@ export const GAME_MESSAGE_WORKER = Symbol('GAME_MESSAGE_WORKER');
           notifications,
           notificationSender,
           new RegistrationRepository(database),
+          metrics,
+        );
+        const paymentReminderConsumer = new PaymentReminderConsumer(
+          paymentReminders,
+          new PaymentReminderSender({
+            async sendPrivate(telegramUserId, text) {
+              try {
+                await telegram.sendMessage(telegramUserId, text);
+              } catch (error) {
+                const message =
+                  error instanceof Error ? error.message : String(error);
+                if (/forbidden|chat not found|bot was blocked/i.test(message)) {
+                  throw new TelegramPrivateChatUnavailableError(message);
+                }
+                throw error;
+              }
+            },
+          }),
+          metrics,
+          logger,
         );
         const canonicalQueue = new Queue('volley-game-messages', {
-          connection: redisConnection(env.REDIS_URL),
+          connection: dependencies.redis,
         });
         const notificationQueue = new Queue('volley-notifications', {
-          connection: redisConnection(env.REDIS_URL),
+          connection: dependencies.redis,
         });
-        const router = new OutboxEventRouter(canonicalQueue, notificationQueue);
+        const paymentReminderQueue = new Queue('volley-payment-reminders', {
+          connection: dependencies.redis,
+        });
+        const router = new OutboxEventRouter(
+          canonicalQueue,
+          notificationQueue,
+          paymentReminderQueue,
+          metrics,
+          logger,
+        );
         const messageConsumer = new GameMessageConsumer(
           new GameMessageUpdater(repository, gateway),
+          metrics,
+          logger,
         );
         const promotionConsumer = new WaitlistPromotionConsumer(
           notificationConsumer,
+          metrics,
+          logger,
         );
-        const connection = redisConnection(env.REDIS_URL);
         const routerWorker = new Worker(
           'volley-outbox',
           async (job) =>
-            router.process(job.name, job.data, requiredJobId(job.id)),
-          { connection, autorun: false },
+            router.process(
+              job.name,
+              job.data,
+              requiredJobId(job.id),
+              job.attemptsMade,
+            ),
+          { connection: dependencies.redis, autorun: false },
         );
         const messageWorker = new Worker(
           'volley-game-messages',
-          async (job) => messageConsumer.process(job.name, job.data),
-          { connection, autorun: false },
+          async (job) =>
+            messageConsumer.process(
+              job.name,
+              job.data,
+              requiredJobId(job.id),
+              job.attemptsMade,
+            ),
+          { connection: dependencies.redis, autorun: false },
         );
         const promotionWorker = new Worker(
           'volley-notifications',
           async (job) =>
-            promotionConsumer.process(job.data, requiredJobId(job.id)),
-          { connection, autorun: false },
+            promotionConsumer.process(
+              job.data,
+              requiredJobId(job.id),
+              job.attemptsMade,
+            ),
+          { connection: dependencies.redis, autorun: false },
+        );
+        const paymentReminderWorker = new Worker(
+          'volley-payment-reminders',
+          async (job) =>
+            paymentReminderConsumer.process(
+              job.data,
+              requiredJobId(job.id),
+              job.attemptsMade,
+            ),
+          { connection: dependencies.redis, autorun: false },
         );
         return new GameMessageWorkerRuntime(
-          [routerWorker, messageWorker, promotionWorker],
+          [routerWorker, messageWorker, promotionWorker, paymentReminderWorker],
           async () => {
             await Promise.all([
               canonicalQueue.close(),
               notificationQueue.close(),
+              paymentReminderQueue.close(),
             ]);
-            await pool.end();
           },
+          runState,
         );
       },
     },
@@ -245,15 +424,6 @@ const messageOptions = (message: RenderedTelegramMessage) => ({
   parseMode: message.parseMode,
   keyboard: message.keyboard,
 });
-
-const redisConnection = (redisUrl: string) => {
-  const redis = new URL(redisUrl);
-  return {
-    host: redis.hostname,
-    port: Number(redis.port || 6379),
-    password: redis.password || undefined,
-  };
-};
 
 const childJobOptions = (jobId: string) => ({
   jobId,
@@ -284,7 +454,7 @@ const requiredJobId = (jobId: string | undefined): string => {
 
 const childJobId = (
   sourceJobId: string,
-  consumer: 'canonical' | 'notification',
+  consumer: 'canonical' | 'notification' | 'payment-reminder',
 ): string => {
   const [prefix, eventId, suffix, ...rest] = sourceJobId.split(':');
   if (

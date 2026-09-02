@@ -5,14 +5,11 @@ import type {
   GroupRole,
   TelegramId,
 } from '@volley/domain';
+import type { AuthorizationService } from '../auth/authorization.service.js';
 import type { TelegramGateway } from '../ports/telegram.gateway.js';
 
 export interface RoleGroupRepository {
   findById(groupId: GroupId): Promise<Group | null>;
-  findMembership(
-    groupId: GroupId,
-    telegramUserId: TelegramId,
-  ): Promise<Pick<GroupMembership, 'role' | 'membershipStatus'> | null>;
   upsertMembership(
     groupId: GroupId,
     telegramUserId: TelegramId,
@@ -36,20 +33,19 @@ export interface ChangeGroupRoleCommand {
 export class ChangeGroupRole {
   constructor(
     private readonly telegram: TelegramGateway,
+    private readonly authorization: Pick<
+      AuthorizationService,
+      'requireTelegramRole'
+    >,
     private readonly groups: RoleGroupRepository,
   ) {}
 
   async execute(command: ChangeGroupRoleCommand): Promise<void> {
-    const actor = await this.groups.findMembership(
+    await this.authorization.requireTelegramRole(
       command.groupId,
       command.actorTelegramId,
+      'ADMIN',
     );
-    if (
-      actor?.membershipStatus !== 'ACTIVE' ||
-      (actor.role !== 'OWNER' && actor.role !== 'ADMIN')
-    ) {
-      throw new Error('Only an owner or admin may change group roles');
-    }
 
     const group = await this.groups.findById(command.groupId);
     if (group === null) {

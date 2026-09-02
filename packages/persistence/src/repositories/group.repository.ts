@@ -70,6 +70,34 @@ export class GroupRepository {
     return row === undefined ? null : toGroup(row);
   }
 
+  public async findUserIdByTelegramUserId(
+    telegramUserId: TelegramId,
+  ): Promise<UserId | null> {
+    const [row] = await this.database
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.telegramUserId, toDatabaseTelegramId(telegramUserId)))
+      .limit(1);
+    return row === undefined ? null : asUserId(row.id);
+  }
+
+  public async findMembershipByUserId(
+    groupId: GroupId,
+    userId: UserId,
+  ): Promise<Pick<GroupMembership, 'role' | 'membershipStatus'> | null> {
+    const [row] = await this.database
+      .select({
+        membershipStatus: groupMembers.membershipStatus,
+        role: groupMembers.role,
+      })
+      .from(groupMembers)
+      .where(
+        and(eq(groupMembers.groupId, groupId), eq(groupMembers.userId, userId)),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
   public async findTimeZone(groupId: GroupId): Promise<string | null> {
     const [row] = await this.database
       .select({ timeZone: groups.timeZone })
@@ -101,31 +129,6 @@ export class GroupRepository {
           telegramChatId: fromDatabaseTelegramId(row.telegramChatId),
           telegramUserId: fromDatabaseTelegramId(row.telegramUserId),
         };
-  }
-
-  public async requireOrganizer(
-    groupId: GroupId,
-    actorUserId: UserId,
-  ): Promise<void> {
-    const [membership] = await this.database
-      .select({
-        role: groupMembers.role,
-        membershipStatus: groupMembers.membershipStatus,
-      })
-      .from(groupMembers)
-      .where(
-        and(
-          eq(groupMembers.groupId, groupId),
-          eq(groupMembers.userId, actorUserId),
-        ),
-      )
-      .limit(1);
-    if (
-      membership?.membershipStatus !== 'ACTIVE' ||
-      !['OWNER', 'ADMIN', 'ORGANIZER'].includes(membership.role)
-    ) {
-      throw new Error('Organizer permission required');
-    }
   }
 
   public async upsertFromTelegram(

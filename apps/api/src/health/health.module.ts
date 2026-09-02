@@ -1,7 +1,10 @@
 import { Module } from '@nestjs/common';
-import { parseEnv, type AppEnv } from '@volley/config';
 import { Redis } from 'ioredis';
 import { Pool } from 'pg';
+import {
+  DATABASE_POOL,
+  REDIS_CLIENT,
+} from '../infrastructure/infrastructure.module.js';
 import { HealthController } from './health.controller.js';
 import {
   HealthService,
@@ -17,21 +20,15 @@ import {
     HealthService,
     {
       provide: POSTGRES_HEALTH_PROBE,
-      useFactory: (): PostgresHealthProbe => {
-        const env: AppEnv = parseEnv(process.env);
-        return new PostgresHealthProbe(
-          new Pool({ connectionString: env.DATABASE_URL }),
-        );
-      },
+      inject: [DATABASE_POOL],
+      useFactory: (pool: Pool): PostgresHealthProbe =>
+        new PostgresHealthProbe(pool),
     },
     {
       provide: REDIS_HEALTH_PROBE,
-      useFactory: (): RedisHealthProbe => {
-        const env: AppEnv = parseEnv(process.env);
-        return new RedisHealthProbe(
-          new Redis(env.REDIS_URL, { lazyConnect: true }),
-        );
-      },
+      inject: [REDIS_CLIENT],
+      useFactory: (redis: Redis): RedisHealthProbe =>
+        new RedisHealthProbe(redis),
     },
   ],
 })

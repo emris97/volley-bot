@@ -179,10 +179,23 @@ export class OutboxRepository {
           payload ->> 'registrationId',
           occurred_at DESC,
           id DESC
+      ), payment_reminders AS (
+        SELECT
+          id::text,
+          event_type,
+          payload,
+          occurred_at,
+          group_id,
+          aggregate_type,
+          aggregate_id
+        FROM outbox_events
+        WHERE event_type = 'PAYMENT_REMINDER_REQUESTED'
       ), recovery_events AS (
         SELECT * FROM latest_game_refresh
         UNION ALL
         SELECT * FROM latest_promotions
+        UNION ALL
+        SELECT * FROM payment_reminders
       )
       SELECT *
       FROM recovery_events

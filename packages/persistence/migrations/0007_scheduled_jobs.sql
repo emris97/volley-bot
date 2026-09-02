@@ -1,5 +1,3 @@
-BEGIN;
-
 ALTER TABLE registrations
   ADD COLUMN IF NOT EXISTS confirmation_revision INTEGER NOT NULL DEFAULT 0;
 
@@ -46,9 +44,3 @@ CREATE INDEX IF NOT EXISTS scheduled_jobs_group_run_at_idx
 
 CREATE INDEX IF NOT EXISTS scheduled_jobs_pending_idx
   ON scheduled_jobs(run_at);
-
-INSERT INTO volley_schema_migrations (name)
-VALUES ('0007_scheduled_jobs')
-ON CONFLICT (name) DO NOTHING;
-
-COMMIT;

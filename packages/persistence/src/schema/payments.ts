@@ -1,0 +1,320 @@
+import type { RoundingMode } from '@volley/domain';
+import { sql } from 'drizzle-orm';
+import {
+  bigint,
+  boolean,
+  check,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core';
+import { attendanceSnapshots } from './attendance.js';
+import { games } from './games.js';
+import { groups } from './groups.js';
+import { users } from './users.js';
+
+export const paymentDrafts = pgTable(
+  'payment_drafts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    groupId: uuid('group_id')
+      .notNull()
+      .references(() => groups.id, { onDelete: 'cascade' }),
+    gameId: uuid('game_id')
+      .notNull()
+      .references(() => games.id, { onDelete: 'cascade' }),
+    actorUserId: uuid('actor_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    attendanceRevision: integer('attendance_revision').notNull(),
+    totalAmount: text('total_amount').notNull(),
+    currency: text('currency').$type<'RUB'>().notNull(),
+    roundingMode: text('rounding_mode').$type<RoundingMode>().notNull(),
+    finalizedSettlementId: uuid('finalized_settlement_id'),
+    expectedActiveSettlementId: uuid(
+      'expected_active_settlement_id',
+    ).references(() => settlements.id, { onDelete: 'restrict' }),
+    expectedActiveSettlementRevision: integer(
+      'expected_active_settlement_revision',
+    ),
+    expiresAt: timestamp('expires_at', {
+      mode: 'date',
+      withTimezone: true,
+    }).notNull(),
+    createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index('payment_drafts_group_expires_idx').on(
+      table.groupId,
+      table.expiresAt,
+    ),
+    check(
+      'payment_drafts_attendance_revision_check',
+      sql`${table.attendanceRevision} > 0`,
+    ),
+    check(
+      'payment_drafts_total_amount_check',
+      sql`${table.totalAmount} ~ '^[0-9]+(\\.[0-9]{1,2})?$'`,
+    ),
+    check('payment_drafts_currency_check', sql`${table.currency} in ('RUB')`),
+    check(
+      'payment_drafts_rounding_mode_check',
+      sql`${table.roundingMode} in ('EXACT', 'UP_1', 'UP_10', 'UP_50')`,
+    ),
+    check(
+      'payment_drafts_expected_active_pair_check',
+      sql`(${table.expectedActiveSettlementId} is null and ${table.expectedActiveSettlementRevision} is null) or (${table.expectedActiveSettlementId} is not null and ${table.expectedActiveSettlementRevision} is not null)`,
+    ),
+  ],
+);
+
+export const paymentInputSessions = pgTable(
+  'payment_input_sessions',
+  {
+    groupId: uuid('group_id')
+      .notNull()
+      .references(() => groups.id, { onDelete: 'cascade' }),
+    gameId: uuid('game_id')
+      .notNull()
+      .references(() => games.id, { onDelete: 'cascade' }),
+    actorUserId: uuid('actor_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    attendanceRevision: integer('attendance_revision').notNull(),
+    currency: text('currency').$type<'RUB'>().notNull(),
+    roundingMode: text('rounding_mode').$type<RoundingMode>().notNull(),
+    expiresAt: timestamp('expires_at', {
+      mode: 'date',
+      withTimezone: true,
+    }).notNull(),
+    createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('payment_input_sessions_actor_unique').on(table.actorUserId),
+    index('payment_input_sessions_group_expires_idx').on(
+      table.groupId,
+      table.expiresAt,
+    ),
+    check(
+      'payment_input_sessions_attendance_revision_check',
+      sql`${table.attendanceRevision} > 0`,
+    ),
+    check(
+      'payment_input_sessions_currency_check',
+      sql`${table.currency} in ('RUB')`,
+    ),
+    check(
+      'payment_input_sessions_rounding_mode_check',
+      sql`${table.roundingMode} in ('EXACT', 'UP_1', 'UP_10', 'UP_50')`,
+    ),
+  ],
+);
+
+export const settlements = pgTable(
+  'settlements',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    groupId: uuid('group_id')
+      .notNull()
+      .references(() => groups.id, { onDelete: 'restrict' }),
+    gameId: uuid('game_id')
+      .notNull()
+      .references(() => games.id, { onDelete: 'restrict' }),
+    attendanceSnapshotId: uuid('attendance_snapshot_id')
+      .notNull()
+      .references(() => attendanceSnapshots.id, { onDelete: 'restrict' }),
+    attendanceRevision: integer('attendance_revision').notNull(),
+    revision: integer('revision').notNull(),
+    totalMinor: bigint('total_minor', { mode: 'bigint' }).notNull(),
+    currency: text('currency').$type<'RUB'>().notNull(),
+    roundingMode: text('rounding_mode').$type<RoundingMode>().notNull(),
+    allocationOrder: jsonb('allocation_order').$type<string[]>().notNull(),
+    collectedMinor: bigint('collected_minor', { mode: 'bigint' }).notNull(),
+    surplusMinor: bigint('surplus_minor', { mode: 'bigint' }).notNull(),
+    supersededAt: timestamp('superseded_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('settlements_game_revision_unique').on(
+      table.gameId,
+      table.revision,
+    ),
+    index('settlements_group_game_revision_idx').on(
+      table.groupId,
+      table.gameId,
+      table.revision,
+    ),
+    uniqueIndex('settlements_active_game_unique')
+      .on(table.gameId)
+      .where(sql`${table.supersededAt} is null`),
+    check('settlements_revision_check', sql`${table.revision} > 0`),
+    check(
+      'settlements_attendance_revision_check',
+      sql`${table.attendanceRevision} > 0`,
+    ),
+    check(
+      'settlements_amounts_check',
+      sql`${table.totalMinor} >= 0 and ${table.collectedMinor} >= 0 and ${table.surplusMinor} >= 0 and ${table.collectedMinor} = ${table.totalMinor} + ${table.surplusMinor}`,
+    ),
+    check('settlements_currency_check', sql`${table.currency} in ('RUB')`),
+    check(
+      'settlements_rounding_mode_check',
+      sql`${table.roundingMode} in ('EXACT', 'UP_1', 'UP_10', 'UP_50')`,
+    ),
+  ],
+);
+
+export const settlementCharges = pgTable(
+  'settlement_charges',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    settlementId: uuid('settlement_id')
+      .notNull()
+      .references(() => settlements.id, { onDelete: 'restrict' }),
+    groupId: uuid('group_id')
+      .notNull()
+      .references(() => groups.id, { onDelete: 'restrict' }),
+    participantRef: text('participant_ref').notNull(),
+    displayName: text('display_name').notNull(),
+    addedManually: boolean('added_manually').notNull(),
+    amountMinor: bigint('amount_minor', { mode: 'bigint' }).notNull(),
+    status: text('status')
+      .$type<'UNPAID' | 'PAID' | 'WAIVED'>()
+      .default('UNPAID')
+      .notNull(),
+    createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('settlement_charges_settlement_participant_unique').on(
+      table.settlementId,
+      table.participantRef,
+    ),
+    index('settlement_charges_group_settlement_idx').on(
+      table.groupId,
+      table.settlementId,
+    ),
+    check('settlement_charges_amount_check', sql`${table.amountMinor} >= 0`),
+    check(
+      'settlement_charges_status_check',
+      sql`${table.status} in ('UNPAID', 'PAID', 'WAIVED')`,
+    ),
+  ],
+);
+
+export const chargeStatusEvents = pgTable(
+  'charge_status_events',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    groupId: uuid('group_id')
+      .notNull()
+      .references(() => groups.id, { onDelete: 'restrict' }),
+    chargeId: uuid('charge_id')
+      .notNull()
+      .references(() => settlementCharges.id, { onDelete: 'restrict' }),
+    previousStatus: text('previous_status').$type<
+      'UNPAID' | 'PAID' | 'WAIVED'
+    >(),
+    status: text('status').$type<'UNPAID' | 'PAID' | 'WAIVED'>().notNull(),
+    actorUserId: uuid('actor_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    occurredAt: timestamp('occurred_at', { mode: 'date', withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index('charge_status_events_group_charge_occurred_idx').on(
+      table.groupId,
+      table.chargeId,
+      table.occurredAt,
+    ),
+    check(
+      'charge_status_events_previous_status_check',
+      sql`${table.previousStatus} is null or ${table.previousStatus} in ('UNPAID', 'PAID', 'WAIVED')`,
+    ),
+    check(
+      'charge_status_events_status_check',
+      sql`${table.status} in ('UNPAID', 'PAID', 'WAIVED')`,
+    ),
+  ],
+);
+
+export const paymentReminderRequests = pgTable(
+  'payment_reminder_requests',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    groupId: uuid('group_id')
+      .notNull()
+      .references(() => groups.id, { onDelete: 'restrict' }),
+    actorUserId: uuid('actor_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    idempotencyKey: text('idempotency_key').notNull(),
+    chargeIds: jsonb('charge_ids').$type<string[]>().notNull(),
+    createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('payment_reminder_requests_group_key_unique').on(
+      table.groupId,
+      table.idempotencyKey,
+    ),
+  ],
+);
+
+export const paymentReminderDeliveries = pgTable(
+  'payment_reminder_deliveries',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    deterministicJobId: text('deterministic_job_id').notNull(),
+    chargeId: uuid('charge_id')
+      .notNull()
+      .references(() => settlementCharges.id, { onDelete: 'restrict' }),
+    claimToken: uuid('claim_token'),
+    claimedAt: timestamp('claimed_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    claimExpiresAt: timestamp('claim_expires_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    deliveredAt: timestamp('delivered_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    terminalFailure: text('terminal_failure').$type<
+      'NO_PRIVATE_RECIPIENT' | 'PRIVATE_CHAT_UNAVAILABLE'
+    >(),
+  },
+  (table) => [
+    uniqueIndex('payment_reminder_deliveries_job_charge_unique').on(
+      table.deterministicJobId,
+      table.chargeId,
+    ),
+    check(
+      'payment_reminder_deliveries_terminal_failure_check',
+      sql`${table.terminalFailure} is null or ${table.terminalFailure} in ('NO_PRIVATE_RECIPIENT', 'PRIVATE_CHAT_UNAVAILABLE')`,
+    ),
+  ],
+);

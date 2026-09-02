@@ -1,5 +1,3 @@
-BEGIN;
-
 CREATE TABLE IF NOT EXISTS registrations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
@@ -35,9 +33,3 @@ CREATE INDEX IF NOT EXISTS registrations_group_game_idx
 CREATE UNIQUE INDEX IF NOT EXISTS registrations_active_user_game_unique
   ON registrations(game_id, user_id)
   WHERE user_id IS NOT NULL AND state <> 'CANCELLED';
-
-INSERT INTO volley_schema_migrations (name)
-VALUES ('0004_registrations')
-ON CONFLICT (name) DO NOTHING;
-
-COMMIT;

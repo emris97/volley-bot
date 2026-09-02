@@ -1,10 +1,27 @@
 export const packageMarker = 'persistence' as const;
-export { createDatabase, type Database } from './client.js';
+export { createDatabase, createPostgresPool, type Database } from './client.js';
 export {
   GroupRepository,
   type UpsertGroupFromTelegramInput,
 } from './repositories/group.repository.js';
 export { GameRepository } from './repositories/game.repository.js';
+export { AttendanceRepository } from './repositories/attendance.repository.js';
+export {
+  ManagementRepository,
+  type ManagementContextRecord,
+} from './repositories/management.repository.js';
+export {
+  PaymentRepository,
+  type StoredPaymentDraft,
+  type StoredPaymentInputSession,
+  type StoredSettlement,
+  type StoredSettlementCharge,
+} from './repositories/payment.repository.js';
+export {
+  PaymentReminderRepository,
+  type PaymentReminderTerminalFailure,
+  type StoredPaymentReminderRecipient,
+} from './repositories/payment-reminder.repository.js';
 export {
   GameMessageRepository,
   type StoredGameMessageView,
@@ -30,4 +47,9 @@ export {
   type NotificationRecipientRecord,
 } from './repositories/notification.repository.js';
 export { ScheduledJobRepository } from './repositories/scheduled-job.repository.js';
+export {
+  applyMigrations,
+  type MigrationClient,
+  type MigrationDatabase,
+} from './migrations/migration-runner.js';
 export * from './schema/index.js';

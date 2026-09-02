@@ -1,13 +1,9 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import type { Pool } from 'pg';
+import { applyMigrations } from './migration-runner.js';
 
 const migrationsUrl = new URL('../../migrations/', import.meta.url);
 
 export const applyTestMigrations = async (pool: Pool): Promise<void> => {
-  const files = (await readdir(migrationsUrl))
-    .filter((file) => file.endsWith('.sql'))
-    .sort();
-  for (const file of files) {
-    await pool.query(await readFile(new URL(file, migrationsUrl), 'utf8'));
-  }
+  await applyMigrations(pool, fileURLToPath(migrationsUrl));
 };

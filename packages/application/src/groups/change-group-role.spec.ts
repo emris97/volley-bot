@@ -17,14 +17,6 @@ describe('ChangeGroupRole', () => {
   it('lets an admin grant organizer to a current Telegram member', async () => {
     const groups = {
       findById: vi.fn().mockResolvedValue(group),
-      findMembership: vi.fn().mockResolvedValue({
-        groupId: group.id,
-        userId: asUserId('00000000-0000-4000-8000-000000000002'),
-        telegramUserId: asTelegramId('1'),
-        role: 'ADMIN',
-        membershipStatus: 'ACTIVE',
-        checkedAt: new Date(),
-      }),
       upsertMembership: vi.fn().mockResolvedValue(undefined),
       recordRoleChange: vi.fn().mockResolvedValue(undefined),
     };
@@ -32,7 +24,14 @@ describe('ChangeGroupRole', () => {
       getChatMember: vi.fn().mockResolvedValue({ status: 'member' }),
       sendMessage: vi.fn(),
     };
-    const useCase = new ChangeGroupRole(telegram, groups);
+    const useCase = new ChangeGroupRole(
+      telegram,
+      {
+        requireTelegramRole: async () =>
+          asUserId('00000000-0000-4000-8000-000000000002'),
+      },
+      groups,
+    );
 
     await useCase.execute({
       groupId: group.id,
@@ -52,15 +51,16 @@ describe('ChangeGroupRole', () => {
   it('does not let an organizer grant roles', async () => {
     const groups = {
       findById: vi.fn().mockResolvedValue(group),
-      findMembership: vi.fn().mockResolvedValue({
-        role: 'ORGANIZER',
-        membershipStatus: 'ACTIVE',
-      }),
       upsertMembership: vi.fn(),
       recordRoleChange: vi.fn(),
     };
     const useCase = new ChangeGroupRole(
       { getChatMember: vi.fn(), sendMessage: vi.fn() },
+      {
+        requireTelegramRole: async () => {
+          throw new Error('Only an owner or admin may change group roles');
+        },
+      },
       groups,
     );
 

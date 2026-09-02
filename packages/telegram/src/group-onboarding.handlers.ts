@@ -1,4 +1,5 @@
 import type {
+  AuthorizationService,
   ConfigureGroup,
   OnboardGroup,
   TelegramGateway,
@@ -39,10 +40,6 @@ const wizardOrder: readonly WizardCode[] = [
 export interface OnboardingHandlerRepository {
   findByTelegramChatId(telegramChatId: TelegramId): Promise<Group | null>;
   setEnabled(groupId: GroupId, enabled: boolean): Promise<Group>;
-  findMembership(
-    groupId: GroupId,
-    telegramUserId: TelegramId,
-  ): Promise<{ role: string; membershipStatus: string } | null>;
   getWizardProgress(groupId: GroupId): Promise<Record<string, unknown>>;
   saveWizardProgress(
     groupId: GroupId,
@@ -54,6 +51,10 @@ export class GroupOnboardingHandlers {
   constructor(
     private readonly onboard: OnboardGroup,
     private readonly configure: ConfigureGroup,
+    private readonly authorization: Pick<
+      AuthorizationService,
+      'requireTelegramRole'
+    >,
     private readonly groups: OnboardingHandlerRepository,
     private readonly signer: SignedStartToken,
     private readonly telegram: TelegramGateway,
@@ -160,13 +161,11 @@ export class GroupOnboardingHandlers {
     groupId: GroupId,
     telegramUserId: TelegramId,
   ): Promise<void> {
-    const member = await this.groups.findMembership(groupId, telegramUserId);
-    if (
-      member?.membershipStatus !== 'ACTIVE' ||
-      (member.role !== 'OWNER' && member.role !== 'ADMIN')
-    ) {
-      throw new Error('Only an owner or admin may configure a group');
-    }
+    await this.authorization.requireTelegramRole(
+      groupId,
+      telegramUserId,
+      'ADMIN',
+    );
   }
 
   private async sendNextPrompt(

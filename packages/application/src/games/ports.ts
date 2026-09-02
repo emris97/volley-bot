@@ -8,10 +8,9 @@ import type {
   GroupId,
   UserId,
 } from '@volley/domain';
+import type { OrganizerAuthorization } from '../auth/authorization.service.js';
 
-export interface GameAuthorization {
-  requireOrganizer(groupId: GroupId, actorUserId: UserId): Promise<void>;
-}
+export type GameAuthorization = OrganizerAuthorization;
 
 export interface GameGroupSettingsRepository {
   findTimeZone(groupId: GroupId): Promise<string | null>;

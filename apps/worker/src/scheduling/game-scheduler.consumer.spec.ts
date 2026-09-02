@@ -1,9 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
+import {
+  JsonLogger,
+  MetricsRegistry,
+  type LogOutput,
+} from '@volley/application';
 import { asGameId, asGroupId, type Game } from '@volley/domain';
 import {
   BullMqDelayedJobScheduler,
   GameSchedulerConsumer,
+  GameSchedulerRuntime,
 } from './game-scheduler.consumer.js';
+import { WorkerRunStateRegistry } from '../observability/worker-run-state.js';
 
 describe('GameSchedulerConsumer', () => {
   it.each([
@@ -32,6 +39,53 @@ describe('GameSchedulerConsumer', () => {
 
     expect(notify).not.toHaveBeenCalled();
   });
+
+  it('records retried transaction conflicts with worker job correlation', async () => {
+    const current = game();
+    const conflict = Object.assign(new Error('serialization failure'), {
+      code: '40001',
+    });
+    const metrics = new MetricsRegistry();
+    const output: string[] = [];
+    const consumer = new GameSchedulerConsumer(
+      {
+        findById: vi.fn().mockRejectedValue(conflict),
+        withLockedGame: vi.fn(),
+      },
+      undefined,
+      metrics,
+      new JsonLogger({
+        output: (line: LogOutput) => output.push(line),
+      }),
+    );
+    const job = {
+      id: `REMIND_PARTICIPANTS:${current.id}:1`,
+      kind: 'REMIND_PARTICIPANTS' as const,
+      groupId: current.groupId!,
+      gameId: current.id!,
+      scheduleRevision: 1,
+      runAt: current.reminderAt,
+    };
+
+    await expect(consumer.process(job, 1)).rejects.toThrow(
+      'serialization failure',
+    );
+
+    expect(metrics.render()).toContain(
+      'volley_job_retries_total{queue="game-scheduler"} 1',
+    );
+    expect(metrics.render()).toContain(
+      'volley_transaction_conflicts_total{operation="game-scheduler"} 1',
+    );
+    expect(output.map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({
+        message: 'Worker job failed',
+        jobId: job.id,
+        groupId: current.groupId,
+        gameId: current.id,
+      }),
+    );
+  });
 });
 
 describe('BullMqDelayedJobScheduler', () => {
@@ -55,6 +109,63 @@ describe('BullMqDelayedJobScheduler', () => {
 
     expect(failed.retry).toHaveBeenCalledOnce();
     expect(queue.add).not.toHaveBeenCalled();
+  });
+});
+
+describe('GameSchedulerRuntime shutdown', () => {
+  it('marks an unexpected BullMQ run rejection non-ready without leaking the rejection', async () => {
+    const state = new WorkerRunStateRegistry(['game-scheduler']);
+    const worker = {
+      name: 'game-scheduler',
+      run: vi.fn().mockRejectedValue(new Error('consumer failed')),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const runtime = new GameSchedulerRuntime(
+      worker as never,
+      vi.fn().mockResolvedValue(undefined),
+      vi.fn().mockResolvedValue(undefined),
+      60_000,
+      state,
+    );
+
+    await runtime.start();
+    await vi.waitFor(() =>
+      expect(state.status('game-scheduler')).toBe('FAILED'),
+    );
+
+    expect(state.isReady()).toBe(false);
+  });
+
+  it('awaits a held reconciliation before closing worker resources', async () => {
+    let releaseReconciliation!: () => void;
+    const heldReconciliation = new Promise<void>((resolve) => {
+      releaseReconciliation = resolve;
+    });
+    const calls: string[] = [];
+    const worker = {
+      name: 'game-scheduler',
+      run: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn(async () => void calls.push('worker')),
+    };
+    const reconcile = vi.fn().mockReturnValue(heldReconciliation);
+    const closeResources = vi.fn(async () => void calls.push('resources'));
+    const runtime = new GameSchedulerRuntime(
+      worker as never,
+      reconcile,
+      closeResources,
+      60_000,
+    );
+
+    const starting = runtime.start();
+    await vi.waitFor(() => expect(reconcile).toHaveBeenCalledOnce());
+    const stopping = runtime.stop();
+    await Promise.resolve();
+
+    expect(worker.close).not.toHaveBeenCalled();
+    expect(closeResources).not.toHaveBeenCalled();
+    releaseReconciliation();
+    await Promise.all([starting, stopping]);
+    expect(calls).toEqual(['worker', 'resources']);
   });
 });
 

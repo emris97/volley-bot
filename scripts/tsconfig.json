@@ -1,0 +1,16 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "outDir": "../dist/scripts",
+    "rootDir": ".",
+    "tsBuildInfoFile": "../dist/scripts.tsbuildinfo"
+  },
+  "include": ["migrate.ts"],
+  "references": [
+    { "path": "../packages/application" },
+    { "path": "../packages/config" },
+    { "path": "../packages/domain" },
+    { "path": "../packages/persistence" }
+  ]
+}

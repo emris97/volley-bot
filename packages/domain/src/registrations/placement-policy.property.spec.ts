@@ -1,32 +1,30 @@
 import fc from 'fast-check';
 import { expect, it } from 'vitest';
-import { asRegistrationId, type RegistrationCandidate } from './registration.js';
+import {
+  asRegistrationId,
+  type RegistrationCandidate,
+} from './registration.js';
 import { placeConfirmedRegistrations } from './placement-policy.js';
 
 const candidateArbitrary = fc
   .record({
     id: fc.uuid(),
     kind: fc.constantFrom<'MEMBER' | 'GUEST'>('MEMBER', 'GUEST'),
-    state: fc.constantFrom<'TENTATIVE' | 'ROSTERED' | 'WAITLISTED' | 'CANCELLED'>(
-      'TENTATIVE',
-      'ROSTERED',
-      'WAITLISTED',
-      'CANCELLED',
-    ),
+    state: fc.constantFrom<
+      'TENTATIVE' | 'ROSTERED' | 'WAITLISTED' | 'CANCELLED'
+    >('TENTATIVE', 'ROSTERED', 'WAITLISTED', 'CANCELLED'),
     manualRank: fc.option(fc.integer({ min: 0, max: 100 }), { nil: null }),
     confirmedAtMs: fc.integer({ min: 0, max: 2_000_000_000_000 }),
   })
-  .map(
-    (value): RegistrationCandidate => ({
-      id: asRegistrationId(value.id),
-      kind: value.kind,
-      state: value.state,
-      manualRank: value.manualRank,
-      membershipPriority: value.kind === 'MEMBER' ? 1 : 0,
-      confirmedAt:
-        value.state === 'TENTATIVE' ? null : new Date(value.confirmedAtMs),
-    }),
-  );
+  .map((value): RegistrationCandidate => ({
+    id: asRegistrationId(value.id),
+    kind: value.kind,
+    state: value.state,
+    manualRank: value.manualRank,
+    membershipPriority: value.kind === 'MEMBER' ? 1 : 0,
+    confirmedAt:
+      value.state === 'TENTATIVE' ? null : new Date(value.confirmedAtMs),
+  }));
 
 it('never exceeds capacity or places inactive registrations', () => {
   fc.assert(
@@ -41,8 +39,7 @@ it('never exceeds capacity or places inactive registrations', () => {
         expect(result.roster.length).toBeLessThanOrEqual(capacity);
         expect(
           result.roster.every(
-            (item) =>
-              item.state !== 'TENTATIVE' && item.state !== 'CANCELLED',
+            (item) => item.state !== 'TENTATIVE' && item.state !== 'CANCELLED',
           ),
         ).toBe(true);
       },

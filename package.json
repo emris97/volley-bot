@@ -12,7 +12,11 @@
     "test": "vitest run",
     "lint": "eslint .",
     "format:check": "prettier --check .",
-    "jobs:reconcile": "tsx scripts/reconcile-jobs.ts"
+    "jobs:reconcile": "tsx scripts/reconcile-jobs.ts",
+    "db:migrate": "tsx scripts/migrate.ts"
+  },
+  "dependencies": {
+    "@volley/persistence": "workspace:*"
   },
   "devDependencies": {
     "@nestjs/cli": "11.0.24",

@@ -12,9 +12,7 @@ describe('transitionGame', () => {
     ['CANCELLED', 'OPEN'],
     ['DRAFT', 'COMPLETED'],
   ] as const)('rejects %s -> %s', (from, to) => {
-    expect(() => transitionGame(from, to)).toThrow(
-      /invalid game transition/i,
-    );
+    expect(() => transitionGame(from, to)).toThrow(/invalid game transition/i);
   });
 });
 

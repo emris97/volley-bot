@@ -1,5 +1,3 @@
-BEGIN;
-
 CREATE TABLE IF NOT EXISTS game_templates (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
@@ -79,9 +77,3 @@ CREATE TABLE IF NOT EXISTS games (
 );
 
 CREATE INDEX IF NOT EXISTS games_group_starts_at_idx ON games(group_id, starts_at);
-
-INSERT INTO volley_schema_migrations (name)
-VALUES ('0003_games')
-ON CONFLICT (name) DO NOTHING;
-
-COMMIT;

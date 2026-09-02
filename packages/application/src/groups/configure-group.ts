@@ -1,4 +1,5 @@
 import type { GroupId, TelegramId } from '@volley/domain';
+import type { AuthorizationService } from '../auth/authorization.service.js';
 
 export interface ConfigureGroupCommand {
   groupId: GroupId;
@@ -14,27 +15,24 @@ export interface ConfigureGroupCommand {
 }
 
 export interface ConfigurableGroupRepository {
-  findMembership(
-    groupId: GroupId,
-    telegramUserId: TelegramId,
-  ): Promise<{ role: string; membershipStatus: string } | null>;
   configure(command: ConfigureGroupCommand): Promise<void>;
 }
 
 export class ConfigureGroup {
-  constructor(private readonly groups: ConfigurableGroupRepository) {}
+  constructor(
+    private readonly authorization: Pick<
+      AuthorizationService,
+      'requireTelegramRole'
+    >,
+    private readonly groups: ConfigurableGroupRepository,
+  ) {}
 
   async execute(command: ConfigureGroupCommand): Promise<void> {
-    const actor = await this.groups.findMembership(
+    await this.authorization.requireTelegramRole(
       command.groupId,
       command.actorTelegramId,
+      'ADMIN',
     );
-    if (
-      actor?.membershipStatus !== 'ACTIVE' ||
-      (actor.role !== 'OWNER' && actor.role !== 'ADMIN')
-    ) {
-      throw new Error('Only an owner or admin may configure a group');
-    }
 
     try {
       new Intl.DateTimeFormat('en', { timeZone: command.timeZone }).format();

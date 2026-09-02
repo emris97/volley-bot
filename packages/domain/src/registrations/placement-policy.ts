@@ -43,9 +43,7 @@ export const rankConfirmedRegistrations = (
   registrations: readonly RegistrationCandidate[],
 ): RegistrationCandidate[] =>
   registrations
-    .filter(
-      (item) => item.state !== 'TENTATIVE' && item.state !== 'CANCELLED',
-    )
+    .filter((item) => item.state !== 'TENTATIVE' && item.state !== 'CANCELLED')
     .toSorted(compare);
 
 export const placeConfirmedRegistrations = (

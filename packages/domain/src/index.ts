@@ -28,10 +28,7 @@ export {
   type GameTemplateSnapshot,
   type RoundingMode,
 } from './games/game-template.js';
-export {
-  createGameFromTemplate,
-  transitionGame,
-} from './games/game-policy.js';
+export { createGameFromTemplate, transitionGame } from './games/game-policy.js';
 export {
   InvalidRegistrationError,
   RegistrationMutationNotAllowedError,
@@ -50,3 +47,18 @@ export {
   type PlacementInput,
   type PlacementResult,
 } from './registrations/placement-policy.js';
+export {
+  asAttendanceSnapshotId,
+  type AttendanceEntry,
+  type AttendanceRosterCandidate,
+  type AttendanceSnapshotId,
+  type AttendanceSnapshot,
+} from './attendance/attendance.js';
+export { rubles, type Money } from './payments/money.js';
+export {
+  calculateSettlement,
+  StalePaymentDraftError,
+  type SettlementCalculation,
+  type SettlementCharge,
+  type SettlementInput,
+} from './payments/settlement.js';

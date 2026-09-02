@@ -1,5 +1,10 @@
 import { Module } from '@nestjs/common';
-import { ReconcileGameJobs, type RequiredJob } from '@volley/application';
+import {
+  JsonLogger,
+  MetricsRegistry,
+  ReconcileGameJobs,
+  type RequiredJob,
+} from '@volley/application';
 import { parseEnv } from '@volley/config';
 import type { GameId } from '@volley/domain';
 import {
@@ -10,7 +15,6 @@ import {
   ScheduledJobRepository,
 } from '@volley/persistence';
 import { Queue, Worker } from 'bullmq';
-import { Pool } from 'pg';
 import {
   createTelegramBot,
   GrammyTelegramGateway,
@@ -19,10 +23,18 @@ import {
 } from '@volley/telegram';
 import { NotificationConsumer } from '../notifications/notification.consumer.js';
 import {
+  WORKER_DEPENDENCIES,
+  type WorkerDependencies,
+} from '../infrastructure/worker-dependencies.module.js';
+import {
   BullMqDelayedJobScheduler,
   GameSchedulerConsumer,
   GameSchedulerRuntime,
 } from './game-scheduler.consumer.js';
+import {
+  WORKER_RUN_STATE,
+  type WorkerRunStateRegistry,
+} from '../observability/worker-run-state.js';
 
 export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
 
@@ -30,17 +42,32 @@ export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
   providers: [
     {
       provide: GAME_SCHEDULER_WORKER,
-      useFactory: () => {
+      inject: [
+        WORKER_DEPENDENCIES,
+        MetricsRegistry,
+        JsonLogger,
+        WORKER_RUN_STATE,
+      ],
+      useFactory: (
+        dependencies: WorkerDependencies,
+        metrics: MetricsRegistry,
+        logger: JsonLogger,
+        runState: WorkerRunStateRegistry,
+      ) => {
         const env = parseEnv(process.env);
-        const pool = new Pool({ connectionString: env.DATABASE_URL });
-        const database = createDatabase(pool);
+        const database = createDatabase(dependencies.pool);
         const games = new GameRepository(database);
         const registrations = new RegistrationRepository(database);
         const notifications = new NotificationRepository(database);
         const scheduledJobs = new ScheduledJobRepository(database);
-        const connection = redisConnection(env.REDIS_URL);
-        const queue = new Queue('volley-game-scheduler', { connection });
-        const scheduler = new BullMqDelayedJobScheduler(queue);
+        const queue = new Queue('volley-game-scheduler', {
+          connection: dependencies.redis,
+        });
+        const scheduler = new BullMqDelayedJobScheduler(
+          queue,
+          () => new Date(),
+          metrics,
+        );
         const reconciler = new ReconcileGameJobs(scheduledJobs, scheduler);
         const telegram = new GrammyTelegramGateway(
           createTelegramBot(env.BOT_TOKEN),
@@ -80,18 +107,22 @@ export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
           notifications,
           sender,
           registrations,
+          metrics,
         );
-        const consumer = new GameSchedulerConsumer(games, (job) =>
-          notificationConsumer.process(job),
+        const consumer = new GameSchedulerConsumer(
+          games,
+          (job) => notificationConsumer.process(job),
+          metrics,
+          logger,
         );
         const worker = new Worker(
           'volley-game-scheduler',
           async (bullJob) => {
             const job = deserializeJob(bullJob.data);
-            await consumer.process(job);
+            await consumer.process(job, bullJob.attemptsMade);
             await scheduledJobs.markCompleted(job.groupId, job.gameId, job.id);
           },
-          { connection, autorun: false },
+          { connection: dependencies.redis, autorun: false },
         );
 
         const reconcileAll = async (): Promise<void> => {
@@ -110,25 +141,21 @@ export const GAME_SCHEDULER_WORKER = Symbol('GAME_SCHEDULER_WORKER');
           } while (afterId !== undefined);
         };
 
-        return new GameSchedulerRuntime(worker, reconcileAll, async () => {
-          await queue.close();
-          await pool.end();
-        });
+        return new GameSchedulerRuntime(
+          worker,
+          reconcileAll,
+          async () => {
+            await queue.close();
+          },
+          60_000,
+          runState,
+        );
       },
     },
   ],
   exports: [GAME_SCHEDULER_WORKER],
 })
 export class GameSchedulerModule {}
-
-const redisConnection = (redisUrl: string) => {
-  const redis = new URL(redisUrl);
-  return {
-    host: redis.hostname,
-    port: Number(redis.port || 6379),
-    password: redis.password || undefined,
-  };
-};
 
 const deserializeJob = (value: unknown): RequiredJob => {
   if (typeof value !== 'object' || value === null) {

@@ -1,5 +1,3 @@
-BEGIN;
-
 CREATE TABLE IF NOT EXISTS game_creation_drafts (
   group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
   actor_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -14,9 +12,3 @@ CREATE TABLE IF NOT EXISTS guest_registration_drafts (
   expires_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-
-INSERT INTO volley_schema_migrations (name)
-VALUES ('0005_game_creation_drafts')
-ON CONFLICT (name) DO NOTHING;
-
-COMMIT;

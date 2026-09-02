@@ -45,7 +45,10 @@ describe('foundation migration', () => {
     expect(await applicationTables(pool)).toEqual(firstTables);
     expect(await appliedFoundationMigration(pool)).toEqual(firstMigration);
     expect(firstTables).toEqual([
+      'attendance_entries',
+      'attendance_snapshots',
       'audit_events',
+      'charge_status_events',
       'game_creation_drafts',
       'game_templates',
       'games',
@@ -54,8 +57,14 @@ describe('foundation migration', () => {
       'guest_registration_drafts',
       'notification_deliveries',
       'outbox_events',
+      'payment_drafts',
+      'payment_input_sessions',
+      'payment_reminder_deliveries',
+      'payment_reminder_requests',
       'registrations',
       'scheduled_jobs',
+      'settlement_charges',
+      'settlements',
       'users',
       'volley_schema_migrations',
     ]);
