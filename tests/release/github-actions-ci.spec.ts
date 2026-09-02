@@ -66,7 +66,11 @@ describe('GitHub Actions CI contract', () => {
     expect(quality).toBeDefined();
     expect(test).toBeDefined();
     expect(containerBuild).toBeDefined();
-    if (quality === undefined || test === undefined || containerBuild === undefined) {
+    if (
+      quality === undefined ||
+      test === undefined ||
+      containerBuild === undefined
+    ) {
       throw new Error('required CI jobs are missing');
     }
 
