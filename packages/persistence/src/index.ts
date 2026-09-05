@@ -36,6 +36,11 @@ export {
 } from './repositories/game-creation-draft.repository.js';
 export { TemplateRepository } from './repositories/template.repository.js';
 export {
+  TemplateWizardDraftRepository,
+  type StoredTemplateWizardDraft,
+  type StoredTemplateWizardStep,
+} from './repositories/template-wizard-draft.repository.js';
+export {
   GuestRegistrationDraftRepository,
   type StoredGuestRegistrationDraft,
 } from './repositories/guest-registration-draft.repository.js';
