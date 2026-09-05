@@ -16,6 +16,8 @@ import {
   type StartErrorReason,
 } from './group-onboarding.presenter.js';
 import type { GuestFlowHandlers } from './registrations/guest-flow.handlers.js';
+import type { OrganizerMenuHandlers } from './organizer/main-menu.handlers.js';
+import type { OrganizerView } from './organizer/main-menu.presenter.js';
 import { TelegramMessageNotEditableError } from './messages/game-message-updater.js';
 import { StartTokenVerificationError } from './signed-start-token.js';
 
@@ -36,6 +38,7 @@ export const registerGroupOnboardingHandlers = (
   bot: Bot<Context>,
   handlers: GroupOnboardingHandlers,
   guestHandlers?: GuestFlowHandlers,
+  bareStart?: Pick<OrganizerMenuHandlers, 'openHome'>,
 ): Bot<Context> => {
   bot.on('my_chat_member', async (context) => {
     await handlers.handleMyChatMember({
@@ -50,6 +53,14 @@ export const registerGroupOnboardingHandlers = (
       throw new Error('Message sender is required');
     const token = context.match ?? '';
     if (token.length === 0) {
+      if (context.chat.type === 'private' && bareStart !== undefined) {
+        await replyOrganizerView(
+          context,
+          await bareStart.openHome(toTelegramId(context.from.id)),
+        );
+        return;
+      }
+      if (context.chat.type !== 'private') return;
       await context.reply(renderStartError('BARE_START').text);
       return;
     }
@@ -174,6 +185,23 @@ const acknowledgeCallbackBestEffort = async (
   } catch {
     // Preserve the original operational error if Telegram cannot be reached.
   }
+};
+
+const replyOrganizerView = async (
+  context: Context,
+  view: OrganizerView,
+): Promise<void> => {
+  await context.reply(view.text, {
+    parse_mode: view.parseMode,
+    reply_markup: {
+      inline_keyboard: view.keyboard.map((row) =>
+        row.map((button) => ({
+          text: button.text,
+          callback_data: button.callbackData,
+        })),
+      ),
+    },
+  });
 };
 
 export const createLazyTelegramUpdateHandler = (

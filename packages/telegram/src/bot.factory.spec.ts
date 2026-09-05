@@ -27,22 +27,40 @@ describe('GrammyTelegramGateway', () => {
 });
 
 describe('group onboarding grammY adapter', () => {
-  it('answers bare start in Russian without invoking token verification', async () => {
-    const harness = createBotHarness();
+  it('opens the private organizer home for bare start without invoking token verification', async () => {
+    const harness = createBotHarness({ includeBareStart: true });
 
     await expect(
       harness.updates.handleUpdate(startUpdate(1, '')),
     ).resolves.toBeUndefined();
 
     expect(harness.handlers.handleStart).not.toHaveBeenCalled();
+    expect(harness.bareStart.openHome).toHaveBeenCalledWith(asTelegramId('42'));
     expect(harness.calls).toContainEqual(
       expect.objectContaining({
         method: 'sendMessage',
-        payload: expect.objectContaining({
-          text: expect.stringContaining('ссылку'),
-        }),
+        payload: expect.objectContaining({ text: 'organizer:home' }),
       }),
     );
+  });
+
+  it('keeps signed start routing onboarding first and then guest handling', async () => {
+    const harness = createBotHarness({ onboardingHandled: false });
+
+    await harness.updates.handleUpdate(startUpdate(2, 'guest-token'));
+
+    expect(harness.handlers.handleStart).toHaveBeenCalledBefore(
+      harness.guestHandlers.handleStart,
+    );
+    expect(harness.guestHandlers.handleStart).toHaveBeenCalledOnce();
+  });
+
+  it('does not render organizer controls for bare start in a group', async () => {
+    const harness = createBotHarness({ includeBareStart: true });
+
+    await harness.updates.handleUpdate(groupStartUpdate(3));
+
+    expect(harness.bareStart.openHome).not.toHaveBeenCalled();
   });
 
   it('maps expected start failures to a successful update', async () => {
@@ -148,6 +166,7 @@ describe('group onboarding grammY adapter', () => {
 const createBotHarness = (options?: {
   onboardingHandled?: boolean;
   includeGuestHandlers?: boolean;
+  includeBareStart?: boolean;
 }) => {
   const calls: Array<{ method: string; payload: Record<string, unknown> }> = [];
   const handlers = {
@@ -158,6 +177,13 @@ const createBotHarness = (options?: {
   const guestHandlers = {
     handleStart: vi.fn().mockResolvedValue(undefined),
     handleName: vi.fn().mockResolvedValue(false),
+  };
+  const bareStart = {
+    openHome: vi.fn().mockResolvedValue({
+      text: 'organizer:home',
+      parseMode: 'HTML',
+      keyboard: [],
+    }),
   };
   const bot = createTelegramBot('123456:abcdefghijklmnopqrstuvwxyz', botInfo);
   bot.api.config.use(async (_previous, method, payload) => {
@@ -180,11 +206,13 @@ const createBotHarness = (options?: {
     options?.includeGuestHandlers === false
       ? undefined
       : (guestHandlers as never),
+    options?.includeBareStart === true ? (bareStart as never) : undefined,
   );
   return {
     calls,
     handlers,
     guestHandlers,
+    bareStart,
     updates: createLazyTelegramUpdateHandler(bot),
   };
 };
@@ -197,6 +225,18 @@ const startUpdate = (updateId: number, token: string): Update => ({
     chat: { id: 42, type: 'private', first_name: 'Admin' },
     from: { id: 42, is_bot: false, first_name: 'Admin' },
     text: token.length === 0 ? '/start' : `/start ${token}`,
+    entities: [{ offset: 0, length: 6, type: 'bot_command' }],
+  },
+});
+
+const groupStartUpdate = (updateId: number): Update => ({
+  update_id: updateId,
+  message: {
+    message_id: updateId,
+    date: 1_788_134_400,
+    chat: { id: -1001, type: 'supergroup', title: 'Group' },
+    from: { id: 42, is_bot: false, first_name: 'Admin' },
+    text: '/start',
     entities: [{ offset: 0, length: 6, type: 'bot_command' }],
   },
 });
