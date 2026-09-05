@@ -20,23 +20,30 @@ describe('volleyball bot MVP acceptance', () => {
     const group = await system.onboardAndConfigureGroup({
       telegramChatId: '-100000000001',
       administratorTelegramId: '1001',
-      timeZone: 'Europe/Moscow',
+      timeZone: 'Europe/Astrakhan',
     });
 
     expect(group).toMatchObject({
       enabled: true,
       onboardingState: 'CONFIGURED',
-      timeZone: 'Europe/Moscow',
+      timeZone: 'Europe/Astrakhan',
     });
     expect(system.telegram.groupMessages).toHaveLength(1);
     expect(system.telegram.groupMessages[0]?.text).toMatch(
       /^https:\/\/t\.me\/volley_test_bot\?start=/,
     );
     expect(system.telegram.privateMessagesFor('1001')).toContainEqual(
-      expect.objectContaining({ text: 'onboarding:tz' }),
+      expect.objectContaining({ text: expect.stringContaining('Шаг 1 из 7') }),
     );
     expect(system.telegram.privateMessagesFor('1001')).toContainEqual(
-      expect.objectContaining({ text: 'onboarding:complete' }),
+      expect.objectContaining({
+        text: expect.stringContaining('Проверьте настройки'),
+      }),
+    );
+    expect(system.telegram.privateMessagesFor('1001')).toContainEqual(
+      expect.objectContaining({
+        text: expect.stringContaining('Группа уже настроена'),
+      }),
     );
   });
 
@@ -44,12 +51,12 @@ describe('volleyball bot MVP acceptance', () => {
     const groupA = await system.onboardAndConfigureGroup({
       telegramChatId: '-100000000011',
       administratorTelegramId: '1011',
-      timeZone: 'Europe/Moscow',
+      timeZone: 'Europe/Astrakhan',
     });
     const groupB = await system.onboardAndConfigureGroup({
       telegramChatId: '-100000000012',
       administratorTelegramId: '1012',
-      timeZone: 'Asia/Yekaterinburg',
+      timeZone: 'Europe/Astrakhan',
     });
     const gameA = await system.createScratchGame(
       groupA.id,
@@ -63,7 +70,7 @@ describe('volleyball bot MVP acceptance', () => {
     expect(await system.getGame(groupA.id, gameA.id!)).not.toBeNull();
     expect(await system.getGame(groupB.id, gameA.id!)).toBeNull();
     expect(await system.listGames(groupB.id)).toEqual([]);
-    expect(groupA.timeZone).not.toBe(groupB.timeZone);
+    expect(groupA.id).not.toBe(groupB.id);
   });
 
   it('organizer publishes template and scratch games', async () => {

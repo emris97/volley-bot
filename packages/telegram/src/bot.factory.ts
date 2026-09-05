@@ -64,9 +64,8 @@ export const registerGroupOnboardingHandlers = (
     } catch (error) {
       const reason = startErrorReason(error);
       if (reason === undefined) throw error;
-      logger.warn({
-        event: 'telegram_start_rejected',
-        errorCategory: reason,
+      logger.warn('Telegram onboarding input rejected', {
+        errorCategory: onboardingErrorCategory(reason),
       });
       await context.reply(renderStartError(reason).text);
       return;
@@ -117,9 +116,8 @@ export const registerGroupOnboardingHandlers = (
         await acknowledgeCallbackBestEffort(context);
         throw error;
       }
-      logger.warn({
-        event: 'telegram_callback_rejected',
-        errorCategory,
+      logger.warn('Telegram onboarding input rejected', {
+        errorCategory: `onboarding.${errorCategory.toLowerCase()}`,
       });
       await context.answerCallbackQuery({
         text: callbackErrorText(errorCategory),
@@ -143,6 +141,9 @@ const startErrorReason = (error: unknown): StartErrorReason | undefined => {
   }
   return undefined;
 };
+
+const onboardingErrorCategory = (reason: StartErrorReason): string =>
+  `onboarding.${reason.toLowerCase()}`;
 
 type CallbackErrorCategory =
   'INVALID_CALLBACK' | 'INVALID_LINK' | 'FOREIGN_LINK' | 'ADMIN_REQUIRED';

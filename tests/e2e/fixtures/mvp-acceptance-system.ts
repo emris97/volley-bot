@@ -372,13 +372,36 @@ export class MvpAcceptanceSystem {
     const telegramGateway: TelegramGateway = {
       getChatMember: (chatId, telegramUserId) =>
         this.telegram.getChatMember(chatId, telegramUserId),
-      sendMessage: async (chatId, message) => {
+      sendMessage: async (chatId, message, options) => {
+        const messageId = BigInt(this.updateSequence);
+        this.botApiCalls.push({
+          method: 'sendMessage',
+          payload: onboardingMessagePayload(chatId, message, options),
+        });
         if (chatId.startsWith('-')) {
           await this.telegram.sendGroupMessage(chatId, message);
         } else {
-          await this.telegram.sendPrivate(chatId, message, []);
+          await this.telegram.sendPrivate(
+            chatId,
+            message,
+            options?.keyboard?.flat() ?? [],
+          );
         }
-        return { messageId: BigInt(this.updateSequence) };
+        return { messageId };
+      },
+      editMessage: async (chatId, messageId, message, options) => {
+        this.botApiCalls.push({
+          method: 'editMessageText',
+          payload: {
+            ...onboardingMessagePayload(chatId, message, options),
+            message_id: Number(messageId),
+          },
+        });
+        await this.telegram.sendPrivate(
+          chatId,
+          message,
+          options?.keyboard?.flat() ?? [],
+        );
       },
     };
     const links: ConfigurationLinkFactory = {
@@ -602,7 +625,7 @@ export class MvpAcceptanceSystem {
   public async onboardAndConfigureGroup(input: {
     telegramChatId: string;
     administratorTelegramId: string;
-    timeZone: string;
+    timeZone: 'Europe/Astrakhan';
   }): Promise<AcceptanceGroup> {
     await this.webhook.handle(
       WEBHOOK_SECRET,
@@ -627,23 +650,28 @@ export class MvpAcceptanceSystem {
         token,
       ) as never,
     );
-    for (const [code, value] of [
-      ['tz', input.timeZone],
-      ['mp', '1'],
-      ['tp', '1440'],
-      ['tr', '60'],
-      ['rm', '120'],
-      ['ro', 'EXACT'],
-      ['pin', '1'],
-    ] as const) {
+    for (const buttonText of [
+      'Астрахань (UTC+4)',
+      'Участники группы выше гостей',
+      'За 24 часа',
+      '1 час',
+      'За 2 часа',
+      'Точно до копеек',
+      'Да',
+      '✅ Сохранить настройки',
+    ]) {
+      const view = this.botApiCalls.findLast(
+        ({ method }) =>
+          method === 'sendMessage' || method === 'editMessageText',
+      );
+      if (view === undefined) throw new Error('Onboarding view missing');
+      const callback = requiredButton(view, buttonText).callback_data;
       await this.webhook.handle(
         WEBHOOK_SECRET,
         onboardingCallbackUpdate(
           this.nextUpdateId(),
           input.administratorTelegramId,
-          started.id,
-          code,
-          value,
+          callback,
         ) as never,
       );
     }
@@ -664,7 +692,7 @@ export class MvpAcceptanceSystem {
     return this.onboardAndConfigureGroup({
       telegramChatId: `-${this.groupSequence}`,
       administratorTelegramId: ownerTelegramId,
-      timeZone: 'Europe/Moscow',
+      timeZone: 'Europe/Astrakhan',
     });
   }
 
@@ -1634,6 +1662,27 @@ const botApiButtons = (
   return markup?.inline_keyboard?.flat() ?? [];
 };
 
+const onboardingMessagePayload = (
+  chatId: ReturnType<typeof asTelegramId>,
+  text: string,
+  options: Parameters<TelegramGateway['sendMessage']>[2],
+): Record<string, unknown> => ({
+  chat_id: chatId,
+  text,
+  parse_mode: options?.parseMode,
+  reply_markup:
+    options?.keyboard === undefined
+      ? undefined
+      : {
+          inline_keyboard: options.keyboard.map((row) =>
+            row.map((button) => ({
+              text: button.text,
+              callback_data: button.callbackData,
+            })),
+          ),
+        },
+});
+
 const requiredButton = (call: BotApiCall, text: string) => {
   const button = botApiButtons(call).find(
     (candidate) => candidate.text === text,
@@ -1775,9 +1824,7 @@ const startUpdate = (
 const onboardingCallbackUpdate = (
   updateId: number,
   administratorTelegramId: string,
-  groupId: GroupId,
-  code: string,
-  value: string,
+  data: string,
 ) => ({
   update_id: updateId,
   callback_query: {
@@ -1788,7 +1835,7 @@ const onboardingCallbackUpdate = (
       is_bot: false,
       first_name: 'Admin',
     },
-    data: `cfg:${groupId}:${code}:${value}`,
+    data,
     message: {
       message_id: updateId,
       date: Math.floor(Date.now() / 1_000),

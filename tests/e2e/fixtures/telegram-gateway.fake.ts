@@ -4,6 +4,7 @@ import type { TelegramId } from '@volley/domain';
 export interface FakePrivateMessage {
   text: string;
   buttons: string[];
+  buttonCallbacks: Array<{ text: string; callbackData: string }>;
 }
 
 export class FakeTelegramGateway {
@@ -28,6 +29,9 @@ export class FakeTelegramGateway {
       text,
       buttons: buttons.map((button) =>
         typeof button === 'string' ? button : button.text,
+      ),
+      buttonCallbacks: buttons.flatMap((button) =>
+        typeof button === 'string' ? [] : [button],
       ),
     });
     this.privateMessages.set(telegramUserId, messages);
