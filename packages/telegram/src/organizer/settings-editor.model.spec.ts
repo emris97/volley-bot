@@ -27,6 +27,7 @@ describe('template settings editor model', () => {
       mode: 'EDIT',
       step: 'PREVIEW',
       draftId: '018f6ba062d27bd18f1312e0c8424611',
+      viewRevision: 7,
       templateId: asGameTemplateId('018f6ba0-62d2-7bd1-8f13-12e0c8424610'),
       expectedRevision: 2,
       snapshot: {
@@ -53,6 +54,7 @@ describe('template settings editor model', () => {
       mode: 'CREATE',
       step: 'NAME',
       draftId: '018f6ba062d27bd18f1312e0c8424611',
+      viewRevision: 0,
       snapshot: {},
       previewed: false,
     };
@@ -62,5 +64,18 @@ describe('template settings editor model', () => {
     expect(() => parseTemplateWizardDraft({ ...valid, version: 2 })).toThrow(
       /unsupported draft version/i,
     );
+  });
+
+  it('requires a persisted view revision in version-1 drafts', () => {
+    expect(() =>
+      parseTemplateWizardDraft({
+        version: 1,
+        mode: 'CREATE',
+        step: 'NAME',
+        draftId: '018f6ba062d27bd18f1312e0c8424611',
+        snapshot: {},
+        previewed: false,
+      }),
+    ).toThrow(/view revision/i);
   });
 });

@@ -111,6 +111,7 @@ export class TemplateWizardHandlers {
       mode: 'CREATE',
       step: 'NAME',
       draftId: randomUUID().replaceAll('-', ''),
+      viewRevision: 0,
       snapshot: {},
       previewed: false,
     };
@@ -136,6 +137,7 @@ export class TemplateWizardHandlers {
       mode: 'EDIT',
       step: 'NAME',
       draftId: randomUUID().replaceAll('-', ''),
+      viewRevision: 0,
       templateId,
       expectedRevision: template.revision,
       snapshot: snapshotOf(template),
@@ -163,6 +165,7 @@ export class TemplateWizardHandlers {
       mode: 'COPY',
       step: 'NAME',
       draftId: randomUUID().replaceAll('-', ''),
+      viewRevision: 0,
       templateId,
       snapshot: { ...snapshotOf(template), name: `${template.name} — копия` },
       previewed: false,
@@ -230,21 +233,30 @@ export class TemplateWizardHandlers {
         draft === null ||
         control === null ||
         control.draftId !== draft.draftId ||
-        control.step !== draft.step
+        control.step !== draft.step ||
+        control.viewRevision !== draft.viewRevision
       ) {
         return this.currentOrList(actor, staleControlText);
       }
       if (callback.action === 'back') {
-        const updated = {
+        const updated = nextDraftView({
           ...draft,
           step: previousTemplateStep(draft.step),
           previewed: false,
-        };
+        });
         await this.save(actor, updated);
         return renderTemplateWizard(updated);
       }
-      if (callback.action === 'cancel') return renderCancelConfirmation(draft);
-      if (callback.action === 'resume') return renderTemplateWizard(draft);
+      if (callback.action === 'cancel') {
+        const updated = nextDraftView(draft);
+        await this.save(actor, updated);
+        return renderCancelConfirmation(updated);
+      }
+      if (callback.action === 'resume') {
+        const updated = nextDraftView(draft);
+        await this.save(actor, updated);
+        return renderTemplateWizard(updated);
+      }
       if (callback.action === 'cancel-confirm') {
         await this.drafts.clear(actor.groupId, actor.userId);
         return this.listFor(actor, false, undefined, 'Изменения отменены.');
@@ -321,12 +333,12 @@ export class TemplateWizardHandlers {
     changes: Partial<GameTemplateSnapshot>,
   ): Promise<OrganizerView> {
     const step = nextTemplateStep(draft.step);
-    const updated: TemplateWizardDraft = {
+    const updated = nextDraftView({
       ...draft,
       step,
       snapshot: { ...draft.snapshot, ...changes },
       previewed: step === 'PREVIEW',
-    };
+    });
     await this.save(actor, updated);
     return renderTemplateWizard(updated);
   }
@@ -495,6 +507,12 @@ const staticActions = new Set([
   'restore',
 ]);
 const staleControlText = 'Эта кнопка устарела. Продолжите с текущего шага.';
+
+const nextDraftView = (draft: TemplateWizardDraft): TemplateWizardDraft => {
+  if (draft.viewRevision >= 2_147_483_647)
+    throw new Error('Template wizard view revision exhausted');
+  return { ...draft, viewRevision: draft.viewRevision + 1 };
+};
 
 const parseStepText = (
   step: TemplateWizardDraft['step'],

@@ -48,6 +48,7 @@ it('upserts and strictly revives a bigint draft through a fresh instance', async
     mode: 'EDIT',
     step: 'PREVIEW',
     draftId: '018f6ba062d27bd18f1312e0c8424611',
+    viewRevision: 7,
     templateId: asGameTemplateId('018f6ba0-62d2-7bd1-8f13-12e0c8424610'),
     expectedRevision: 3,
     snapshot: { name: 'Среда', defaultTotalCostMinor: 125050n },
@@ -58,6 +59,7 @@ it('upserts and strictly revives a bigint draft through a fresh instance', async
     mode: 'EDIT',
     step: 'CAPACITY',
     draftId: '018f6ba062d27bd18f1312e0c8424611',
+    viewRevision: 8,
     templateId: asGameTemplateId('018f6ba0-62d2-7bd1-8f13-12e0c8424610'),
     expectedRevision: 3,
     snapshot: { name: 'Среда', defaultTotalCostMinor: 130000n },
@@ -68,6 +70,7 @@ it('upserts and strictly revives a bigint draft through a fresh instance', async
   expect(await restarted.load(groupId, actorUserId)).toMatchObject({
     mode: 'EDIT',
     step: 'CAPACITY',
+    viewRevision: 8,
     expectedRevision: 3,
     snapshot: { name: 'Среда', defaultTotalCostMinor: 130000n },
     previewed: false,
@@ -83,6 +86,7 @@ it('clears only the requested actor within the requested tenant', async () => {
     mode: 'CREATE' as const,
     step: 'NAME' as const,
     draftId: '018f6ba062d27bd18f1312e0c8424611',
+    viewRevision: 0,
     snapshot: {},
     previewed: false,
   };
@@ -135,6 +139,7 @@ it('rejects an array where the persisted snapshot must be an object', async () =
         mode: 'CREATE',
         step: 'NAME',
         draftId: '018f6ba062d27bd18f1312e0c8424611',
+        viewRevision: 0,
         snapshot: [],
         previewed: false,
       },
@@ -144,6 +149,30 @@ it('rejects an array where the persisted snapshot must be an object', async () =
 
   await expect(repository.load(groupId, actorUserId)).rejects.toThrow(
     /invalid draft snapshot/i,
+  );
+});
+
+it('rejects a version-1 draft without a persisted view revision', async () => {
+  const { groupId, actorUserId } = await identities('-5107', '517');
+  await pool.query(
+    'INSERT INTO template_wizard_drafts (group_id, actor_user_id, data) VALUES ($1, $2, $3)',
+    [
+      groupId,
+      actorUserId,
+      {
+        version: 1,
+        mode: 'CREATE',
+        step: 'NAME',
+        draftId: '018f6ba062d27bd18f1312e0c8424611',
+        snapshot: {},
+        previewed: false,
+      },
+    ],
+  );
+  const repository = new TemplateWizardDraftRepository(createDatabase(pool));
+
+  await expect(repository.load(groupId, actorUserId)).rejects.toThrow(
+    /view revision/i,
   );
 });
 

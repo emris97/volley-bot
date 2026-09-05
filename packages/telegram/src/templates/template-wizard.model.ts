@@ -17,6 +17,7 @@ export interface TemplateWizardDraft {
   mode: TemplateWizardMode;
   step: TemplateWizardStep;
   draftId: string;
+  viewRevision: number;
   templateId?: GameTemplateId;
   expectedRevision?: number;
   snapshot: Partial<GameTemplateSnapshot>;
@@ -61,19 +62,28 @@ const stepsByCode = new Map(
 );
 
 export const templateDraftControlId = (draft: TemplateWizardDraft): string =>
-  `${draft.draftId}.${stepCodes[draft.step]}`;
+  `${draft.draftId}.${stepCodes[draft.step]}.${draft.viewRevision.toString(36)}`;
 
 export const parseTemplateDraftControlId = (
   value: string | undefined,
-): { draftId: string; step: TemplateWizardStep } | null => {
-  const [draftId, stepCode, ...rest] = value?.split('.') ?? [];
+): {
+  draftId: string;
+  step: TemplateWizardStep;
+  viewRevision: number;
+} | null => {
+  const [draftId, stepCode, revisionCode, ...rest] = value?.split('.') ?? [];
   const step = stepsByCode.get(stepCode ?? '');
+  const viewRevision = Number.parseInt(revisionCode ?? '', 36);
   return rest.length > 0 ||
     draftId === undefined ||
     !/^[0-9a-f]{32}$/i.test(draftId) ||
-    step === undefined
+    step === undefined ||
+    !/^[0-9a-z]+$/.test(revisionCode ?? '') ||
+    !Number.isSafeInteger(viewRevision) ||
+    viewRevision < 0 ||
+    viewRevision > 2_147_483_647
     ? null
-    : { draftId, step };
+    : { draftId, step, viewRevision };
 };
 
 const draftKeys = new Set([
@@ -81,6 +91,7 @@ const draftKeys = new Set([
   'mode',
   'step',
   'draftId',
+  'viewRevision',
   'templateId',
   'expectedRevision',
   'snapshot',
@@ -119,6 +130,13 @@ export const parseTemplateWizardDraft = (
   ) {
     throw new Error('Invalid draft id');
   }
+  if (
+    !Number.isSafeInteger(value.viewRevision) ||
+    Number(value.viewRevision) < 0 ||
+    Number(value.viewRevision) > 2_147_483_647
+  ) {
+    throw new Error('Invalid draft view revision');
+  }
   if (typeof value.previewed !== 'boolean') {
     throw new Error('Invalid draft preview state');
   }
@@ -148,6 +166,7 @@ export const parseTemplateWizardDraft = (
     mode: value.mode,
     step: value.step,
     draftId: value.draftId,
+    viewRevision: value.viewRevision as number,
     ...(value.templateId === undefined
       ? {}
       : { templateId: asGameTemplateId(value.templateId as string) }),

@@ -198,7 +198,7 @@ describe('template wizard Telegram flow', () => {
         .filter((data) => data.startsWith('tw:'))
         .every(
           (data) =>
-            /^tw:v1:[a-z0-9-]+:[0-9a-f]{32}\.[a-z]$/.test(data) &&
+            /^tw:v1:[a-z0-9-]+:[0-9a-f]{32}\.[a-z]\.[0-9a-z]+$/.test(data) &&
             Buffer.byteLength(data, 'utf8') < 64,
         ),
     ).toBe(true);
@@ -216,6 +216,7 @@ describe('template wizard Telegram flow', () => {
         mode: 'CREATE',
         step: 'CAPACITY',
         draftId: '018f6ba062d27bd18f1312e0c8424688',
+        viewRevision: 3,
         snapshot: {
           name: 'Текущий',
           venue: 'Зал',
@@ -233,6 +234,22 @@ describe('template wizard Telegram flow', () => {
       expect(await drafts.load(groupId, actorUserId)).toEqual(currentDraft);
     },
   );
+
+  it('rejects an old cancel confirmation after returning to the same step', async () => {
+    await harness.command('/templates');
+    await harness.click('Создать шаблон');
+    await harness.click('Отмена');
+    const staleCancelConfirmation = harness.dataFor('Да, отменить');
+    await harness.click('Нет');
+
+    await harness.callback(staleCancelConfirmation);
+
+    expect(harness.lastMessage()).toContain('кнопка устарела');
+    expect(await drafts.load(groupId, actorUserId)).toMatchObject({
+      mode: 'CREATE',
+      step: 'NAME',
+    });
+  });
 
   it('passes idle text onward when no organizer context can be resolved', async () => {
     harness = createHarness(drafts, templates, {
@@ -263,6 +280,7 @@ describe('template wizard Telegram flow', () => {
       mode: 'CREATE',
       step: 'VENUE',
       draftId: '018f6ba062d27bd18f1312e0c8424699',
+      viewRevision: 2,
       snapshot: { name: 'Не удалять' },
       previewed: false,
     };

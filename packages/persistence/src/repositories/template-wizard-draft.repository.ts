@@ -31,6 +31,7 @@ export interface StoredTemplateWizardDraft {
   mode: 'CREATE' | 'EDIT' | 'COPY';
   step: StoredTemplateWizardStep;
   draftId: string;
+  viewRevision: number;
   templateId?: GameTemplateId;
   expectedRevision?: number;
   snapshot: Partial<GameTemplateSnapshot>;
@@ -92,6 +93,7 @@ const draftKeys = new Set([
   'mode',
   'step',
   'draftId',
+  'viewRevision',
   'templateId',
   'expectedRevision',
   'snapshot',
@@ -146,6 +148,12 @@ const parseStoredDraft = (
     !/^[0-9a-f]{32}$/i.test(value.draftId)
   )
     throw new Error('Invalid draft id');
+  if (
+    !Number.isSafeInteger(value.viewRevision) ||
+    Number(value.viewRevision) < 0 ||
+    Number(value.viewRevision) > 2_147_483_647
+  )
+    throw new Error('Invalid draft view revision');
   if (typeof value.previewed !== 'boolean')
     throw new Error('Invalid preview state');
   if (
@@ -179,6 +187,7 @@ const parseStoredDraft = (
     mode: value.mode as StoredTemplateWizardDraft['mode'],
     step: value.step as StoredTemplateWizardStep,
     draftId: value.draftId,
+    viewRevision: value.viewRevision as number,
     ...(value.templateId === undefined
       ? {}
       : { templateId: asGameTemplateId(value.templateId as string) }),
