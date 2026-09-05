@@ -207,6 +207,7 @@ const insertGame = async (
     currency: 'RUB',
     roundingMode: 'EXACT',
     state: 'SCHEDULED',
+    revision: 0,
     scheduleRevision,
     canonicalTelegramMessageId: null,
   };

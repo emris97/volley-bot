@@ -245,6 +245,7 @@ const game = (
   currency: 'RUB',
   roundingMode: 'EXACT',
   state: 'SCHEDULED',
+  revision: 0,
   scheduleRevision: 1,
   canonicalTelegramMessageId: null,
 });

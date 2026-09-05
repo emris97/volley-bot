@@ -89,6 +89,7 @@ describe('GameRepository', () => {
       currency: 'RUB',
       roundingMode: 'EXACT',
       state: 'DRAFT',
+      revision: 0,
       scheduleRevision: 0,
       canonicalTelegramMessageId: null,
     });

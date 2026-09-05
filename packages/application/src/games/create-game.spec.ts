@@ -36,6 +36,8 @@ const template: GameTemplate = {
   defaultTotalCostMinor: null,
   currency: 'RUB',
   roundingMode: 'EXACT',
+  revision: 0,
+  archivedAt: null,
   createdAt: new Date('2026-08-01T00:00:00.000Z'),
   updatedAt: new Date('2026-08-01T00:00:00.000Z'),
 };

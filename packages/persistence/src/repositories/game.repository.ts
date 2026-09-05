@@ -41,6 +41,7 @@ const toGame = (row: typeof games.$inferSelect): Game => ({
   currency: 'RUB',
   roundingMode: row.roundingMode,
   state: row.state,
+  revision: row.revision,
   scheduleRevision: row.scheduleRevision,
   canonicalTelegramMessageId: row.canonicalTelegramMessageId,
 });
@@ -65,6 +66,7 @@ const insertValues = (game: Game) => ({
   currency: game.currency,
   roundingMode: game.roundingMode,
   state: game.state,
+  revision: game.revision,
   scheduleRevision: game.scheduleRevision,
   canonicalTelegramMessageId: game.canonicalTelegramMessageId,
 });

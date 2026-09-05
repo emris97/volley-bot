@@ -62,6 +62,7 @@ export class TestSystem {
       currency: 'RUB',
       roundingMode: 'EXACT',
       state: 'OPEN',
+      revision: 0,
       scheduleRevision: 1,
       canonicalTelegramMessageId: null,
     };

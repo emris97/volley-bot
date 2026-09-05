@@ -44,6 +44,7 @@ it('copies a template snapshot instead of retaining a mutable reference', () => 
   template.capacity = 99;
 
   expect(game.capacity).toBe(14);
+  expect(game.revision).toBe(0);
   expect(game.startsAt).toEqual(new Date('2026-09-02T15:00:00.000Z'));
   expect(game.timeZone).toBe('Europe/Astrakhan');
 });

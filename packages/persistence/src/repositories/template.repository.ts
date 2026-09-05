@@ -28,6 +28,8 @@ const toTemplate = (row: typeof gameTemplates.$inferSelect): GameTemplate => ({
   defaultTotalCostMinor: row.defaultTotalCostMinor,
   currency: 'RUB',
   roundingMode: row.roundingMode,
+  revision: row.revision,
+  archivedAt: row.archivedAt,
   createdAt: row.createdAt,
   updatedAt: row.updatedAt,
 });
