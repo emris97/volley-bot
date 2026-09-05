@@ -4,6 +4,10 @@ export {
   GroupRepository,
   type UpsertGroupFromTelegramInput,
 } from './repositories/group.repository.js';
+export {
+  OrganizerDirectoryRepository,
+  type StoredOrganizerGroup,
+} from './repositories/organizer-directory.repository.js';
 export { GameRepository } from './repositories/game.repository.js';
 export { AttendanceRepository } from './repositories/attendance.repository.js';
 export {

@@ -9,6 +9,7 @@ export {
 export * from './groups/change-group-role.js';
 export * from './groups/configure-group.js';
 export * from './groups/onboard-group.js';
+export * from './groups/resolve-organizer-context.js';
 export * from './attendance/confirm-attendance.js';
 export * from './attendance/ports.js';
 export * from './games/change-game-state.js';
