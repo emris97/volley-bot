@@ -181,14 +181,7 @@ export class TemplateRepository {
     try {
       return await operation();
     } catch (error) {
-      if (
-        typeof error === 'object' &&
-        error !== null &&
-        'code' in error &&
-        'constraint' in error &&
-        error.code === '23505' &&
-        error.constraint === 'game_templates_active_name_unique'
-      ) {
+      if (isActiveNameConflict(error)) {
         throw templateNameConflictError();
       }
       throw error;
@@ -218,4 +211,26 @@ const templateNameConflictError = (): Error => {
   const error = new Error('An active template with this name already exists');
   error.name = 'TemplateNameConflictError';
   return error;
+};
+
+const isActiveNameConflict = (error: unknown): boolean => {
+  let current = error;
+  const seen = new Set<object>();
+  while (typeof current === 'object' && current !== null) {
+    if (seen.has(current)) return false;
+    seen.add(current);
+    const candidate = current as {
+      code?: unknown;
+      constraint?: unknown;
+      cause?: unknown;
+    };
+    if (
+      candidate.code === '23505' &&
+      candidate.constraint === 'game_templates_active_name_unique'
+    ) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+  return false;
 };
