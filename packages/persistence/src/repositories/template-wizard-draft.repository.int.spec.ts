@@ -152,7 +152,7 @@ it('rejects an array where the persisted snapshot must be an object', async () =
   );
 });
 
-it('rejects a version-1 draft without a persisted view revision', async () => {
+it('revives a legacy version-1 draft without a persisted view revision at revision zero', async () => {
   const { groupId, actorUserId } = await identities('-5107', '517');
   await pool.query(
     'INSERT INTO template_wizard_drafts (group_id, actor_user_id, data) VALUES ($1, $2, $3)',
@@ -164,6 +164,31 @@ it('rejects a version-1 draft without a persisted view revision', async () => {
         mode: 'CREATE',
         step: 'NAME',
         draftId: '018f6ba062d27bd18f1312e0c8424611',
+        snapshot: {},
+        previewed: false,
+      },
+    ],
+  );
+  const repository = new TemplateWizardDraftRepository(createDatabase(pool));
+
+  await expect(repository.load(groupId, actorUserId)).resolves.toMatchObject({
+    viewRevision: 0,
+  });
+});
+
+it('rejects a supplied invalid persisted view revision', async () => {
+  const { groupId, actorUserId } = await identities('-5108', '518');
+  await pool.query(
+    'INSERT INTO template_wizard_drafts (group_id, actor_user_id, data) VALUES ($1, $2, $3)',
+    [
+      groupId,
+      actorUserId,
+      {
+        version: 1,
+        mode: 'CREATE',
+        step: 'NAME',
+        draftId: '018f6ba062d27bd18f1312e0c8424611',
+        viewRevision: -1,
         snapshot: {},
         previewed: false,
       },

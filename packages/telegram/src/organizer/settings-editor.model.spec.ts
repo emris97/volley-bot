@@ -66,8 +66,8 @@ describe('template settings editor model', () => {
     );
   });
 
-  it('requires a persisted view revision in version-1 drafts', () => {
-    expect(() =>
+  it('revives a legacy version-1 draft without a view revision at revision zero', () => {
+    expect(
       parseTemplateWizardDraft({
         version: 1,
         mode: 'CREATE',
@@ -76,6 +76,23 @@ describe('template settings editor model', () => {
         snapshot: {},
         previewed: false,
       }),
-    ).toThrow(/view revision/i);
+    ).toMatchObject({ viewRevision: 0 });
   });
+
+  it.each([-1, 1.5, 2_147_483_648, '0', null])(
+    'rejects the supplied invalid view revision %j',
+    (viewRevision) => {
+      expect(() =>
+        parseTemplateWizardDraft({
+          version: 1,
+          mode: 'CREATE',
+          step: 'NAME',
+          draftId: '018f6ba062d27bd18f1312e0c8424611',
+          viewRevision,
+          snapshot: {},
+          previewed: false,
+        }),
+      ).toThrow(/view revision/i);
+    },
+  );
 });

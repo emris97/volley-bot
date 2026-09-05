@@ -130,10 +130,12 @@ export const parseTemplateWizardDraft = (
   ) {
     throw new Error('Invalid draft id');
   }
+  const viewRevision =
+    value.viewRevision === undefined ? 0 : value.viewRevision;
   if (
-    !Number.isSafeInteger(value.viewRevision) ||
-    Number(value.viewRevision) < 0 ||
-    Number(value.viewRevision) > 2_147_483_647
+    !Number.isSafeInteger(viewRevision) ||
+    Number(viewRevision) < 0 ||
+    Number(viewRevision) > 2_147_483_647
   ) {
     throw new Error('Invalid draft view revision');
   }
@@ -166,7 +168,7 @@ export const parseTemplateWizardDraft = (
     mode: value.mode,
     step: value.step,
     draftId: value.draftId,
-    viewRevision: value.viewRevision as number,
+    viewRevision: viewRevision as number,
     ...(value.templateId === undefined
       ? {}
       : { templateId: asGameTemplateId(value.templateId as string) }),
