@@ -54,6 +54,9 @@ describe('CreateGame', () => {
           ? template
           : null,
       insert: async () => template,
+      list: async () => ({ items: [], nextCursor: null }),
+      update: async () => template,
+      setArchived: async () => template,
     };
     const games: GameRepository = {
       insert: async (game) => {
@@ -94,6 +97,9 @@ describe('CreateGame', () => {
       {
         findById: async () => null,
         insert: async () => template,
+        list: async () => ({ items: [], nextCursor: null }),
+        update: async () => template,
+        setArchived: async () => template,
       },
       {
         insert: async (game) => game,
@@ -122,6 +128,9 @@ describe('CreateGame', () => {
       {
         findById: async () => null,
         insert: async () => template,
+        list: async () => ({ items: [], nextCursor: null }),
+        update: async () => template,
+        setArchived: async () => template,
       },
       {
         insert: async (game) => {

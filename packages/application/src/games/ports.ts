@@ -24,6 +24,31 @@ export interface TemplateRepository {
   insert(
     template: GameTemplateSnapshot & { groupId: GroupId },
   ): Promise<GameTemplate>;
+  list(
+    groupId: GroupId,
+    options: {
+      archived: boolean;
+      limit: number;
+      afterId?: GameTemplateId | null;
+    },
+  ): Promise<TemplatePage>;
+  update(input: {
+    groupId: GroupId;
+    templateId: GameTemplateId;
+    expectedRevision: number;
+    snapshot: GameTemplateSnapshot;
+  }): Promise<GameTemplate | null>;
+  setArchived(input: {
+    groupId: GroupId;
+    templateId: GameTemplateId;
+    expectedRevision: number;
+    archived: boolean;
+  }): Promise<GameTemplate | null>;
+}
+
+export interface TemplatePage {
+  items: readonly GameTemplate[];
+  nextCursor: GameTemplateId | null;
 }
 
 export interface LockedGameChanges {
