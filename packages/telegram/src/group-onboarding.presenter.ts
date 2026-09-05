@@ -96,9 +96,11 @@ export const renderWizardView = (
   const code = nextWizardCode(progress);
   if (code === undefined) {
     return {
-      text: ['<b>Проверьте настройки</b>', '', ...summaryLines(toSettings(progress))].join(
-        '\n',
-      ),
+      text: [
+        '<b>Проверьте настройки</b>',
+        '',
+        ...summaryLines(toSettings(progress)),
+      ].join('\n'),
       parseMode: 'HTML',
       keyboard: [
         [
@@ -151,9 +153,7 @@ export const renderStartError = (reason: StartErrorReason): OnboardingView => ({
 const stepIndex = (code: WizardCode): number =>
   ({ tz: 0, mp: 1, tp: 2, tr: 3, rm: 4, ro: 5, pin: 6 })[code];
 
-const toSettings = (
-  progress: WizardProgress,
-): ConfiguredGroupSettings => {
+const toSettings = (progress: WizardProgress): ConfiguredGroupSettings => {
   const complete = progress as CompleteWizardProgress;
   return {
     timeZone: complete.tz,
@@ -182,9 +182,14 @@ const timeZoneLabel = (value: string): string =>
   value === 'Europe/Astrakhan' ? 'Астрахань (UTC+4)' : escapeHtml(value);
 
 const beforeLabel = (minutes: number): string =>
-  ({ 30: 'за 30 минут', 60: 'за 1 час', 120: 'за 2 часа', 360: 'за 6 часов', 720: 'за 12 часов', 1440: 'за 24 часа' })[
-    minutes
-  ] ?? `за ${minutes} мин.`;
+  ({
+    30: 'за 30 минут',
+    60: 'за 1 час',
+    120: 'за 2 часа',
+    360: 'за 6 часов',
+    720: 'за 12 часов',
+    1440: 'за 24 часа',
+  })[minutes] ?? `за ${minutes} мин.`;
 
 const durationLabel = (minutes: number): string =>
   ({ 30: '30 минут', 60: '1 час', 120: '2 часа' })[minutes] ??
@@ -193,9 +198,12 @@ const durationLabel = (minutes: number): string =>
 const roundingLabel = (
   value: ConfiguredGroupSettings['roundingMode'],
 ): string =>
-  ({ EXACT: 'Точно до копеек', UP_1: 'Вверх до 1 ₽', UP_10: 'Вверх до 10 ₽', UP_50: 'Вверх до 50 ₽' })[
-    value
-  ];
+  ({
+    EXACT: 'Точно до копеек',
+    UP_1: 'Вверх до 1 ₽',
+    UP_10: 'Вверх до 10 ₽',
+    UP_50: 'Вверх до 50 ₽',
+  })[value];
 
 const escapeHtml = (value: string): string =>
   value

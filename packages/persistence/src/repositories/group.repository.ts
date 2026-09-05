@@ -312,7 +312,8 @@ export class GroupRepository {
         tentativeResponseMinutes: row.tentativeResponseMinutes,
         reminderMinutesBefore: row.reminderMinutesBefore,
         currency: row.currency,
-        roundingMode: row.roundingMode as GroupOnboardingSnapshot['settings']['roundingMode'],
+        roundingMode:
+          row.roundingMode as GroupOnboardingSnapshot['settings']['roundingMode'],
         pinGameMessages: row.pinGameMessages,
       },
     };

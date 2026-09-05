@@ -29,10 +29,7 @@ export type OnboardingCallback =
   | { kind: 'RESET'; groupId: GroupId };
 
 export type OnboardingInputErrorCode =
-  | 'INVALID_CALLBACK'
-  | 'INVALID_LINK'
-  | 'FOREIGN_LINK'
-  | 'ADMIN_REQUIRED';
+  'INVALID_CALLBACK' | 'INVALID_LINK' | 'FOREIGN_LINK' | 'ADMIN_REQUIRED';
 
 export class OnboardingInputError extends Error {
   public constructor(public readonly code: OnboardingInputErrorCode) {
