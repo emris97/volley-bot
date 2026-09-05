@@ -209,7 +209,7 @@ describe('group onboarding webhook', () => {
     }
   });
 
-  it('disables and reactivates the same group record with bot membership', async () => {
+  it('disables and restarts the same unfinished group with bot membership', async () => {
     createHarness();
     const existing = await groups.upsertFromTelegram({
       telegramChatId: groupChatId,
@@ -225,8 +225,11 @@ describe('group onboarding webhook', () => {
     expect(await groups.findByTelegramChatId(groupChatId)).toMatchObject({
       id: existing.id,
       enabled: true,
-      onboardingState: 'PENDING',
+      onboardingState: 'CONFIGURING',
     });
+    expect(messages.at(-1)?.message).toContain(
+      'https://t.me/volley_test_bot?start=',
+    );
   });
 
   const addedToGroupUpdate = (): Update => membershipUpdate('member');
