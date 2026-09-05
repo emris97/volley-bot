@@ -157,9 +157,10 @@ main menu contains:
 `/templates` opens template management, `/settings` opens a summary of current
 group defaults, and `/help` explains the organizer and participant flows.
 
-Lists are bounded and paginated. Upcoming games are ordered by ascending start
-time. Historical and cancelled games are ordered by descending start time.
-Each row opens a private management card rather than exposing an identifier.
+Lists contain eight games per page. Upcoming games are ordered by ascending
+start time. Historical and cancelled games are ordered by descending start
+time. Each row opens a private management card rather than exposing an
+identifier.
 
 ## 8. Template Management
 
@@ -251,6 +252,9 @@ template do not change the preview or published game.
   action stores `null`.
 - Opening, closing, confirmation, and reminder times must preserve the existing
   database time-order constraints.
+- When a closing time is configured, it must still be in the future at
+  publication time; the organizer must adjust an already elapsed window before
+  publishing.
 - Invalid text leaves the user on the same step and shows a Russian correction
   example.
 
@@ -265,7 +269,11 @@ game, chooses `OPEN` when `registrationOpensAt <= now` and otherwise
 The existing durable outbox and worker publish or refresh the canonical group
 card and reconcile scheduled jobs. Telegram is not called from inside the
 database transaction. Retrying after a timeout cannot create a second game or
-second canonical card.
+start a concurrent second card send. Because Telegram `sendMessage` has no
+caller-supplied idempotency key, a process crash after Telegram accepts the
+message but before its ID is persisted can still leave an orphan duplicate;
+the next successful refresh adopts one canonical card and logs the recovery
+case for operator cleanup.
 
 When `pinGameMessages` is enabled, the worker attempts to pin the card. A pin
 failure does not roll back publication; it is recorded and shown as a warning
@@ -358,8 +366,10 @@ separate group message. Existing tentative, reminder, waitlist-promotion, and
 payment notification behavior remains unchanged.
 
 Every notification delivery has a deterministic identity derived from its
-source outbox event and recipient. Retries cannot send the same logical notice
-twice after successful persistence of delivery state.
+source outbox event and recipient. Claims prevent concurrent duplicates and a
+persisted success prevents later retries. As with the existing notification
+flow, delivery is at-least-once across the unavoidable crash window between
+Telegram accepting a message and PostgreSQL recording success.
 
 ## 13. Group Settings and Help
 
@@ -387,6 +397,11 @@ Backward-compatible migrations add:
 - a case-folded partial unique index for active template names per group;
 - `games.revision` for optimistic concurrency independent of
   `schedule_revision`;
+- nullable `games.canonical_pin_failed_at`, cleared after a successful pin, so
+  the private management card can surface a non-blocking pin warning;
+- `organizer_preferences`, keyed by `user_id`, with nullable
+  `selected_group_id ON DELETE SET NULL` for the convenience selection used by
+  private menus;
 - `template_wizard_drafts`, keyed by `(group_id, actor_user_id)`, with JSON data
   and `updated_at`.
 
@@ -496,7 +511,8 @@ The feature is complete when:
 - the canonical card always reflects current lifecycle and registration state;
 - every lifecycle action through completion is available only when valid;
 - attendance and payment flows are reachable from the completed game menu;
-- material edits and cancellation notify registered participants exactly once;
+- material edits and cancellation use deterministic, leased delivery that
+  deduplicates successful and concurrent attempts;
 - loss of Telegram administrator rights or cross-group identifier tampering is
   denied;
 - expected user mistakes do not return webhook HTTP 500;
