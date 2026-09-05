@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+printf '%s\n' "${SSH_ORIGINAL_COMMAND:-}" |
+  sudo -n /usr/local/sbin/deploy-volley-bot --stdin
