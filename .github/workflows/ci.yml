@@ -5,13 +5,14 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   quality:
@@ -90,3 +91,35 @@ jobs:
 
       - name: Build production images
         run: docker compose --env-file .env.compose.example -f compose.yaml build api worker
+
+  deploy-production:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs:
+      - container-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    concurrency:
+      group: volley-bot-production
+      cancel-in-progress: false
+    steps:
+      - name: Configure restricted SSH identity
+        env:
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_HOST_KEY: ${{ secrets.PRODUCTION_HOST_KEY }}
+        run: |
+          install -m 0700 -d "$HOME/.ssh"
+          printf '%s\n' "$PRODUCTION_SSH_KEY" >"$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$PRODUCTION_HOST_KEY" >"$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Deploy tested commit
+        env:
+          PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ secrets.PRODUCTION_USER }}
+        run: |
+          ssh -i "$HOME/.ssh/id_ed25519" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "$PRODUCTION_USER@$PRODUCTION_HOST" "deploy ${GITHUB_SHA}"
