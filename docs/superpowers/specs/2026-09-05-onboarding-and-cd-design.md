@@ -229,14 +229,17 @@ pnpm build
 
 ### 7.1 Trigger and gates
 
-Add `.github/workflows/ci-cd.yml` with two logical jobs:
+Extend the existing `.github/workflows/ci.yml`; do not create a second workflow. Preserve its three verification jobs:
 
-1. `quality` runs for pull requests and pushes to `main` and executes dependency installation with the frozen lockfile, tests, type checking, linting, formatting checks, and build.
-2. `deploy-production` runs only for a push to `main`, requires `quality`, and targets the GitHub Environment named `production`.
+1. `quality` runs type checking, linting, formatting checks, and the TypeScript build.
+2. `test` runs the complete Vitest suite, including Testcontainers-backed integration tests.
+3. `container-build` requires `quality` and `test`, validates Docker Compose, and builds the production API and worker images without publishing them.
 
-The repository uses `main`, not `master`; branch protection should require the `quality` check before merge. Direct pushes to `main` should be disabled in repository settings so every automatic deployment corresponds to reviewed code.
+Add `deploy-production` to that workflow. It runs only for a push to `main` or an intentional `workflow_dispatch` of `main`, requires `container-build`, and targets the GitHub Environment named `production`. Because `container-build` already requires `quality` and `test`, the deploy transitively requires every existing CI gate for the same commit.
 
-Production deployments use a single `concurrency` group and do not cancel a deployment already in progress. A newer commit waits or is deployed in the next serialized run, preventing two Docker Compose updates from racing.
+The repository uses `main`, not `master`; branch protection should require `quality`, `test`, and `container-build` before merge. Direct pushes to `main` should be disabled in repository settings so every automatic deployment corresponds to reviewed code.
+
+The existing workflow concurrency must continue cancelling superseded pull-request runs but must not cancel a `main` or manual run that may already be deploying. Production deployments additionally use a dedicated `volley-bot-production` concurrency group with cancellation disabled. A newer commit waits, preventing two Docker Compose updates from racing.
 
 The workflow also supports `workflow_dispatch` for an intentional redeploy of the current `main` commit. It does not accept an arbitrary shell command or arbitrary Git ref as input.
 
@@ -276,12 +279,12 @@ For commit `<sha>`, the wrapper:
 1. acquires the production deployment lock;
 2. fetches `origin/main` in `/opt/volley-bot`;
 3. verifies that `<sha>` is reachable from `origin/main` and that the tracked production checkout has no local modifications;
-4. records the currently deployed revision as the previous known revision;
+4. records the current known-good revision as `previous` only when `<sha>` differs from the recorded `current` revision, so an intentional redeploy does not destroy the rollback target;
 5. checks out the exact `<sha>` without deleting untracked deployment-owned files;
 6. builds the API and worker images using the existing production Compose override;
 7. runs the existing one-shot database migration service;
 8. recreates the API and worker while leaving PostgreSQL, Redis, Caddy, volumes, and certificates intact;
-9. waits for Docker health checks and verifies the public readiness endpoint;
+9. waits for both API and worker Docker health checks and then verifies the public readiness endpoint;
 10. writes the successfully deployed SHA to a root-owned deployment-state file and exits successfully.
 
 The deployment must not modify or commit these server-owned assets:
@@ -303,7 +306,7 @@ Rollback is an explicit, auditable operation that redeploys the recorded previou
 
 After the feature is merged and the workflow deploys it:
 
-1. GitHub shows a passing `quality` job followed by one successful `production` deployment for the merged SHA.
+1. GitHub shows passing `quality`, `test`, and `container-build` jobs followed by one successful `production` deployment for the merged SHA.
 2. The VDS checkout and deployment-state file report that same SHA.
 3. PostgreSQL, Redis, Caddy, API, and worker remain healthy.
 4. Telegram webhook information shows no growing pending-update queue.

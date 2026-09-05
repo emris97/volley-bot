@@ -4,7 +4,7 @@
 
 **Goal:** Automatically deploy the exact tested `main` commit to the existing VDS after merge, using a GitHub-hosted runner, restricted SSH credentials, serialized Docker Compose deployment, readiness verification, and an explicit rollback path.
 
-**Architecture:** GitHub Actions runs all repository quality gates, then connects over SSH as a dedicated non-root account. A forced-command dispatcher passes one validated command to a root-owned deployment wrapper outside the checkout; the wrapper fetches an exact commit reachable from `origin/main`, builds on the VDS, runs migrations, recreates only API and worker, and records deployed revisions.
+**Architecture:** Extend the existing `.github/workflows/ci.yml` so its `quality`, `test`, and `container-build` jobs remain the single verification pipeline and a dependent production job connects over SSH as a dedicated non-root account. A forced-command dispatcher passes one validated command to a root-owned deployment wrapper outside the checkout; the wrapper fetches an exact commit reachable from `origin/main`, builds on the VDS, runs migrations, recreates only API and worker, and records deployed revisions.
 
 **Tech Stack:** GitHub Actions, Ubuntu 24.04 GitHub-hosted runners, OpenSSH, Bash, Git, Docker Engine with Compose v2, Node.js 24, pnpm 11.19.0, systemd-compatible Ubuntu VDS
 
@@ -13,7 +13,8 @@
 ## Global Constraints
 
 - Deploy from repository branch `main`; do not create or reference `master`.
-- A production deploy may run only after `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, and `pnpm build` pass for the same commit.
+- Preserve the existing `.github/workflows/ci.yml` jobs and contract test; do not create a parallel CI/CD workflow.
+- A production deploy may run only after the existing `quality`, `test`, and `container-build` jobs pass for the same commit.
 - Use GitHub-hosted runners; do not install a self-hosted runner on the VDS.
 - Use a dedicated deployment account and SSH key; never deploy using the existing personal root key.
 - Keep `BOT_TOKEN`, database/Redis passwords, webhook secret, Caddy key, and `/etc/volley-bot/production.env` off GitHub.
@@ -21,7 +22,7 @@
 - Serialize production deploys and never cancel one already in progress.
 - The server wrapper must accept only `deploy <40-hex-sha>` over Actions SSH.
 - Database migrations must be backward-compatible; there is no automatic schema downgrade.
-- Pin official GitHub Actions to full commit SHAs.
+- Keep every existing GitHub Action pinned to a full commit SHA; the deployment job uses native OpenSSH and adds no third-party action.
 - Stage and commit only files named by the current task; never add `.pnpm-store/`.
 
 ---
@@ -63,6 +64,8 @@ describe('production deployment scripts', () => {
     expect(script).toContain('flock');
     expect(script).toContain('git merge-base --is-ancestor');
     expect(script).toContain('--untracked-files=no');
+    expect(script).toContain('--wait');
+    expect(script).toContain('--wait-timeout');
     expect(script).toContain('/etc/volley-bot/production.env');
     expect(script).toContain('compose.prod.yaml');
     expect(script).not.toMatch(/rm\s+-rf|git\s+clean|production\.env.*(?:cat|echo)/);
@@ -130,21 +133,42 @@ git fetch --prune origin main
 git cat-file -e "${revision}^{commit}"
 git merge-base --is-ancestor "$revision" origin/main
 
-previous=$(git rev-parse HEAD)
-printf '%s\n' "$previous" >"$STATE_DIR/previous"
+checkout_before=$(git rev-parse HEAD)
+if [[ -f $STATE_DIR/current ]]; then
+  deployed=$(<"$STATE_DIR/current")
+  [[ $deployed =~ ^[0-9a-f]{40}$ ]] || {
+    echo 'invalid current deployment state' >&2
+    exit 65
+  }
+  git cat-file -e "${deployed}^{commit}"
+else
+  deployed=$checkout_before
+fi
+
+write_state() {
+  local name=$1
+  local value=$2
+  local temporary="$STATE_DIR/$name.tmp"
+  printf '%s\n' "$value" >"$temporary"
+  mv -f "$temporary" "$STATE_DIR/$name"
+}
+
+if [[ $revision != "$deployed" ]]; then
+  write_state previous "$deployed"
+fi
 git checkout --detach "$revision"
 
 compose=(docker compose --env-file "$ENV_FILE" -f compose.yaml -f compose.prod.yaml)
 
 if ! "${compose[@]}" build api worker db-migrate; then
-  git checkout --detach "$previous"
+  git checkout --detach "$deployed"
   exit 1
 fi
 if ! "${compose[@]}" run --rm db-migrate; then
-  git checkout --detach "$previous"
+  git checkout --detach "$deployed"
   exit 1
 fi
-"${compose[@]}" up -d --no-deps --force-recreate api worker
+"${compose[@]}" up -d --no-deps --force-recreate --wait --wait-timeout 120 api worker
 
 set -a
 # shellcheck disable=SC1090
@@ -154,7 +178,7 @@ curl --fail --silent --show-error --retry 24 --retry-delay 5 \
   "${PUBLIC_BASE_URL%/}/health/ready" >/dev/null
 
 "${compose[@]}" ps api worker
-printf '%s\n' "$revision" >"$STATE_DIR/current"
+write_state current "$revision"
 echo "deployed revision $revision"
 ```
 
@@ -162,7 +186,7 @@ Set the template files executable in Git:
 
 Run: `git update-index --chmod=+x deploy/production/volley-deploy-dispatch deploy/production/deploy-volley-bot`
 
-The root wrapper may be invoked locally with `rollback <sha>`, but rollback follows the same fetch/build/migrate/health path. It must not run `git clean`, delete untracked files, recreate PostgreSQL/Redis/Caddy, print the environment, or echo secrets. A build or migration failure restores the previous checkout and leaves existing containers running. A post-replacement readiness failure exits nonzero and leaves `previous` for explicit operator rollback.
+The root wrapper may be invoked locally with `rollback <sha>`, but rollback follows the same fetch/build/migrate/health path. It must not run `git clean`, delete untracked files, recreate PostgreSQL/Redis/Caddy, print the environment, or echo secrets. A build or migration failure restores the last recorded deployed checkout and leaves existing containers running. `docker compose up --wait` must fail if either API or worker does not become healthy; the public readiness probe is an additional external check. A post-replacement health or readiness failure exits nonzero and leaves `previous` pointing to the last known-good SHA for explicit operator rollback. Redeploying the current SHA must not overwrite `previous`.
 
 - [ ] **Step 5: Run script syntax and safety checks**
 
@@ -185,107 +209,150 @@ git commit -m "ops: add restricted production deploy wrapper"
 
 ---
 
-### Task 2: Add the SHA-pinned CI/CD workflow
+### Task 2: Extend the existing SHA-pinned CI workflow with production deployment
 
 **Files:**
-- Create: `.github/workflows/ci-cd.yml`
-- Create: `tests/release/github-actions.spec.ts`
+- Modify: `.github/workflows/ci.yml`
+- Modify: `tests/release/github-actions-ci.spec.ts`
 
 **Interfaces:**
-- Consumes: SSH command `deploy <sha>` from Task 1.
-- Produces: `quality` and `deploy-production` GitHub Actions jobs.
+- Preserves: the existing `quality`, `test`, and `container-build` jobs and their commands, immutable action SHAs, timeouts, and read-only permissions.
+- Consumes: successful `container-build` and SSH command `deploy <sha>` from Task 1.
+- Produces: `workflow_dispatch` support and a `deploy-production` job that runs only for `refs/heads/main`.
 - Consumes GitHub Environment secrets: `PRODUCTION_HOST`, `PRODUCTION_USER`, `PRODUCTION_SSH_KEY`, `PRODUCTION_HOST_KEY`.
 
-- [ ] **Step 1: Write the failing workflow policy test**
+- [ ] **Step 1: Update the existing contract test to fail on the CD requirements**
+
+Change the `node:fs/promises` import to `import { readFile, readdir } from 'node:fs/promises';`. In `WorkflowJob`, add the fields used by the deployment job while keeping the existing fields:
 
 ```ts
-// tests/release/github-actions.spec.ts
-import { readFile } from 'node:fs/promises';
-import { describe, expect, it } from 'vitest';
+interface WorkflowJob {
+  concurrency?: {
+    group?: string;
+    'cancel-in-progress'?: boolean;
+  };
+  'continue-on-error'?: unknown;
+  environment?: string;
+  if?: unknown;
+  needs?: string[];
+  permissions?: Record<string, string>;
+  'runs-on'?: string;
+  steps?: WorkflowStep[];
+  'timeout-minutes'?: number;
+}
+```
 
-const workflow = () =>
-  readFile(new URL('../../.github/workflows/ci-cd.yml', import.meta.url), 'utf8');
+Normalize the existing `uses:` line check so it is portable across LF and CRLF checkouts:
 
-describe('GitHub Actions production CD', () => {
-  it('gates serialized main deployment on the complete quality job', async () => {
-    const yaml = await workflow();
-    expect(yaml).toMatch(/push:\s*\n\s+branches:\s*\[main\]/);
-    expect(yaml).toContain('pull_request:');
-    expect(yaml).toContain('workflow_dispatch:');
-    expect(yaml).toContain('needs: quality');
-    expect(yaml).toContain("github.ref == 'refs/heads/main'");
-    expect(yaml).toContain('environment: production');
-    expect(yaml).toContain('group: volley-bot-production');
-    expect(yaml).toContain('cancel-in-progress: false');
-    for (const command of ['pnpm test', 'pnpm typecheck', 'pnpm lint', 'pnpm format:check', 'pnpm build']) {
-      expect(yaml).toContain(`run: ${command}`);
-    }
+```ts
+const usesLines = workflowText
+  .split('\n')
+  .map((line) => line.trimEnd())
+  .filter((line) => line.trimStart().startsWith('uses:'));
+```
+
+Rename the existing test to `runs the exact verification jobs without publishing`. Add `workflow_dispatch?: unknown` to `WorkflowDocument.on` and widen `WorkflowDocument.concurrency['cancel-in-progress']` to `boolean | string`, because GitHub expressions parse as strings. Change the existing job-key assertion to require all four jobs:
+
+```ts
+expect(Object.keys(jobs).sort()).toEqual(
+  ['container-build', 'deploy-production', 'quality', 'test'].sort(),
+);
+```
+
+Keep the exact assertions for `quality`, `test`, and `container-build`. Scope their no-secret/no-deploy assertions to those three jobs instead of the entire workflow. Add this test for the new job:
+
+```ts
+it('deploys only tested main commits through restricted SSH', async () => {
+  const workflowText = await readFile('.github/workflows/ci.yml', 'utf8');
+  const workflow = parse(workflowText) as WorkflowDocument;
+  const deploy = workflow.jobs?.['deploy-production'];
+
+  expect(workflow.on).toHaveProperty('workflow_dispatch');
+  expect(workflow.concurrency).toEqual({
+    group:
+      'ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}',
+    'cancel-in-progress': "${{ github.event_name == 'pull_request' }}",
   });
-
-  it('pins actions, verifies the host key, and sends only the commit SHA', async () => {
-    const yaml = await workflow();
-    expect(yaml).toContain('actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0');
-    expect(yaml).toContain('actions/setup-node@820762786026740c76f36085b0efc47a31fe5020');
-    expect(yaml).toContain('StrictHostKeyChecking=yes');
-    expect(yaml).toContain('deploy ${GITHUB_SHA}');
-    expect(yaml).not.toMatch(/BOT_TOKEN|DATABASE_URL|REDIS_URL|TELEGRAM_WEBHOOK_SECRET/);
+  expect(deploy).toMatchObject({
+    if: "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'",
+    needs: ['container-build'],
+    'runs-on': 'ubuntu-latest',
+    'timeout-minutes': 30,
+    environment: 'production',
+    concurrency: {
+      group: 'volley-bot-production',
+      'cancel-in-progress': false,
+    },
   });
+  expect(deploy?.steps?.some((step) => step.uses !== undefined)).toBe(false);
+
+  const commands = commandsFor(deploy!).join('\n');
+  expect(commands).toContain('StrictHostKeyChecking=yes');
+  expect(commands).toContain('IdentitiesOnly=yes');
+  expect(commands).toContain('deploy ${GITHUB_SHA}');
+  expect(commands).not.toMatch(/BOT_TOKEN|DATABASE_URL|REDIS_URL|TELEGRAM_WEBHOOK_SECRET/);
+  expect(
+    (await readdir('.github/workflows')).filter((name) => /\.ya?ml$/i.test(name)),
+  ).toEqual(['ci.yml']);
 });
 ```
 
-- [ ] **Step 2: Run the policy test and confirm failure**
+Add these assertions so secrets cannot leak into a pull-request-capable job and the deployment job cannot gain application secrets:
 
-Run: `pnpm vitest run tests/release/github-actions.spec.ts`
+```ts
+const verificationJobs = [quality, test, containerBuild];
+expect(JSON.stringify(verificationJobs)).not.toMatch(/secrets\./);
+expect(
+  [...workflowText.matchAll(/secrets\.([A-Z0-9_]+)/g)]
+    .map((match) => match[1])
+    .sort(),
+).toEqual(
+  [
+    'PRODUCTION_HOST',
+    'PRODUCTION_HOST_KEY',
+    'PRODUCTION_SSH_KEY',
+    'PRODUCTION_USER',
+  ].sort(),
+);
+```
 
-Expected: FAIL because `.github/workflows/ci-cd.yml` is absent.
+Preserve the checks that all `uses:` lines in the existing verification jobs are pinned to 40-character SHAs.
 
-- [ ] **Step 3: Create the complete workflow**
+- [ ] **Step 2: Run the contract test and confirm the expected red state**
+
+Run: `pnpm vitest run tests/release/github-actions-ci.spec.ts`
+
+Expected: FAIL because the existing workflow has no `workflow_dispatch`, still cancels every superseded run, and has no `deploy-production` job. The existing `quality`, `test`, and `container-build` assertions must remain green.
+
+- [ ] **Step 3: Extend `.github/workflows/ci.yml` without replacing its verification jobs**
+
+Add the manual trigger:
 
 ```yaml
-name: CI and production deploy
-
 on:
   pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
+```
 
-permissions:
-  contents: read
+Change only the cancellation expression in the existing workflow-level concurrency block so pull-request runs remain cancellable while `main` and manual runs cannot be interrupted during deployment:
 
-jobs:
-  quality:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: Checkout tested revision
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          package-manager-cache: false
-      - name: Activate pinned pnpm
-        run: corepack enable && corepack prepare pnpm@11.19.0 --activate
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Test
-        run: pnpm test
-      - name: Type-check
-        run: pnpm typecheck
-      - name: Lint
-        run: pnpm lint
-      - name: Check formatting
-        run: pnpm format:check
-      - name: Build
-        run: pnpm build
+```yaml
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+```
 
+Leave `quality`, `test`, and `container-build` otherwise unchanged. Append:
+
+```yaml
   deploy-production:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: quality
-    runs-on: ubuntu-24.04
+    needs:
+      - container-build
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
     concurrency:
@@ -313,20 +380,20 @@ jobs:
             "$PRODUCTION_USER@$PRODUCTION_HOST" "deploy ${GITHUB_SHA}"
 ```
 
-Do not add checkout, repository credentials, application secrets, or third-party SSH actions to `deploy-production`. The full SHA comes from the immutable GitHub event context.
+Do not add checkout, repository credentials, application secrets, or third-party SSH actions to `deploy-production`. The full SHA comes from the immutable GitHub event context. A manual run selected for any ref other than `main` skips deployment.
 
-- [ ] **Step 4: Validate workflow policy and syntax**
+- [ ] **Step 4: Validate the extended workflow policy and formatting**
 
-Run: `pnpm vitest run tests/release/github-actions.spec.ts tests/release/production-deploy.spec.ts`
+Run: `pnpm vitest run tests/release/github-actions-ci.spec.ts tests/release/production-deploy.spec.ts`
 
-Run: `pnpm exec prettier --check .github/workflows/ci-cd.yml tests/release/github-actions.spec.ts`
+Run: `pnpm exec prettier --check .github/workflows/ci.yml tests/release/github-actions-ci.spec.ts`
 
-Expected: both policy suites and formatting check pass. Also inspect the rendered workflow in the GitHub Actions UI after push; GitHub must accept it without a workflow syntax error.
+Expected: both policy suites and the formatting check pass. The existing Compose validation and production image build assertions remain present. After push, inspect the rendered `CI` workflow in GitHub Actions; GitHub must accept it without a syntax error and must not show a second CI/CD workflow.
 
-- [ ] **Step 5: Commit the workflow**
+- [ ] **Step 5: Commit the workflow extension**
 
 ```bash
-git add .github/workflows/ci-cd.yml tests/release/github-actions.spec.ts
+git add .github/workflows/ci.yml tests/release/github-actions-ci.spec.ts
 git commit -m "ci: deploy tested main commits to production"
 ```
 
@@ -451,7 +518,10 @@ Expected: fingerprints match exactly. The single `known_hosts` line becomes `PRO
 With the dedicated key, verify that an interactive command is rejected:
 
 ```bash
-ssh -i volley-bot-actions-ed25519 -o StrictHostKeyChecking=yes volley-deploy@npoletaev97.fvds.ru 'uname -a'
+ssh -i volley-bot-actions-ed25519 \
+  -o UserKnownHostsFile=volley-bot-known-hosts \
+  -o StrictHostKeyChecking=yes \
+  volley-deploy@npoletaev97.fvds.ru 'uname -a'
 ```
 
 Expected: nonzero exit with `invalid deploy command`; it must not print system information.
@@ -459,7 +529,10 @@ Expected: nonzero exit with `invalid deploy command`; it must not print system i
 Then verify malformed deploy input is rejected:
 
 ```bash
-ssh -i volley-bot-actions-ed25519 -o StrictHostKeyChecking=yes volley-deploy@npoletaev97.fvds.ru 'deploy not-a-sha'
+ssh -i volley-bot-actions-ed25519 \
+  -o UserKnownHostsFile=volley-bot-known-hosts \
+  -o StrictHostKeyChecking=yes \
+  volley-deploy@npoletaev97.fvds.ru 'deploy not-a-sha'
 ```
 
 Expected: nonzero exit before `git fetch`, Docker, or any service change.
@@ -476,12 +549,12 @@ git commit -m "docs: document production CD bootstrap"
 ### Task 4: Configure GitHub production protection and run the first deployment
 
 **Files:**
-- Modify only if corrections are required: `.github/workflows/ci-cd.yml`
+- Modify only if corrections are required: `.github/workflows/ci.yml`
 - Modify only if corrections are required: `docs/operations/production-cd.md`
 
 **Interfaces:**
 - Consumes the four `production` Environment secrets from Task 2.
-- Produces a protected `production` deployment environment and required `quality` branch check.
+- Produces a protected `production` deployment environment and required `quality`, `test`, and `container-build` branch checks.
 
 - [ ] **Step 1: Create and restrict the GitHub Environment**
 
@@ -503,7 +576,7 @@ Delete the local private key after confirming the GitHub secret is stored only i
 In **Settings → Rules → Rulesets**, create an active branch ruleset targeting the default branch and require:
 
 - pull requests before merging;
-- the `quality` status check;
+- the `quality`, `test`, and `container-build` status checks;
 - branches to be up to date before merging;
 - conversation resolution;
 - no bypass for ordinary contributors.
@@ -514,15 +587,15 @@ Do not require the `deploy-production` check for merge; it runs only after the c
 
 Push the branch containing both implementation plans' completed changes and open a PR to `main`.
 
-Expected: `quality` runs, all five repository gates pass, and `deploy-production` is skipped for the pull request.
+Expected: `quality`, `test`, and `container-build` pass, and `deploy-production` is skipped for the pull request.
 
 - [ ] **Step 4: Merge and follow the serialized production deployment**
 
-After review, merge the PR. In **Actions → CI and production deploy**, verify:
+After review, merge the PR. In **Actions → CI**, verify:
 
 1. the workflow event is a push to `refs/heads/main`;
-2. `quality` passes for the merge SHA;
-3. exactly one `deploy-production` job starts after `quality`;
+2. `quality`, `test`, and `container-build` pass for the merge SHA;
+3. exactly one `deploy-production` job starts after `container-build`;
 4. the SSH output ends with `deployed revision <merge-sha>`;
 5. no application secret, private key, signed start parameter, or environment-file content appears in logs.
 
