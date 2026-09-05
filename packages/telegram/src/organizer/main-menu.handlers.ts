@@ -81,15 +81,16 @@ export class OrganizerMenuHandlers {
     telegramUserId: TelegramId,
     data: string,
   ): Promise<OrganizerView | null> {
-    if (data === 'om:home') return this.openHome(telegramUserId);
-    if (data === 'om:groups') return this.openGroupPicker(telegramUserId);
-    if (data === 'om:new') return this.openNewGame(telegramUserId);
-    if (data === 'om:games:upcoming')
+    if (data === 'om:v1:home') return this.openHome(telegramUserId);
+    if (data === 'om:v1:groups') return this.openGroupPicker(telegramUserId);
+    if (data === 'om:v1:new') return this.openNewGame(telegramUserId);
+    if (data === 'om:v1:games:upcoming')
       return this.openGames(telegramUserId, 'UPCOMING');
-    if (data === 'om:games:past') return this.openGames(telegramUserId, 'PAST');
-    if (data === 'om:templates') return this.openTemplates(telegramUserId);
-    if (data === 'om:settings') return this.openSettings(telegramUserId);
-    if (data === 'om:help') return this.openHelp(telegramUserId);
+    if (data === 'om:v1:games:past')
+      return this.openGames(telegramUserId, 'PAST');
+    if (data === 'om:v1:templates') return this.openTemplates(telegramUserId);
+    if (data === 'om:v1:settings') return this.openSettings(telegramUserId);
+    if (data === 'om:v1:help') return this.openHelp(telegramUserId);
 
     const groupId = parseGroupSelection(data);
     return groupId === undefined
@@ -152,7 +153,7 @@ export const registerOrganizerMenuHandlers = (
 
 const parseGroupSelection = (data: string): GroupId | undefined => {
   const match =
-    /^om:group:([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.exec(data);
+    /^om:v1:group:([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.exec(data);
   const groupId = match?.[1];
   return groupId === undefined ? undefined : asGroupId(groupId);
 };

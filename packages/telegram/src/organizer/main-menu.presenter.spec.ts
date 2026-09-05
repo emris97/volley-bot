@@ -19,12 +19,22 @@ describe('organizer main menu presenter', () => {
       text: '<b>Главное меню</b>\n\nГруппа: <b>Тест &lt;группа&gt; &amp; друзья</b>',
       parseMode: 'HTML',
       keyboard: [
-        [{ text: 'Создать игру', callbackData: 'om:new' }],
-        [{ text: 'Предстоящие игры', callbackData: 'om:games:upcoming' }],
-        [{ text: 'Прошедшие игры', callbackData: 'om:games:past' }],
-        [{ text: 'Шаблоны', callbackData: 'om:templates' }],
-        [{ text: 'Настройки группы', callbackData: 'om:settings' }],
-        [{ text: 'Помощь', callbackData: 'om:help' }],
+        [{ text: 'Создать игру', callbackData: 'om:v1:new' }],
+        [
+          {
+            text: 'Предстоящие игры',
+            callbackData: 'om:v1:games:upcoming',
+          },
+        ],
+        [
+          {
+            text: 'Прошедшие игры',
+            callbackData: 'om:v1:games:past',
+          },
+        ],
+        [{ text: 'Шаблоны', callbackData: 'om:v1:templates' }],
+        [{ text: 'Настройки группы', callbackData: 'om:v1:settings' }],
+        [{ text: 'Помощь', callbackData: 'om:v1:help' }],
       ],
     });
   });
@@ -37,7 +47,7 @@ describe('organizer main menu presenter', () => {
     };
 
     expect(renderOrganizerHome([first, second]).keyboard).toContainEqual([
-      { text: 'Выбрать группу', callbackData: 'om:groups' },
+      { text: 'Выбрать группу', callbackData: 'om:v1:groups' },
     ]);
   });
 
@@ -49,10 +59,10 @@ describe('organizer main menu presenter', () => {
         [
           {
             text: 'A < B',
-            callbackData: 'om:group:018f6ba0-62d2-7bd1-8f13-12e0c8424611',
+            callbackData: 'om:v1:group:018f6ba0-62d2-7bd1-8f13-12e0c8424611',
           },
         ],
-        [{ text: 'Назад', callbackData: 'om:home' }],
+        [{ text: 'Назад', callbackData: 'om:v1:home' }],
       ],
     });
   });

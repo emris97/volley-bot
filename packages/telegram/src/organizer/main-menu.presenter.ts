@@ -22,15 +22,15 @@ export const renderOrganizerHome = (
     text: `<b>Главное меню</b>\n\nГруппа: <b>${escapeHtml(selected.title)}</b>`,
     parseMode: 'HTML',
     keyboard: [
-      [{ text: 'Создать игру', callbackData: 'om:new' }],
-      [{ text: 'Предстоящие игры', callbackData: 'om:games:upcoming' }],
-      [{ text: 'Прошедшие игры', callbackData: 'om:games:past' }],
-      [{ text: 'Шаблоны', callbackData: 'om:templates' }],
+      [{ text: 'Создать игру', callbackData: 'om:v1:new' }],
+      [{ text: 'Предстоящие игры', callbackData: 'om:v1:games:upcoming' }],
+      [{ text: 'Прошедшие игры', callbackData: 'om:v1:games:past' }],
+      [{ text: 'Шаблоны', callbackData: 'om:v1:templates' }],
       ...(groups.length >= 2
-        ? [[{ text: 'Выбрать группу', callbackData: 'om:groups' }]]
+        ? [[{ text: 'Выбрать группу', callbackData: 'om:v1:groups' }]]
         : []),
-      [{ text: 'Настройки группы', callbackData: 'om:settings' }],
-      [{ text: 'Помощь', callbackData: 'om:help' }],
+      [{ text: 'Настройки группы', callbackData: 'om:v1:settings' }],
+      [{ text: 'Помощь', callbackData: 'om:v1:help' }],
     ],
   };
 };
@@ -46,10 +46,10 @@ export const renderOrganizerGroupPicker = (
     ...groups.map((group) => [
       {
         text: group.title,
-        callbackData: `om:group:${group.groupId}`,
+        callbackData: `om:v1:group:${group.groupId}`,
       },
     ]),
-    [{ text: 'Назад', callbackData: 'om:home' }],
+    [{ text: 'Назад', callbackData: 'om:v1:home' }],
   ],
 });
 

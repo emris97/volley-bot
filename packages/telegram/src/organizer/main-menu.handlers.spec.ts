@@ -54,6 +54,28 @@ describe('OrganizerMenuHandlers', () => {
       'UPCOMING',
     );
   });
+
+  it('accepts only versioned group-selection callbacks', async () => {
+    const context = {
+      list: vi.fn().mockResolvedValue([organizerGroup()]),
+      select: vi.fn().mockResolvedValue(undefined),
+    };
+    const handlers = new OrganizerMenuHandlers(context, sections());
+
+    await expect(
+      handlers.handleCallback(
+        telegramUserId,
+        'om:group:018f6ba0-62d2-7bd1-8f13-12e0c8424611',
+      ),
+    ).resolves.toBeNull();
+    await handlers.handleCallback(
+      telegramUserId,
+      'om:v1:group:018f6ba0-62d2-7bd1-8f13-12e0c8424611',
+    );
+
+    expect(context.select).toHaveBeenCalledOnce();
+    expect(context.select).toHaveBeenCalledWith(telegramUserId, groupId);
+  });
 });
 
 const sections = () => ({
