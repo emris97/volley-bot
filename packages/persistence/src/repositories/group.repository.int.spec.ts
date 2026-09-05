@@ -63,4 +63,49 @@ describe('GroupRepository', () => {
     });
     expect(await repo.findMembership(second.id, userTelegramId)).toBeNull();
   });
+
+  it('returns onboarding progress, Telegram chat, and settings in one snapshot', async () => {
+    const telegramChatId = asTelegramId('-1001000000003');
+    const group = await repo.upsertFromTelegram({
+      telegramChatId,
+      title: 'Astrakhan',
+    });
+    await repo.saveWizardProgress(group.id, {
+      tz: 'Europe/Astrakhan',
+      mp: true,
+    });
+
+    await expect(repo.getOnboardingSnapshot(group.id)).resolves.toMatchObject({
+      telegramChatId,
+      onboardingState: 'PENDING',
+      progress: { tz: 'Europe/Astrakhan', mp: true },
+      settings: {
+        timeZone: 'UTC',
+        memberPriorityEnabled: false,
+        tentativePromptMinutesBefore: 1440,
+        tentativeResponseMinutes: 60,
+        reminderMinutesBefore: 120,
+        currency: 'RUB',
+        roundingMode: 'EXACT',
+        pinGameMessages: true,
+      },
+    });
+  });
+
+  it('preserves existing progress when onboarding restarts', async () => {
+    const actor = asTelegramId('43');
+    const group = await repo.upsertFromTelegram({
+      telegramChatId: asTelegramId('-1001000000004'),
+      title: 'Resume',
+    });
+    await repo.upsertMembership(group.id, actor, 'ADMIN');
+    await repo.saveWizardProgress(group.id, { tz: 'Europe/Astrakhan' });
+
+    await repo.beginOnboarding(group.id, actor);
+
+    await expect(repo.getOnboardingSnapshot(group.id)).resolves.toMatchObject({
+      onboardingState: 'CONFIGURING',
+      progress: { tz: 'Europe/Astrakhan' },
+    });
+  });
 });

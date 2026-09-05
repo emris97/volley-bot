@@ -6,6 +6,7 @@ import {
   type GroupId,
   type GroupMembership,
   type GroupRole,
+  type OnboardingState,
   type TelegramId,
   type UserId,
 } from '@volley/domain';
@@ -29,6 +30,22 @@ export interface ConfigureGroupInput {
   currency: 'RUB';
   roundingMode: 'EXACT' | 'UP_1' | 'UP_10' | 'UP_50';
   pinGameMessages: boolean;
+}
+
+export interface GroupOnboardingSnapshot {
+  telegramChatId: TelegramId;
+  onboardingState: OnboardingState;
+  progress: Record<string, unknown>;
+  settings: {
+    timeZone: string;
+    memberPriorityEnabled: boolean;
+    tentativePromptMinutesBefore: number;
+    tentativeResponseMinutes: number;
+    reminderMinutesBefore: number;
+    currency: 'RUB';
+    roundingMode: 'EXACT' | 'UP_1' | 'UP_10' | 'UP_50';
+    pinGameMessages: boolean;
+  };
 }
 
 const toDatabaseTelegramId = (value: TelegramId): bigint => BigInt(value);
@@ -255,6 +272,50 @@ export class GroupRepository {
       .limit(1);
     if (row === undefined) throw new Error('Group not found');
     return row.onboardingData;
+  }
+
+  public async getOnboardingSnapshot(
+    groupId: GroupId,
+  ): Promise<GroupOnboardingSnapshot | null> {
+    const [row] = await this.database
+      .select({
+        telegramChatId: groups.telegramChatId,
+        onboardingState: groups.onboardingState,
+        progress: groups.onboardingData,
+        timeZone: groups.timeZone,
+        memberPriorityEnabled: groups.memberPriorityEnabled,
+        tentativePromptMinutesBefore: groups.tentativePromptMinutesBefore,
+        tentativeResponseMinutes: groups.tentativeResponseMinutes,
+        reminderMinutesBefore: groups.reminderMinutesBefore,
+        currency: groups.currency,
+        roundingMode: groups.roundingMode,
+        pinGameMessages: groups.pinGameMessages,
+      })
+      .from(groups)
+      .where(eq(groups.id, groupId))
+      .limit(1);
+    if (row === undefined) return null;
+    if (
+      row.currency !== 'RUB' ||
+      !['EXACT', 'UP_1', 'UP_10', 'UP_50'].includes(row.roundingMode)
+    ) {
+      throw new Error('Invalid stored group settings');
+    }
+    return {
+      telegramChatId: fromDatabaseTelegramId(row.telegramChatId),
+      onboardingState: row.onboardingState,
+      progress: row.progress,
+      settings: {
+        timeZone: row.timeZone,
+        memberPriorityEnabled: row.memberPriorityEnabled,
+        tentativePromptMinutesBefore: row.tentativePromptMinutesBefore,
+        tentativeResponseMinutes: row.tentativeResponseMinutes,
+        reminderMinutesBefore: row.reminderMinutesBefore,
+        currency: row.currency,
+        roundingMode: row.roundingMode as GroupOnboardingSnapshot['settings']['roundingMode'],
+        pinGameMessages: row.pinGameMessages,
+      },
+    };
   }
 
   public async recordRoleChange(input: {
