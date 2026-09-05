@@ -36,6 +36,46 @@ export interface TemplateWizardDraftStore {
   clear(groupId: GroupId, actorUserId: UserId): Promise<void>;
 }
 
+const stepCodes: Record<TemplateWizardStep, string> = {
+  NAME: 'n',
+  VENUE: 'v',
+  ADDRESS: 'a',
+  TIME: 't',
+  DURATION: 'd',
+  CAPACITY: 'c',
+  OPENING: 'o',
+  CLOSING: 'x',
+  CONFIRMATION_PROMPT: 'p',
+  CONFIRMATION_RESPONSE: 'q',
+  REMINDER: 'r',
+  MEMBER_PRIORITY: 'm',
+  COST: 'k',
+  ROUNDING: 'g',
+  PREVIEW: 'w',
+};
+const stepsByCode = new Map(
+  Object.entries(stepCodes).map(([step, code]) => [
+    code,
+    step as TemplateWizardStep,
+  ]),
+);
+
+export const templateDraftControlId = (draft: TemplateWizardDraft): string =>
+  `${draft.draftId}.${stepCodes[draft.step]}`;
+
+export const parseTemplateDraftControlId = (
+  value: string | undefined,
+): { draftId: string; step: TemplateWizardStep } | null => {
+  const [draftId, stepCode, ...rest] = value?.split('.') ?? [];
+  const step = stepsByCode.get(stepCode ?? '');
+  return rest.length > 0 ||
+    draftId === undefined ||
+    !/^[0-9a-f]{32}$/i.test(draftId) ||
+    step === undefined
+    ? null
+    : { draftId, step };
+};
+
 const draftKeys = new Set([
   'version',
   'mode',

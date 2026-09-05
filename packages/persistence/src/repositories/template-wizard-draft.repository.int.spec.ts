@@ -123,6 +123,30 @@ it('rejects unsupported persisted draft versions', async () => {
   );
 });
 
+it('rejects an array where the persisted snapshot must be an object', async () => {
+  const { groupId, actorUserId } = await identities('-5106', '516');
+  await pool.query(
+    'INSERT INTO template_wizard_drafts (group_id, actor_user_id, data) VALUES ($1, $2, $3)',
+    [
+      groupId,
+      actorUserId,
+      {
+        version: 1,
+        mode: 'CREATE',
+        step: 'NAME',
+        draftId: '018f6ba062d27bd18f1312e0c8424611',
+        snapshot: [],
+        previewed: false,
+      },
+    ],
+  );
+  const repository = new TemplateWizardDraftRepository(createDatabase(pool));
+
+  await expect(repository.load(groupId, actorUserId)).rejects.toThrow(
+    /invalid draft snapshot/i,
+  );
+});
+
 const identities = async (telegramChatId: string, telegramUserId: string) => {
   const group = await pool.query<{ id: string }>(
     'INSERT INTO groups (telegram_chat_id, title) VALUES ($1, $2) RETURNING id',

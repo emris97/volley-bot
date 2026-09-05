@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import type { OrganizerContext } from '@volley/application';
+import {
+  OrganizerGroupSelectionRequiredError,
+  type OrganizerContext,
+} from '@volley/application';
 import {
   asGameTemplateId,
   type GameTemplate,
@@ -23,9 +26,10 @@ import {
   parseUnicodeText,
   type ParseError,
 } from '../organizer/input.parsers.js';
-import type {
-  TemplateWizardDraft,
-  TemplateWizardDraftStore,
+import {
+  parseTemplateDraftControlId,
+  type TemplateWizardDraft,
+  type TemplateWizardDraftStore,
 } from './template-wizard.model.js';
 import {
   expandUuid,
@@ -175,6 +179,10 @@ export class TemplateWizardHandlers {
     const callback = parseCallback(data);
     if (callback === null)
       return this.currentOrList(actor, 'Эта кнопка больше не действует.');
+    const currentDraft = await this.drafts.load(actor.groupId, actor.userId);
+    if (staticActions.has(callback.action) && currentDraft !== null) {
+      return renderTemplateWizard(currentDraft, staleControlText);
+    }
 
     try {
       if (callback.action === 'create') return this.startCreate(telegramUserId);
@@ -216,12 +224,15 @@ export class TemplateWizardHandlers {
         );
       }
 
-      const draft = await this.drafts.load(actor.groupId, actor.userId);
-      if (draft === null || callback.opaqueId !== draft.draftId) {
-        return this.currentOrList(
-          actor,
-          'Эта кнопка устарела. Продолжите с текущего шага.',
-        );
+      const draft = currentDraft;
+      const control = parseTemplateDraftControlId(callback.opaqueId);
+      if (
+        draft === null ||
+        control === null ||
+        control.draftId !== draft.draftId ||
+        control.step !== draft.step
+      ) {
+        return this.currentOrList(actor, staleControlText);
       }
       if (callback.action === 'back') {
         const updated = {
@@ -242,26 +253,39 @@ export class TemplateWizardHandlers {
         callback.action === 'priority-yes' ||
         callback.action === 'priority-no'
       ) {
+        if (draft.step !== 'MEMBER_PRIORITY')
+          return renderTemplateWizard(draft, staleControlText);
         return this.mutate(actor, draft, {
           memberPriorityEnabled: callback.action === 'priority-yes',
         });
       }
       const rounding = roundingFor(callback.action);
-      if (rounding !== null)
+      if (rounding !== null) {
+        if (draft.step !== 'ROUNDING')
+          return renderTemplateWizard(draft, staleControlText);
         return this.mutate(actor, draft, { roundingMode: rounding });
-      if (callback.action === 'save')
+      }
+      if (callback.action === 'save') {
+        if (draft.step !== 'PREVIEW')
+          return renderTemplateWizard(draft, staleControlText);
         return await this.saveTemplate(actor, draft);
+      }
       return renderTemplateWizard(draft, 'Эта кнопка больше не действует.');
     } catch (error) {
       if (isExpectedTemplateError(error)) {
         if (error.name === 'TemplateRevisionConflictError') {
-          await this.drafts.clear(actor.groupId, actor.userId);
-          return this.listFor(
-            actor,
-            false,
-            undefined,
-            'Шаблон изменён другим администратором. Откройте его заново.',
-          );
+          if (callback.action === 'save' && currentDraft?.mode === 'EDIT') {
+            const latest = await this.drafts.load(actor.groupId, actor.userId);
+            if (latest?.draftId === currentDraft.draftId) {
+              await this.drafts.clear(actor.groupId, actor.userId);
+            }
+          }
+          const latest = await this.drafts.load(actor.groupId, actor.userId);
+          const notice =
+            'Шаблон изменён другим администратором. Откройте его заново.';
+          return latest === null
+            ? this.listFor(actor, false, undefined, notice)
+            : renderTemplateWizard(latest, notice);
         }
         return this.currentOrList(actor, expectedErrorText(error));
       }
@@ -274,7 +298,13 @@ export class TemplateWizardHandlers {
     text: string,
   ): Promise<OrganizerView | false> {
     if (text.startsWith('/')) return false;
-    const actor = await this.organizerContext.require(telegramUserId);
+    let actor: OrganizerContext;
+    try {
+      actor = await this.organizerContext.require(telegramUserId);
+    } catch (error) {
+      if (error instanceof OrganizerGroupSelectionRequiredError) return false;
+      throw error;
+    }
     const draft = await this.drafts.load(actor.groupId, actor.userId);
     if (draft === null) return false;
     const parsed = parseStepText(draft.step, text, draft.snapshot);
@@ -451,6 +481,20 @@ const parseCallback = (
     return null;
   return { action, ...(opaqueId === undefined ? {} : { opaqueId }) };
 };
+
+const staticActions = new Set([
+  'create',
+  'active',
+  'archived',
+  'next',
+  'next-archived',
+  'open',
+  'edit',
+  'copy',
+  'archive',
+  'restore',
+]);
+const staleControlText = 'Эта кнопка устарела. Продолжите с текущего шага.';
 
 const parseStepText = (
   step: TemplateWizardDraft['step'],

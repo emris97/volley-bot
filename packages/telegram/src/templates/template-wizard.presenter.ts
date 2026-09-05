@@ -1,7 +1,10 @@
 import type { GameTemplate, GameTemplateId } from '@volley/domain';
 import type { OrganizerView } from '../organizer/main-menu.presenter.js';
 import type { TemplateWizardStep } from '../organizer/settings-editor.model.js';
-import type { TemplateWizardDraft } from './template-wizard.model.js';
+import {
+  templateDraftControlId,
+  type TemplateWizardDraft,
+} from './template-wizard.model.js';
 
 export interface TemplateListViewInput {
   items: readonly GameTemplate[];
@@ -108,7 +111,8 @@ export const renderTemplateWizard = (
   draft: TemplateWizardDraft,
   error?: string,
 ): OrganizerView => {
-  const callback = (action: string) => templateCallback(action, draft.draftId);
+  const callback = (action: string) =>
+    templateCallback(action, templateDraftControlId(draft));
   if (draft.step === 'PREVIEW') {
     return {
       text: [error, '<b>Проверьте шаблон</b>', snapshotSummary(draft)]
@@ -147,10 +151,18 @@ export const renderCancelConfirmation = (
     [
       {
         text: 'Да, отменить',
-        callbackData: templateCallback('cancel-confirm', draft.draftId),
+        callbackData: templateCallback(
+          'cancel-confirm',
+          templateDraftControlId(draft),
+        ),
       },
     ],
-    [{ text: 'Нет', callbackData: templateCallback('resume', draft.draftId) }],
+    [
+      {
+        text: 'Нет',
+        callbackData: templateCallback('resume', templateDraftControlId(draft)),
+      },
+    ],
   ],
 });
 

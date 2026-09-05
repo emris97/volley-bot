@@ -1,4 +1,7 @@
-import type { OrganizerContext } from '@volley/application';
+import {
+  OrganizerGroupSelectionRequiredError,
+  type OrganizerContext,
+} from '@volley/application';
 import {
   asGameTemplateId,
   asGroupId,
@@ -73,7 +76,11 @@ describe('template wizard Telegram flow', () => {
     await harness.text('120');
     await harness.text('60');
     await harness.text('30');
+    const stalePriority = harness.dataFor('Да');
     await harness.click('Да');
+    await harness.callback(stalePriority);
+    expect(harness.lastMessage()).toContain('кнопка устарела');
+    expect((await drafts.load(groupId, actorUserId))?.step).toBe('COST');
     await harness.text('1250,50');
     await harness.click('Точно до копеек');
 
@@ -172,12 +179,102 @@ describe('template wizard Telegram flow', () => {
     expect(harness.fallbackCount()).toBe(2);
   });
 
+  it('does not let an old list control replace an active draft', async () => {
+    await harness.command('/templates');
+    const staleCreate = harness.dataFor('Создать шаблон');
+    await harness.callback(staleCreate);
+    await harness.text('Текущий шаблон');
+
+    await harness.callback(staleCreate);
+
+    expect(harness.lastMessage()).toContain('кнопка устарела');
+    expect(await drafts.load(groupId, actorUserId)).toMatchObject({
+      step: 'VENUE',
+      snapshot: { name: 'Текущий шаблон' },
+    });
+    expect(
+      harness
+        .callbackData()
+        .filter((data) => data.startsWith('tw:'))
+        .every(
+          (data) =>
+            /^tw:v1:[a-z0-9-]+:[0-9a-f]{32}\.[a-z]$/.test(data) &&
+            Buffer.byteLength(data, 'utf8') < 64,
+        ),
+    ).toBe(true);
+  });
+
+  it.each(['Изменить', 'Копировать'])(
+    'does not let an old %s control replace an active draft',
+    async (action) => {
+      templates.seed('Исходный', false);
+      await harness.command('/templates');
+      await harness.click('Исходный');
+      const staleAction = harness.dataFor(action);
+      const currentDraft: TemplateWizardDraft = {
+        version: 1,
+        mode: 'CREATE',
+        step: 'CAPACITY',
+        draftId: '018f6ba062d27bd18f1312e0c8424688',
+        snapshot: {
+          name: 'Текущий',
+          venue: 'Зал',
+          address: null,
+          startsAtLocalTime: '19:00',
+          durationMinutes: 90,
+        },
+        previewed: false,
+      };
+      await drafts.save(groupId, actorUserId, currentDraft);
+
+      await harness.callback(staleAction);
+
+      expect(harness.lastMessage()).toContain('кнопка устарела');
+      expect(await drafts.load(groupId, actorUserId)).toEqual(currentDraft);
+    },
+  );
+
+  it('passes idle text onward when no organizer context can be resolved', async () => {
+    harness = createHarness(drafts, templates, {
+      require: async () => {
+        throw new OrganizerGroupSelectionRequiredError();
+      },
+    });
+
+    await expect(harness.text('обычное сообщение')).resolves.toBeUndefined();
+    expect(harness.fallbackCount()).toBe(1);
+  });
+
   it('renders an expected Russian view for stale wizard controls', async () => {
     await expect(
       harness.callback(`tw:v1:save:${'0'.repeat(32)}`),
     ).resolves.toBeUndefined();
     expect(harness.lastMessage()).toContain('кнопка устарела');
     expect(harness.acknowledgementCount()).toBe(1);
+  });
+
+  it('preserves a draft created while an archive action becomes stale', async () => {
+    const template = templates.seed('Гонка архива', false);
+    await harness.command('/templates');
+    await harness.click('Гонка архива');
+    const archive = harness.dataFor('В архив');
+    const concurrentDraft: TemplateWizardDraft = {
+      version: 1,
+      mode: 'CREATE',
+      step: 'VENUE',
+      draftId: '018f6ba062d27bd18f1312e0c8424699',
+      snapshot: { name: 'Не удалять' },
+      previewed: false,
+    };
+    templates.beforeSetArchived = async () => {
+      await drafts.save(groupId, actorUserId, concurrentDraft);
+      templates.bump(template.id);
+    };
+
+    await harness.callback(archive);
+
+    expect(harness.lastMessage()).toContain('изменён другим администратором');
+    expect(await drafts.load(groupId, actorUserId)).toEqual(concurrentDraft);
   });
 });
 
@@ -235,6 +332,7 @@ class MemoryDrafts implements TemplateWizardDraftStore {
 class MemoryTemplates implements TemplateWizardServices {
   private readonly items: GameTemplate[] = [];
   private serial = 16;
+  beforeSetArchived?: () => Promise<void>;
 
   active(): GameTemplate[] {
     return this.items.filter((item) => item.archivedAt === null);
@@ -316,6 +414,8 @@ class MemoryTemplates implements TemplateWizardServices {
     expectedRevision: number;
     archived: boolean;
   }) {
+    await this.beforeSetArchived?.();
+    this.beforeSetArchived = undefined;
     const item = this.items.find(
       (candidate) => candidate.id === input.templateId,
     );
@@ -348,7 +448,11 @@ const defaultSnapshot = (name: string): GameTemplateSnapshot => ({
   roundingMode: 'EXACT',
 });
 
-const createHarness = (drafts: MemoryDrafts, templates: MemoryTemplates) => {
+const createHarness = (
+  drafts: MemoryDrafts,
+  templates: MemoryTemplates,
+  organizerContext?: ConstructorParameters<typeof TemplateWizardHandlers>[0],
+) => {
   const context: OrganizerContext = {
     groupId,
     userId: actorUserId,
@@ -357,7 +461,7 @@ const createHarness = (drafts: MemoryDrafts, templates: MemoryTemplates) => {
     timeZone: 'Europe/Moscow',
   };
   const handler = new TemplateWizardHandlers(
-    { require: async () => context },
+    organizerContext ?? { require: async () => context },
     drafts,
     templates,
   );

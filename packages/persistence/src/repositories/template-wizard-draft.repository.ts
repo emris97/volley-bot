@@ -148,7 +148,11 @@ const parseStoredDraft = (
     throw new Error('Invalid draft id');
   if (typeof value.previewed !== 'boolean')
     throw new Error('Invalid preview state');
-  if (typeof value.snapshot !== 'object' || value.snapshot === null)
+  if (
+    typeof value.snapshot !== 'object' ||
+    value.snapshot === null ||
+    Array.isArray(value.snapshot)
+  )
     throw new Error('Invalid draft snapshot');
   const snapshot = value.snapshot as Record<string, unknown>;
   rejectUnknownKeys(snapshot, snapshotKeys, 'snapshot');
