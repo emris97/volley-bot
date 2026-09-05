@@ -81,6 +81,7 @@ describe('AuthorizationService shared role hierarchy', () => {
     const useCase = new ConfigureGroup(authorization, {
       configure: async () => {
         configured = true;
+        return true;
       },
     });
 

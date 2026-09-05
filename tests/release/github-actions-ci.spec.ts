@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
@@ -12,7 +12,12 @@ interface WorkflowStep {
 }
 
 interface WorkflowJob {
+  concurrency?: {
+    group?: string;
+    'cancel-in-progress'?: boolean;
+  };
   'continue-on-error'?: unknown;
+  environment?: string;
   if?: unknown;
   needs?: string[];
   permissions?: Record<string, string>;
@@ -24,13 +29,14 @@ interface WorkflowJob {
 interface WorkflowDocument {
   concurrency?: {
     group?: string;
-    'cancel-in-progress'?: boolean;
+    'cancel-in-progress'?: boolean | string;
   };
   jobs?: Record<string, WorkflowJob>;
   name?: string;
   on?: {
     pull_request?: unknown;
     push?: { branches?: string[] };
+    workflow_dispatch?: unknown;
   };
   permissions?: Record<string, string>;
 }
@@ -75,7 +81,7 @@ const expectRequiredJob = (job: WorkflowJob): void => {
 };
 
 describe('GitHub Actions CI contract', () => {
-  it('runs the exact read-only checks and never publishes or deploys', async () => {
+  it('runs the exact verification jobs without publishing', async () => {
     const workflowText = await readFile('.github/workflows/ci.yml', 'utf8');
     const workflow = parse(workflowText) as WorkflowDocument;
 
@@ -83,14 +89,9 @@ describe('GitHub Actions CI contract', () => {
     expect(workflow.on).toHaveProperty('pull_request');
     expect(workflow.on?.push).toEqual({ branches: ['main'] });
     expect(workflow.permissions).toEqual({ contents: 'read' });
-    expect(workflow.concurrency?.['cancel-in-progress']).toBe(true);
-    expect(workflow.concurrency?.group).toBe(
-      'ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}',
-    );
-
     const jobs = workflow.jobs ?? {};
     expect(Object.keys(jobs).sort()).toEqual(
-      ['container-build', 'quality', 'test'].sort(),
+      ['container-build', 'deploy-production', 'quality', 'test'].sort(),
     );
 
     const quality = jobs.quality;
@@ -148,7 +149,8 @@ describe('GitHub Actions CI contract', () => {
       },
     ]);
 
-    const commands = Object.values(jobs).flatMap(commandsFor);
+    const verificationJobs = [quality, test, containerBuild];
+    const commands = verificationJobs.flatMap(commandsFor);
     expect(commands).not.toEqual([]);
     for (const command of commands) {
       expect(command).not.toMatch(
@@ -165,7 +167,7 @@ describe('GitHub Actions CI contract', () => {
       );
     }
 
-    const referencedActions = Object.values(jobs).flatMap((job) =>
+    const referencedActions = verificationJobs.flatMap((job) =>
       (job.steps ?? []).flatMap((step) =>
         step.uses === undefined ? [] : [step.uses],
       ),
@@ -182,12 +184,63 @@ describe('GitHub Actions CI contract', () => {
     }
     const usesLines = workflowText
       .split('\n')
+      .map((line) => line.trimEnd())
       .filter((line) => line.trimStart().startsWith('uses:'));
     for (const line of usesLines) {
       expect(line).toMatch(/@[0-9a-f]{40} # v\d+(?:\.\d+){2}$/);
     }
 
     expect(workflowText).not.toContain('pull_request_target');
-    expect(workflowText).not.toMatch(/\bsecrets\./);
+    expect(JSON.stringify(verificationJobs)).not.toMatch(/secrets\./);
+    expect(
+      [...workflowText.matchAll(/secrets\.([A-Z0-9_]+)/g)]
+        .map((match) => match[1])
+        .sort(),
+    ).toEqual(
+      [
+        'PRODUCTION_HOST',
+        'PRODUCTION_HOST_KEY',
+        'PRODUCTION_SSH_KEY',
+        'PRODUCTION_USER',
+      ].sort(),
+    );
+  });
+
+  it('deploys only tested main commits through restricted SSH', async () => {
+    const workflowText = await readFile('.github/workflows/ci.yml', 'utf8');
+    const workflow = parse(workflowText) as WorkflowDocument;
+    const deploy = workflow.jobs?.['deploy-production'];
+
+    expect(workflow.on).toHaveProperty('workflow_dispatch');
+    expect(workflow.concurrency).toEqual({
+      group:
+        'ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}',
+      'cancel-in-progress': "${{ github.event_name == 'pull_request' }}",
+    });
+    expect(deploy).toMatchObject({
+      if: "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'",
+      needs: ['container-build'],
+      'runs-on': 'ubuntu-latest',
+      'timeout-minutes': 30,
+      environment: 'production',
+      concurrency: {
+        group: 'volley-bot-production',
+        'cancel-in-progress': false,
+      },
+    });
+    expect(deploy?.steps?.some((step) => step.uses !== undefined)).toBe(false);
+
+    const commands = commandsFor(deploy!).join('\n');
+    expect(commands).toContain('StrictHostKeyChecking=yes');
+    expect(commands).toContain('IdentitiesOnly=yes');
+    expect(commands).toContain('deploy ${GITHUB_SHA}');
+    expect(commands).not.toMatch(
+      /BOT_TOKEN|DATABASE_URL|REDIS_URL|TELEGRAM_WEBHOOK_SECRET/,
+    );
+    expect(
+      (await readdir('.github/workflows')).filter((name) =>
+        /\.ya?ml$/i.test(name),
+      ),
+    ).toEqual(['ci.yml']);
   });
 });

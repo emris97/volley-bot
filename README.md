@@ -66,6 +66,12 @@ Metrics cover webhook outcomes and latency, queue depth, job retries, outbox lag
 
 The outbox worker also performs bounded cleanup of expired payment drafts and private input sessions. Scheduled job reconciliation repairs delivery work after Redis loss. These maintenance paths are safe to repeat and keep PostgreSQL authoritative.
 
+### Group onboarding
+
+Add the bot to a Telegram group as an administrator. The bot posts a private-chat link valid for 15 minutes. The administrator completes all seven Russian configuration steps and confirms the summary before settings are saved. Reopening a valid link resumes the first unanswered step; re-adding the bot to an unfinished group creates a fresh link without clearing progress.
+
+Expected user mistakes such as bare `/start`, expired links, or stale buttons are acknowledged and do not remain in Telegram's retry queue. A repeated HTTP 500 indicates an infrastructure or programming failure and should be investigated in the API container logs.
+
 ## Retention baseline
 
 Use the following conservative, finite defaults for the first private deployment:

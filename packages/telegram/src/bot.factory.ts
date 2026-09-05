@@ -1,13 +1,25 @@
-import type { TelegramGateway } from '@volley/application';
+import {
+  AuthorizationDeniedError,
+  type TelegramGateway,
+} from '@volley/application';
 import type { TelegramId } from '@volley/domain';
+import { Logger } from '@nestjs/common';
 import { Bot, type Context } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import {
   GroupOnboardingHandlers,
   toTelegramId,
 } from './group-onboarding.handlers.js';
+import { OnboardingInputError } from './group-onboarding.model.js';
+import {
+  renderStartError,
+  type StartErrorReason,
+} from './group-onboarding.presenter.js';
 import type { GuestFlowHandlers } from './registrations/guest-flow.handlers.js';
 import { TelegramMessageNotEditableError } from './messages/game-message-updater.js';
+import { StartTokenVerificationError } from './signed-start-token.js';
+
+const logger = new Logger('TelegramBot');
 
 export const createTelegramBot = (
   token: string,
@@ -36,17 +48,36 @@ export const registerGroupOnboardingHandlers = (
   bot.command('start', async (context) => {
     if (context.from === undefined)
       throw new Error('Message sender is required');
-    const handled = await handlers.handleStart({
-      telegramUserId: toTelegramId(context.from.id),
-      privateChatId: toTelegramId(context.chat.id),
-      token: context.match ?? '',
-    });
+    const token = context.match ?? '';
+    if (token.length === 0) {
+      await context.reply(renderStartError('BARE_START').text);
+      return;
+    }
+
+    let handled: boolean;
+    try {
+      handled = await handlers.handleStart({
+        telegramUserId: toTelegramId(context.from.id),
+        privateChatId: toTelegramId(context.chat.id),
+        token,
+      });
+    } catch (error) {
+      const reason = startErrorReason(error);
+      if (reason === undefined) throw error;
+      logger.warn('Telegram onboarding input rejected', {
+        errorCategory: onboardingErrorCategory(reason),
+      });
+      await context.reply(renderStartError(reason).text);
+      return;
+    }
     if (!handled) {
-      if (guestHandlers === undefined)
-        throw new Error('Unsupported start token');
+      if (guestHandlers === undefined) {
+        await context.reply(renderStartError('UNSUPPORTED_LINK').text);
+        return;
+      }
       await guestHandlers.handleStart({
         telegramUserId: toTelegramId(context.from.id),
-        token: context.match ?? '',
+        token,
       });
       await context.reply('guest:name');
     }
@@ -64,16 +95,85 @@ export const registerGroupOnboardingHandlers = (
     });
   }
   bot.callbackQuery(/^cfg:/, async (context) => {
-    const chatId = context.callbackQuery.message?.chat.id;
-    if (chatId === undefined) throw new Error('Callback message is required');
-    await handlers.handleCallback({
-      telegramUserId: toTelegramId(context.callbackQuery.from.id),
-      privateChatId: toTelegramId(chatId),
-      data: context.callbackQuery.data,
-    });
+    try {
+      const result = await handlers.handleCallback({
+        telegramUserId: toTelegramId(context.callbackQuery.from.id),
+        privateChatId: toTelegramId(
+          context.callbackQuery.message?.chat.id ??
+            context.callbackQuery.from.id,
+        ),
+        messageId:
+          context.callbackQuery.message === undefined
+            ? undefined
+            : BigInt(context.callbackQuery.message.message_id),
+        data: context.callbackQuery.data,
+      });
+      await context.answerCallbackQuery({
+        text: result.notice,
+        show_alert: result.showAlert,
+      });
+    } catch (error) {
+      const errorCategory = callbackErrorCategory(error);
+      if (errorCategory === undefined) {
+        await acknowledgeCallbackBestEffort(context);
+        throw error;
+      }
+      logger.warn('Telegram onboarding input rejected', {
+        errorCategory: `onboarding.${errorCategory.toLowerCase()}`,
+      });
+      await context.answerCallbackQuery({
+        text: callbackErrorText(errorCategory),
+        show_alert: true,
+      });
+    }
   });
 
   return bot;
+};
+
+const startErrorReason = (error: unknown): StartErrorReason | undefined => {
+  if (error instanceof StartTokenVerificationError) {
+    return error.reason === 'EXPIRED' ? 'EXPIRED_LINK' : 'INVALID_LINK';
+  }
+  if (error instanceof AuthorizationDeniedError) return 'ADMIN_REQUIRED';
+  if (error instanceof OnboardingInputError) {
+    if (error.code === 'INVALID_LINK') return 'INVALID_LINK';
+    if (error.code === 'FOREIGN_LINK') return 'FOREIGN_LINK';
+    if (error.code === 'ADMIN_REQUIRED') return 'ADMIN_REQUIRED';
+  }
+  return undefined;
+};
+
+const onboardingErrorCategory = (reason: StartErrorReason): string =>
+  `onboarding.${reason.toLowerCase()}`;
+
+type CallbackErrorCategory =
+  'INVALID_CALLBACK' | 'INVALID_LINK' | 'FOREIGN_LINK' | 'ADMIN_REQUIRED';
+
+const callbackErrorCategory = (
+  error: unknown,
+): CallbackErrorCategory | undefined => {
+  if (error instanceof AuthorizationDeniedError) return 'ADMIN_REQUIRED';
+  if (error instanceof OnboardingInputError) return error.code;
+  return undefined;
+};
+
+const callbackErrorText = (category: CallbackErrorCategory): string =>
+  ({
+    INVALID_CALLBACK: 'Эта кнопка больше не действует.',
+    INVALID_LINK: 'Группа для этой настройки не найдена.',
+    FOREIGN_LINK: 'Эта кнопка предназначена для другого администратора.',
+    ADMIN_REQUIRED: 'Для настройки нужны права администратора группы.',
+  })[category];
+
+const acknowledgeCallbackBestEffort = async (
+  context: Context,
+): Promise<void> => {
+  try {
+    await context.answerCallbackQuery();
+  } catch {
+    // Preserve the original operational error if Telegram cannot be reached.
+  }
 };
 
 export const createLazyTelegramUpdateHandler = (

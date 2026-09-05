@@ -24,6 +24,15 @@ export interface AddGuestStartPayload {
 
 export type StartPayload = ConfigureGroupStartPayload | AddGuestStartPayload;
 
+export type StartTokenVerificationFailure = 'INVALID' | 'EXPIRED';
+
+export class StartTokenVerificationError extends Error {
+  public constructor(public readonly reason: StartTokenVerificationFailure) {
+    super(`Start token ${reason.toLowerCase()}`);
+    this.name = 'StartTokenVerificationError';
+  }
+}
+
 const configurePurpose = 1;
 const addGuestPurpose = 2;
 const bodyLength = 29;
@@ -71,7 +80,7 @@ export class SignedStartToken {
 
   verify(token: string, now = new Date()): StartPayload {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(token)) {
-      throw new Error('Invalid token signature');
+      throw new StartTokenVerificationError('INVALID');
     }
     const bytes = Buffer.from(token, 'base64url');
     if (
@@ -79,19 +88,19 @@ export class SignedStartToken {
       bytes.length !== tokenLength ||
       ![configurePurpose, addGuestPurpose].includes(bytes.readUInt8(0))
     ) {
-      throw new Error('Invalid token signature');
+      throw new StartTokenVerificationError('INVALID');
     }
 
     const body = bytes.subarray(0, bodyLength);
     const actualTag = bytes.subarray(bodyLength);
     const expectedTag = this.signature(body);
     if (!timingSafeEqual(actualTag, expectedTag)) {
-      throw new Error('Invalid token signature');
+      throw new StartTokenVerificationError('INVALID');
     }
 
     const expiresAtMilliseconds = body.readUInt32BE(25) * 1000;
     if (expiresAtMilliseconds <= now.getTime()) {
-      throw new Error('Start token expired');
+      throw new StartTokenVerificationError('EXPIRED');
     }
 
     const telegramId = asTelegramId(body.readBigUInt64BE(17).toString());

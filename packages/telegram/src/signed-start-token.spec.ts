@@ -1,6 +1,9 @@
 import { asGameId, asGroupId, asTelegramId } from '@volley/domain';
 import { describe, expect, it } from 'vitest';
-import { SignedStartToken } from './signed-start-token.js';
+import {
+  SignedStartToken,
+  StartTokenVerificationError,
+} from './signed-start-token.js';
 
 const now = new Date('2026-08-31T12:00:00Z');
 const validPayload = {
@@ -27,18 +30,22 @@ describe('SignedStartToken', () => {
     const signer = new SignedStartToken('a-secret-with-at-least-32-characters');
     const token = signer.sign(validPayload);
 
-    expect(() => signer.verify(`${token}x`, now)).toThrow(/signature/i);
+    expect(captureError(() => signer.verify(`${token}x`, now))).toEqual(
+      new StartTokenVerificationError('INVALID'),
+    );
   });
 
   it('rejects an expired configuration token', () => {
     const signer = new SignedStartToken('a-secret-with-at-least-32-characters');
 
-    expect(() =>
-      signer.verify(
-        signer.sign(validPayload),
-        new Date('2026-08-31T12:16:00Z'),
+    expect(
+      captureError(() =>
+        signer.verify(
+          signer.sign(validPayload),
+          new Date('2026-08-31T12:16:00Z'),
+        ),
       ),
-    ).toThrow(/expired/i);
+    ).toEqual(new StartTokenVerificationError('EXPIRED'));
   });
 
   it('round-trips a compact add-guest payload', () => {
@@ -56,3 +63,12 @@ describe('SignedStartToken', () => {
     expect(signer.verify(token, now)).toEqual(payload);
   });
 });
+
+const captureError = (action: () => unknown): unknown => {
+  try {
+    action();
+  } catch (error) {
+    return error;
+  }
+  throw new Error('Expected action to throw');
+};

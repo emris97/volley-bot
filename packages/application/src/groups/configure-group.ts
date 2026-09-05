@@ -12,10 +12,11 @@ export interface ConfigureGroupCommand {
   currency: 'RUB';
   roundingMode: 'EXACT' | 'UP_1' | 'UP_10' | 'UP_50';
   pinGameMessages: boolean;
+  expectedOnboardingProgress?: Record<string, unknown>;
 }
 
 export interface ConfigurableGroupRepository {
-  configure(command: ConfigureGroupCommand): Promise<void>;
+  configure(command: ConfigureGroupCommand): Promise<boolean>;
 }
 
 export class ConfigureGroup {
@@ -27,7 +28,7 @@ export class ConfigureGroup {
     private readonly groups: ConfigurableGroupRepository,
   ) {}
 
-  async execute(command: ConfigureGroupCommand): Promise<void> {
+  async execute(command: ConfigureGroupCommand): Promise<boolean> {
     await this.authorization.requireTelegramRole(
       command.groupId,
       command.actorTelegramId,
@@ -50,6 +51,6 @@ export class ConfigureGroup {
       }
     }
 
-    await this.groups.configure(command);
+    return this.groups.configure(command);
   }
 }

@@ -55,7 +55,14 @@ describe('group onboarding webhook', () => {
   let container: StartedTestContainer;
   let pool: Pool;
   let groups: GroupRepository;
-  let messages: Array<{ chatId: string; message: string }>;
+  let messages: Array<{
+    chatId: string;
+    message: string;
+    keyboard?: readonly (readonly {
+      text: string;
+      callbackData: string;
+    }[])[];
+  }>;
   let controller: WebhookController;
   let updateId = 1;
 
@@ -97,8 +104,12 @@ describe('group onboarding webhook', () => {
     messages = [];
     const telegram: TelegramGateway = {
       getChatMember: vi.fn().mockResolvedValue({ status: 'administrator' }),
-      sendMessage: vi.fn(async (chatId, message) => {
-        messages.push({ chatId, message });
+      sendMessage: vi.fn(async (chatId, message, options) => {
+        messages.push({ chatId, message, keyboard: options?.keyboard });
+        return { messageId: BigInt(messages.length) };
+      }),
+      editMessage: vi.fn(async (chatId, _messageId, message, options) => {
+        messages.push({ chatId, message, keyboard: options?.keyboard });
       }),
     };
     const signer = new SignedStartToken(
@@ -131,14 +142,14 @@ describe('group onboarding webhook', () => {
       signer,
       telegram,
     );
+    const bot = createTelegramBot(
+      '123456:abcdefghijklmnopqrstuvwxyz',
+      botInfo,
+      handlers,
+    );
+    bot.api.config.use(async () => ({ ok: true, result: true }) as never);
     controller = new WebhookController(
-      createLazyTelegramUpdateHandler(
-        createTelegramBot(
-          '123456:abcdefghijklmnopqrstuvwxyz',
-          botInfo,
-          handlers,
-        ),
-      ),
+      createLazyTelegramUpdateHandler(bot),
       secret,
     );
   };
@@ -161,36 +172,44 @@ describe('group onboarding webhook', () => {
     const token = messages[0]?.message.split('?start=')[1];
     expect(token).toBeTruthy();
     await controller.handle(secret, startUpdate(token!));
-    expect(messages.at(-1)?.message).toBe('onboarding:tz');
+    expect(messages.at(-1)?.message).toContain('Шаг 1 из 7');
 
-    await controller.handle(
-      secret,
-      callbackUpdate(started!.id, 'tz', 'Europe/Moscow'),
-    );
+    await click('Астрахань (UTC+4)');
     createHarness();
     await controller.handle(secret, startUpdate(token!));
-    expect(messages.at(-1)?.message).toBe('onboarding:mp');
+    expect(messages.at(-1)?.message).toContain('Шаг 2 из 7');
 
-    for (const [code, value] of [
-      ['mp', '1'],
-      ['tp', '1440'],
-      ['tr', '60'],
-      ['rm', '120'],
-      ['ro', 'UP_10'],
-      ['pin', '1'],
-    ] as const) {
-      await controller.handle(secret, callbackUpdate(started!.id, code, value));
+    for (const button of [
+      'Участники группы выше гостей',
+      'За 24 часа',
+      '1 час',
+      'За 2 часа',
+      'Точно до копеек',
+      'Да',
+    ]) {
+      await click(button);
     }
+    expect(messages.at(-1)?.message).toContain('Проверьте настройки');
+    await click('✅ Сохранить настройки');
 
     expect(await groups.findByTelegramChatId(groupChatId)).toMatchObject({
       enabled: true,
       onboardingState: 'CONFIGURED',
-      timeZone: 'Europe/Moscow',
+      timeZone: 'Europe/Astrakhan',
     });
-    expect(messages.at(-1)?.message).toBe('onboarding:complete');
+    expect(messages.at(-1)?.message).toContain('Группа уже настроена');
+
+    async function click(text: string): Promise<void> {
+      const button = messages
+        .at(-1)
+        ?.keyboard?.flat()
+        .find((candidate) => candidate.text === text);
+      if (button === undefined) throw new Error(`Button ${text} missing`);
+      await controller.handle(secret, callbackUpdate(button.callbackData));
+    }
   });
 
-  it('disables and reactivates the same group record with bot membership', async () => {
+  it('disables and restarts the same unfinished group with bot membership', async () => {
     createHarness();
     const existing = await groups.upsertFromTelegram({
       telegramChatId: groupChatId,
@@ -206,8 +225,11 @@ describe('group onboarding webhook', () => {
     expect(await groups.findByTelegramChatId(groupChatId)).toMatchObject({
       id: existing.id,
       enabled: true,
-      onboardingState: 'PENDING',
+      onboardingState: 'CONFIGURING',
     });
+    expect(messages.at(-1)?.message).toContain(
+      'https://t.me/volley_test_bot?start=',
+    );
   });
 
   const addedToGroupUpdate = (): Update => membershipUpdate('member');
@@ -246,17 +268,13 @@ describe('group onboarding webhook', () => {
     },
   });
 
-  const callbackUpdate = (
-    groupId: string,
-    code: string,
-    value: string,
-  ): Update => ({
+  const callbackUpdate = (data: string): Update => ({
     update_id: updateId++,
     callback_query: {
       id: String(updateId),
       chat_instance: 'test',
       from: { id: Number(administratorId), is_bot: false, first_name: 'Admin' },
-      data: `cfg:${groupId}:${code}:${value}`,
+      data,
       message: {
         message_id: updateId,
         date: 1_788_134_400,

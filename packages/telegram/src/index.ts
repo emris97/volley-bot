@@ -2,6 +2,8 @@ export const packageMarker = 'telegram' as const;
 export * from './callbacks/callback-codec.js';
 export * from './bot.factory.js';
 export * from './group-onboarding.handlers.js';
+export * from './group-onboarding.model.js';
+export * from './group-onboarding.presenter.js';
 export * from './games/game-creation.handlers.js';
 export * from './games/game-management.handlers.js';
 export * from './games/management-entry.handlers.js';

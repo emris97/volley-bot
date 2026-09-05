@@ -6,6 +6,7 @@ import {
   type GroupId,
   type GroupMembership,
   type GroupRole,
+  type OnboardingState,
   type TelegramId,
   type UserId,
 } from '@volley/domain';
@@ -29,6 +30,23 @@ export interface ConfigureGroupInput {
   currency: 'RUB';
   roundingMode: 'EXACT' | 'UP_1' | 'UP_10' | 'UP_50';
   pinGameMessages: boolean;
+  expectedOnboardingProgress?: Record<string, unknown>;
+}
+
+export interface GroupOnboardingSnapshot {
+  telegramChatId: TelegramId;
+  onboardingState: OnboardingState;
+  progress: Record<string, unknown>;
+  settings: {
+    timeZone: string;
+    memberPriorityEnabled: boolean;
+    tentativePromptMinutesBefore: number;
+    tentativeResponseMinutes: number;
+    reminderMinutesBefore: number;
+    currency: 'RUB';
+    roundingMode: 'EXACT' | 'UP_1' | 'UP_10' | 'UP_50';
+    pinGameMessages: boolean;
+  };
 }
 
 const toDatabaseTelegramId = (value: TelegramId): bigint => BigInt(value);
@@ -197,8 +215,8 @@ export class GroupRepository {
     });
   }
 
-  public async configure(input: ConfigureGroupInput): Promise<void> {
-    await this.database.transaction(async (transaction) => {
+  public async configure(input: ConfigureGroupInput): Promise<boolean> {
+    return this.database.transaction(async (transaction) => {
       const [actor] = await transaction
         .select({ id: users.id })
         .from(users)
@@ -208,7 +226,7 @@ export class GroupRepository {
         .limit(1);
       if (actor === undefined) throw new Error('Configuration actor not found');
 
-      await transaction
+      const [configured] = await transaction
         .update(groups)
         .set({
           timeZone: input.timeZone,
@@ -223,7 +241,17 @@ export class GroupRepository {
           onboardingData: {},
           updatedAt: new Date(),
         })
-        .where(eq(groups.id, input.groupId));
+        .where(
+          input.expectedOnboardingProgress === undefined
+            ? eq(groups.id, input.groupId)
+            : and(
+                eq(groups.id, input.groupId),
+                eq(groups.onboardingState, 'CONFIGURING'),
+                eq(groups.onboardingData, input.expectedOnboardingProgress),
+              ),
+        )
+        .returning({ id: groups.id });
+      if (configured === undefined) return false;
       await transaction.insert(auditEvents).values({
         groupId: input.groupId,
         actorUserId: actor.id,
@@ -232,6 +260,7 @@ export class GroupRepository {
         entityId: input.groupId,
         payload: { timeZone: input.timeZone },
       });
+      return true;
     });
   }
 
@@ -245,6 +274,25 @@ export class GroupRepository {
       .where(eq(groups.id, groupId));
   }
 
+  public async compareAndSetWizardProgress(
+    groupId: GroupId,
+    expectedProgress: Record<string, unknown>,
+    progress: Record<string, unknown>,
+  ): Promise<boolean> {
+    const [updated] = await this.database
+      .update(groups)
+      .set({ onboardingData: progress, updatedAt: new Date() })
+      .where(
+        and(
+          eq(groups.id, groupId),
+          eq(groups.onboardingState, 'CONFIGURING'),
+          eq(groups.onboardingData, expectedProgress),
+        ),
+      )
+      .returning({ id: groups.id });
+    return updated !== undefined;
+  }
+
   public async getWizardProgress(
     groupId: GroupId,
   ): Promise<Record<string, unknown>> {
@@ -255,6 +303,51 @@ export class GroupRepository {
       .limit(1);
     if (row === undefined) throw new Error('Group not found');
     return row.onboardingData;
+  }
+
+  public async getOnboardingSnapshot(
+    groupId: GroupId,
+  ): Promise<GroupOnboardingSnapshot | null> {
+    const [row] = await this.database
+      .select({
+        telegramChatId: groups.telegramChatId,
+        onboardingState: groups.onboardingState,
+        progress: groups.onboardingData,
+        timeZone: groups.timeZone,
+        memberPriorityEnabled: groups.memberPriorityEnabled,
+        tentativePromptMinutesBefore: groups.tentativePromptMinutesBefore,
+        tentativeResponseMinutes: groups.tentativeResponseMinutes,
+        reminderMinutesBefore: groups.reminderMinutesBefore,
+        currency: groups.currency,
+        roundingMode: groups.roundingMode,
+        pinGameMessages: groups.pinGameMessages,
+      })
+      .from(groups)
+      .where(eq(groups.id, groupId))
+      .limit(1);
+    if (row === undefined) return null;
+    if (
+      row.currency !== 'RUB' ||
+      !['EXACT', 'UP_1', 'UP_10', 'UP_50'].includes(row.roundingMode)
+    ) {
+      throw new Error('Invalid stored group settings');
+    }
+    return {
+      telegramChatId: fromDatabaseTelegramId(row.telegramChatId),
+      onboardingState: row.onboardingState,
+      progress: row.progress,
+      settings: {
+        timeZone: row.timeZone,
+        memberPriorityEnabled: row.memberPriorityEnabled,
+        tentativePromptMinutesBefore: row.tentativePromptMinutesBefore,
+        tentativeResponseMinutes: row.tentativeResponseMinutes,
+        reminderMinutesBefore: row.reminderMinutesBefore,
+        currency: row.currency,
+        roundingMode:
+          row.roundingMode as GroupOnboardingSnapshot['settings']['roundingMode'],
+        pinGameMessages: row.pinGameMessages,
+      },
+    };
   }
 
   public async recordRoleChange(input: {
