@@ -34,7 +34,8 @@ export type StartErrorReason =
   | 'INVALID_LINK'
   | 'EXPIRED_LINK'
   | 'FOREIGN_LINK'
-  | 'ADMIN_REQUIRED';
+  | 'ADMIN_REQUIRED'
+  | 'UNSUPPORTED_LINK';
 
 const stepOptions: Readonly<
   Record<WizardCode, readonly { text: string; answer: WizardAnswer }[]>
@@ -58,14 +59,14 @@ const stepOptions: Readonly<
     { text: 'За 6 часов', answer: { code: 'tp', value: 360 } },
   ],
   tr: [
-    { text: '30 минут', answer: { code: 'tr', value: 30 } },
     { text: '1 час', answer: { code: 'tr', value: 60 } },
+    { text: '30 минут', answer: { code: 'tr', value: 30 } },
     { text: '2 часа', answer: { code: 'tr', value: 120 } },
   ],
   rm: [
+    { text: 'За 2 часа', answer: { code: 'rm', value: 120 } },
     { text: 'За 30 минут', answer: { code: 'rm', value: 30 } },
     { text: 'За 1 час', answer: { code: 'rm', value: 60 } },
-    { text: 'За 2 часа', answer: { code: 'rm', value: 120 } },
   ],
   ro: [
     { text: 'Точно до копеек', answer: { code: 'ro', value: 'EXACT' } },
@@ -146,6 +147,8 @@ export const renderStartError = (reason: StartErrorReason): OnboardingView => ({
     EXPIRED_LINK: 'Срок действия ссылки истёк. Получите новую ссылку в группе.',
     FOREIGN_LINK: 'Эта ссылка предназначена для другого администратора.',
     ADMIN_REQUIRED: 'Для настройки нужны права администратора группы.',
+    UNSUPPORTED_LINK:
+      'Эта ссылка не подходит для доступных действий. Получите новую ссылку у бота.',
   }[reason],
   keyboard: [],
 });

@@ -26,6 +26,7 @@ describe('production deployment scripts', () => {
     expect(script).toContain('--wait-timeout');
     expect(script).toContain('/etc/volley-bot/production.env');
     expect(script).toContain('compose.prod.yaml');
+    expect(script).toContain('logs --tail=200 api worker');
     expect(script).not.toMatch(
       /rm\s+-rf|git\s+clean|production\.env.*(?:cat|echo)/,
     );

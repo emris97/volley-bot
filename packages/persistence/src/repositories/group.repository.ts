@@ -30,6 +30,7 @@ export interface ConfigureGroupInput {
   currency: 'RUB';
   roundingMode: 'EXACT' | 'UP_1' | 'UP_10' | 'UP_50';
   pinGameMessages: boolean;
+  expectedOnboardingProgress?: Record<string, unknown>;
 }
 
 export interface GroupOnboardingSnapshot {
@@ -214,8 +215,8 @@ export class GroupRepository {
     });
   }
 
-  public async configure(input: ConfigureGroupInput): Promise<void> {
-    await this.database.transaction(async (transaction) => {
+  public async configure(input: ConfigureGroupInput): Promise<boolean> {
+    return this.database.transaction(async (transaction) => {
       const [actor] = await transaction
         .select({ id: users.id })
         .from(users)
@@ -225,7 +226,7 @@ export class GroupRepository {
         .limit(1);
       if (actor === undefined) throw new Error('Configuration actor not found');
 
-      await transaction
+      const [configured] = await transaction
         .update(groups)
         .set({
           timeZone: input.timeZone,
@@ -240,7 +241,17 @@ export class GroupRepository {
           onboardingData: {},
           updatedAt: new Date(),
         })
-        .where(eq(groups.id, input.groupId));
+        .where(
+          input.expectedOnboardingProgress === undefined
+            ? eq(groups.id, input.groupId)
+            : and(
+                eq(groups.id, input.groupId),
+                eq(groups.onboardingState, 'CONFIGURING'),
+                eq(groups.onboardingData, input.expectedOnboardingProgress),
+              ),
+        )
+        .returning({ id: groups.id });
+      if (configured === undefined) return false;
       await transaction.insert(auditEvents).values({
         groupId: input.groupId,
         actorUserId: actor.id,
@@ -249,6 +260,7 @@ export class GroupRepository {
         entityId: input.groupId,
         payload: { timeZone: input.timeZone },
       });
+      return true;
     });
   }
 
@@ -260,6 +272,25 @@ export class GroupRepository {
       .update(groups)
       .set({ onboardingData: progress, updatedAt: new Date() })
       .where(eq(groups.id, groupId));
+  }
+
+  public async compareAndSetWizardProgress(
+    groupId: GroupId,
+    expectedProgress: Record<string, unknown>,
+    progress: Record<string, unknown>,
+  ): Promise<boolean> {
+    const [updated] = await this.database
+      .update(groups)
+      .set({ onboardingData: progress, updatedAt: new Date() })
+      .where(
+        and(
+          eq(groups.id, groupId),
+          eq(groups.onboardingState, 'CONFIGURING'),
+          eq(groups.onboardingData, expectedProgress),
+        ),
+      )
+      .returning({ id: groups.id });
+    return updated !== undefined;
   }
 
   public async getWizardProgress(

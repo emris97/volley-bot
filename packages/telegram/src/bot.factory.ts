@@ -71,8 +71,10 @@ export const registerGroupOnboardingHandlers = (
       return;
     }
     if (!handled) {
-      if (guestHandlers === undefined)
-        throw new Error('Unsupported start token');
+      if (guestHandlers === undefined) {
+        await context.reply(renderStartError('UNSUPPORTED_LINK').text);
+        return;
+      }
       await guestHandlers.handleStart({
         telegramUserId: toTelegramId(context.from.id),
         token,

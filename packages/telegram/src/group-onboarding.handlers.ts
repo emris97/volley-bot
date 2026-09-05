@@ -44,6 +44,11 @@ export interface OnboardingHandlerRepository {
     groupId: GroupId,
     progress: Record<string, unknown>,
   ): Promise<void>;
+  compareAndSetWizardProgress(
+    groupId: GroupId,
+    expectedProgress: Record<string, unknown>,
+    progress: Record<string, unknown>,
+  ): Promise<boolean>;
 }
 
 export interface OnboardingCallbackResult {
@@ -85,6 +90,10 @@ export class GroupOnboardingHandlers {
       return;
     }
     if (existing?.onboardingState === 'CONFIGURED') {
+      await this.assertTelegramAdministrator(
+        input.telegramChatId,
+        input.actorTelegramId,
+      );
       await this.groups.setEnabled(existing.id, true);
       return;
     }
@@ -162,7 +171,18 @@ export class GroupOnboardingHandlers {
     }
 
     if (callback.kind === 'RESET') {
-      await this.groups.saveWizardProgress(callback.groupId, {});
+      const reset = await this.groups.compareAndSetWizardProgress(
+        callback.groupId,
+        progress,
+        {},
+      );
+      if (!reset) {
+        return this.renderCurrentState(
+          callback.groupId,
+          input.privateChatId,
+          input.messageId,
+        );
+      }
       await this.editOrReplace(
         input.privateChatId,
         input.messageId,
@@ -180,11 +200,19 @@ export class GroupOnboardingHandlers {
         );
         return { notice: 'Сначала завершите все шаги', showAlert: true };
       }
-      await this.configure.execute({
+      const saved = await this.configure.execute({
         groupId: callback.groupId,
         actorTelegramId: input.telegramUserId,
         ...toConfigureSettings(progress as CompleteWizardProgress),
+        expectedOnboardingProgress: progress,
       });
+      if (!saved) {
+        return this.renderCurrentState(
+          callback.groupId,
+          input.privateChatId,
+          input.messageId,
+        );
+      }
       const configured = await this.groups.getOnboardingSnapshot(
         callback.groupId,
       );
@@ -206,7 +234,18 @@ export class GroupOnboardingHandlers {
       return { notice: 'Показываю текущий шаг' };
     }
     const next = { ...progress, [callback.answer.code]: callback.answer.value };
-    await this.groups.saveWizardProgress(callback.groupId, next);
+    const advanced = await this.groups.compareAndSetWizardProgress(
+      callback.groupId,
+      progress,
+      next,
+    );
+    if (!advanced) {
+      return this.renderCurrentState(
+        callback.groupId,
+        input.privateChatId,
+        input.messageId,
+      );
+    }
     await this.editOrReplace(
       input.privateChatId,
       input.messageId,
@@ -215,23 +254,50 @@ export class GroupOnboardingHandlers {
     return {};
   }
 
+  private async renderCurrentState(
+    groupId: GroupId,
+    privateChatId: TelegramId,
+    messageId: bigint | undefined,
+  ): Promise<OnboardingCallbackResult> {
+    const current = await this.groups.getOnboardingSnapshot(groupId);
+    if (current === null) throw new OnboardingInputError('INVALID_CALLBACK');
+    await this.editOrReplace(
+      privateChatId,
+      messageId,
+      current.onboardingState === 'CONFIGURED'
+        ? renderConfiguredSummary(current.settings)
+        : renderWizardView(groupId, parseWizardProgress(current.progress)),
+    );
+    return { notice: 'Показываю текущий шаг' };
+  }
+
   private async assertAdministrator(
     groupId: GroupId,
     snapshot: OnboardingSnapshot,
     telegramUserId: TelegramId,
   ): Promise<void> {
-    const current = await this.telegram.getChatMember(
+    await this.assertTelegramAdministrator(
       snapshot.telegramChatId,
       telegramUserId,
     );
-    if (current.status !== 'creator' && current.status !== 'administrator') {
-      throw new OnboardingInputError('ADMIN_REQUIRED');
-    }
     await this.authorization.requireTelegramRole(
       groupId,
       telegramUserId,
       'ADMIN',
     );
+  }
+
+  private async assertTelegramAdministrator(
+    telegramChatId: TelegramId,
+    telegramUserId: TelegramId,
+  ): Promise<void> {
+    const current = await this.telegram.getChatMember(
+      telegramChatId,
+      telegramUserId,
+    );
+    if (current.status !== 'creator' && current.status !== 'administrator') {
+      throw new OnboardingInputError('ADMIN_REQUIRED');
+    }
   }
 
   private async sendView(

@@ -17,6 +17,9 @@ describe('GroupOnboardingHandlers', () => {
   let configured: Record<string, unknown>[];
   let adminStatus: 'administrator' | 'member';
   let onboardingRuns: number;
+  let enabledChanges: boolean[];
+  let forceProgressConflict: boolean;
+  let forceSaveConflict: boolean;
   let handlers: GroupOnboardingHandlers;
   let signer: SignedStartToken;
 
@@ -27,6 +30,9 @@ describe('GroupOnboardingHandlers', () => {
     configured = [];
     adminStatus = 'administrator';
     onboardingRuns = 0;
+    enabledChanges = [];
+    forceProgressConflict = false;
+    forceSaveConflict = false;
     signer = new SignedStartToken(
       'a-start-token-secret-with-at-least-32-bytes',
     );
@@ -45,11 +51,28 @@ describe('GroupOnboardingHandlers', () => {
         ...group(),
         onboardingState: snapshot.onboardingState,
       })),
-      setEnabled: vi.fn(async () => group()),
+      setEnabled: vi.fn(async (_requestedGroupId, enabled) => {
+        enabledChanges.push(enabled);
+        return group();
+      }),
       getOnboardingSnapshot: vi.fn(async () => structuredClone(snapshot)),
       saveWizardProgress: vi.fn(async (_requestedGroupId, progress) => {
         snapshot.progress = structuredClone(progress);
       }),
+      compareAndSetWizardProgress: vi.fn(
+        async (_requestedGroupId, expectedProgress, progress) => {
+          if (
+            forceProgressConflict ||
+            JSON.stringify(snapshot.progress) !==
+              JSON.stringify(expectedProgress)
+          ) {
+            snapshot.progress = {};
+            return false;
+          }
+          snapshot.progress = structuredClone(progress);
+          return true;
+        },
+      ),
     };
     handlers = new GroupOnboardingHandlers(
       {
@@ -64,6 +87,10 @@ describe('GroupOnboardingHandlers', () => {
       } as never,
       {
         execute: vi.fn(async (command: Record<string, unknown>) => {
+          if (forceSaveConflict) {
+            snapshot.progress = {};
+            return false;
+          }
           configured.push(command);
           snapshot = {
             ...snapshot,
@@ -85,6 +112,7 @@ describe('GroupOnboardingHandlers', () => {
               pinGameMessages: Boolean(command.pinGameMessages),
             },
           };
+          return true;
         }),
       } as never,
       {
@@ -164,6 +192,37 @@ describe('GroupOnboardingHandlers', () => {
     expect(edited.at(-1)?.message).toContain('Шаг 2 из 7');
   });
 
+  it('does not overwrite a concurrent progress transition', async () => {
+    forceProgressConflict = true;
+
+    const result = await handlers.handleCallback({
+      telegramUserId: administratorId,
+      privateChatId,
+      messageId: 500n,
+      data: `cfg:${groupId}:tz:Europe/Astrakhan`,
+    });
+
+    expect(result.notice).toBe('Показываю текущий шаг');
+    expect(snapshot.progress).toEqual({});
+    expect(edited.at(-1)?.message).toContain('Шаг 1 из 7');
+  });
+
+  it('renders the winning transition when save loses a concurrent reset', async () => {
+    snapshot.progress = completeProgress();
+    forceSaveConflict = true;
+
+    const result = await handlers.handleCallback({
+      telegramUserId: administratorId,
+      privateChatId,
+      messageId: 500n,
+      data: `cfg:${groupId}:save:1`,
+    });
+
+    expect(result.notice).toBe('Показываю текущий шаг');
+    expect(configured).toHaveLength(0);
+    expect(edited.at(-1)?.message).toContain('Шаг 1 из 7');
+  });
+
   it('resets progress and sends a replacement when no message is editable', async () => {
     snapshot.progress = { tz: 'Europe/Astrakhan', mp: true };
 
@@ -218,6 +277,23 @@ describe('GroupOnboardingHandlers', () => {
       newStatus: 'member',
     });
     expect(onboardingRuns).toBe(1);
+    expect(enabledChanges).toEqual([true]);
+  });
+
+  it('does not reactivate a configured group for a non-admin actor', async () => {
+    snapshot.onboardingState = 'CONFIGURED';
+    adminStatus = 'member';
+
+    await expect(
+      handlers.handleMyChatMember({
+        telegramChatId: groupChatId,
+        actorTelegramId: administratorId,
+        title: 'Volley',
+        newStatus: 'member',
+      }),
+    ).rejects.toEqual(new OnboardingInputError('ADMIN_REQUIRED'));
+
+    expect(enabledChanges).toEqual([]);
   });
 
   const configurationToken = (owner: typeof administratorId): string =>
@@ -266,6 +342,16 @@ const pendingSnapshot = (): Snapshot => ({
     roundingMode: 'EXACT',
     pinGameMessages: true,
   },
+});
+
+const completeProgress = (): Record<string, unknown> => ({
+  tz: 'Europe/Astrakhan',
+  mp: true,
+  tp: 1440,
+  tr: 60,
+  rm: 120,
+  ro: 'EXACT',
+  pin: true,
 });
 
 const group = (): Group => ({

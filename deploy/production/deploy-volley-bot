@@ -6,6 +6,21 @@ readonly ENV_FILE=/etc/volley-bot/production.env
 readonly STATE_DIR=/var/lib/volley-bot-deploy
 readonly LOCK_FILE=/run/lock/volley-bot-deploy.lock
 
+print_diagnostics() {
+  printf '%s\n' \
+    'deployment failed; inspect with: cd /opt/volley-bot && docker compose --env-file /etc/volley-bot/production.env -f compose.yaml -f compose.prod.yaml logs --tail=200 api worker' \
+    >&2
+}
+
+on_error() {
+  local status=$?
+  trap - ERR
+  print_diagnostics
+  exit "$status"
+}
+
+trap on_error ERR
+
 if [[ ${1:-} == --stdin ]]; then
   IFS=' ' read -r action revision extra
   [[ -z ${extra:-} ]] || {
@@ -77,10 +92,12 @@ compose=(
 
 if ! "${compose[@]}" build api worker db-migrate; then
   git checkout --detach "$deployed"
+  print_diagnostics
   exit 1
 fi
 if ! "${compose[@]}" run --rm db-migrate; then
   git checkout --detach "$deployed"
+  print_diagnostics
   exit 1
 fi
 "${compose[@]}" up -d --no-deps --force-recreate --wait --wait-timeout 120 api worker

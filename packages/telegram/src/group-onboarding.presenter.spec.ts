@@ -25,12 +25,12 @@ describe('group onboarding presenter', () => {
     [
       { tz: 'Europe/Astrakhan', mp: true, tp: 1440 },
       'Шаг 4 из 7',
-      ['30 минут', '1 час', '2 часа'],
+      ['1 час', '30 минут', '2 часа'],
     ],
     [
       { tz: 'Europe/Astrakhan', mp: true, tp: 1440, tr: 60 },
       'Шаг 5 из 7',
-      ['За 30 минут', 'За 1 час', 'За 2 часа'],
+      ['За 2 часа', 'За 30 минут', 'За 1 час'],
     ],
     [
       { tz: 'Europe/Astrakhan', mp: true, tp: 1440, tr: 60, rm: 120 },
@@ -101,6 +101,7 @@ describe('group onboarding presenter', () => {
     expect(renderStartError('ADMIN_REQUIRED').text).toContain(
       'права администратора',
     );
+    expect(renderStartError('UNSUPPORTED_LINK').text).toContain('не подходит');
   });
 });
 

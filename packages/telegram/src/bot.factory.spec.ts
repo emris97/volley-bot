@@ -123,9 +123,32 @@ describe('group onboarding grammY adapter', () => {
       }),
     );
   });
+
+  it('answers an unsupported start purpose when no private flow owns it', async () => {
+    const harness = createBotHarness({
+      onboardingHandled: false,
+      includeGuestHandlers: false,
+    });
+
+    await expect(
+      harness.updates.handleUpdate(startUpdate(7, 'unsupported-token')),
+    ).resolves.toBeUndefined();
+
+    expect(harness.calls).toContainEqual(
+      expect.objectContaining({
+        method: 'sendMessage',
+        payload: expect.objectContaining({
+          text: expect.stringContaining('не подходит'),
+        }),
+      }),
+    );
+  });
 });
 
-const createBotHarness = (options?: { onboardingHandled?: boolean }) => {
+const createBotHarness = (options?: {
+  onboardingHandled?: boolean;
+  includeGuestHandlers?: boolean;
+}) => {
   const calls: Array<{ method: string; payload: Record<string, unknown> }> = [];
   const handlers = {
     handleMyChatMember: vi.fn(),
@@ -154,7 +177,9 @@ const createBotHarness = (options?: { onboardingHandled?: boolean }) => {
   registerGroupOnboardingHandlers(
     bot,
     handlers as never,
-    guestHandlers as never,
+    options?.includeGuestHandlers === false
+      ? undefined
+      : (guestHandlers as never),
   );
   return {
     calls,
