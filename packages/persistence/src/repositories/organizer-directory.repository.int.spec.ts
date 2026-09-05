@@ -1,11 +1,19 @@
-import { asTelegramId } from '@volley/domain';
+import { asTelegramId, type TelegramId } from '@volley/domain';
 import { Pool } from 'pg';
 import {
   GenericContainer,
   type StartedTestContainer,
   Wait,
 } from 'testcontainers';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { createDatabase } from '../client.js';
 import { applyTestMigrations } from '../migrations/migration-test-helper.js';
 import { GroupRepository } from './group.repository.js';
@@ -93,5 +101,29 @@ describe('OrganizerDirectoryRepository', () => {
     await expect(directory.selectedGroup(telegramUserId)).resolves.toBe(
       second.id,
     );
+
+    const { ResolveOrganizerContext } = (await vi.importActual(
+      '@volley/application',
+    )) as {
+      ResolveOrganizerContext: new (...args: unknown[]) => {
+        list(telegramUserId: TelegramId): Promise<unknown>;
+        require(telegramUserId: TelegramId): Promise<unknown>;
+      };
+    };
+    const resolver = new ResolveOrganizerContext(
+      {
+        getChatMember: async (chatId: TelegramId) => ({
+          status: chatId === first.telegramChatId ? 'administrator' : 'creator',
+        }),
+      },
+      directory,
+    );
+
+    await expect(resolver.list(telegramUserId)).resolves.toEqual([
+      expect.objectContaining({ groupId: first.id, selected: false }),
+    ]);
+    await expect(resolver.require(telegramUserId)).resolves.toMatchObject({
+      groupId: first.id,
+    });
   });
 });
