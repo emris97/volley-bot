@@ -82,6 +82,26 @@ describe('validateTemplateSnapshot', () => {
     ).toMatchObject({ durationMinutes: 720, capacity: 200 });
   });
 
+  it('accepts the PostgreSQL integer maximum for every offset', () => {
+    const maximum = 2_147_483_647;
+    expect(
+      validateTemplateSnapshot({
+        ...validTemplate,
+        registrationOpensMinutesBefore: maximum,
+        registrationClosesMinutesBefore: maximum,
+        tentativePromptMinutesBefore: maximum,
+        tentativeResponseMinutes: maximum,
+        reminderMinutesBefore: maximum,
+      }),
+    ).toMatchObject({
+      registrationOpensMinutesBefore: maximum,
+      registrationClosesMinutesBefore: maximum,
+      tentativePromptMinutesBefore: maximum,
+      tentativeResponseMinutes: maximum,
+      reminderMinutesBefore: maximum,
+    });
+  });
+
   it.each([
     ['durationMinutes', 14, 'DURATION'],
     ['durationMinutes', 721, 'DURATION'],
@@ -111,6 +131,21 @@ describe('validateTemplateSnapshot', () => {
       ).toThrow(new TemplateInputError(code));
     },
   );
+
+  it.each([
+    ['registrationOpensMinutesBefore', 'OPENING'],
+    ['registrationClosesMinutesBefore', 'CLOSING'],
+    ['tentativePromptMinutesBefore', 'CONFIRMATION'],
+    ['tentativeResponseMinutes', 'CONFIRMATION'],
+    ['reminderMinutesBefore', 'REMINDER'],
+  ] as const)('rejects PostgreSQL integer overflow for %s', (field, code) => {
+    expect(() =>
+      validateTemplateSnapshot({
+        ...validTemplate,
+        [field]: 2_147_483_648,
+      }),
+    ).toThrow(new TemplateInputError(code));
+  });
 
   it('rejects timing that would violate a game time-order constraint', () => {
     expect(() =>

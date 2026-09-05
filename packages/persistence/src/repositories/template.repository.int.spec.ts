@@ -134,6 +134,28 @@ describe('TemplateRepository', () => {
     ).resolves.toBeNull();
   });
 
+  it('persists the PostgreSQL integer maximum for every offset', async () => {
+    const maximum = 2_147_483_647;
+
+    await expect(
+      repository.insert({
+        groupId,
+        ...snapshot('Maximum offsets'),
+        registrationOpensMinutesBefore: maximum,
+        registrationClosesMinutesBefore: maximum,
+        tentativePromptMinutesBefore: maximum,
+        tentativeResponseMinutes: maximum,
+        reminderMinutesBefore: maximum,
+      }),
+    ).resolves.toMatchObject({
+      registrationOpensMinutesBefore: maximum,
+      registrationClosesMinutesBefore: maximum,
+      tentativePromptMinutesBefore: maximum,
+      tentativeResponseMinutes: maximum,
+      reminderMinutesBefore: maximum,
+    });
+  });
+
   it('maps normalized active-name conflicts during updates and restore', async () => {
     const archived = await repository.insert({
       groupId,

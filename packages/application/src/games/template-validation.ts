@@ -5,6 +5,7 @@ import {
 } from './template-errors.js';
 
 const MAX_COST_MINOR = 100_000_000n;
+const MAX_POSTGRES_INTEGER = 2_147_483_647;
 const LOCAL_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
 export const validateTemplateSnapshot = (
@@ -87,7 +88,11 @@ const validateOffset = (
     'OPENING' | 'CLOSING' | 'CONFIRMATION' | 'REMINDER'
   >,
 ): void => {
-  if (!Number.isSafeInteger(value) || value < 0) {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    value > MAX_POSTGRES_INTEGER
+  ) {
     throw new TemplateInputError(code);
   }
 };
