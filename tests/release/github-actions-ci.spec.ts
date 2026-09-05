@@ -182,6 +182,7 @@ describe('GitHub Actions CI contract', () => {
     }
     const usesLines = workflowText
       .split('\n')
+      .map((line) => line.trimEnd())
       .filter((line) => line.trimStart().startsWith('uses:'));
     for (const line of usesLines) {
       expect(line).toMatch(/@[0-9a-f]{40} # v\d+(?:\.\d+){2}$/);
