@@ -9,6 +9,7 @@ import type {
   UserId,
 } from '@volley/domain';
 import type { OrganizerAuthorization } from '../auth/authorization.service.js';
+import type { GameCreationDraft } from './game-creation-draft.js';
 
 export type GameAuthorization = OrganizerAuthorization;
 
@@ -62,6 +63,18 @@ export interface GameRepository {
     gameId: GameId,
     callback: (game: Game, changes: LockedGameChanges) => Promise<T>,
   ): Promise<T>;
+}
+
+export interface GamePublicationRepository {
+  publishDraft(
+    input: {
+      groupId: GroupId;
+      actorUserId: UserId;
+      draftId: string;
+      now: Date;
+    },
+    build: (draft: GameCreationDraft) => Game,
+  ): Promise<{ game: Game; created: boolean }>;
 }
 
 export interface UnitOfWork {

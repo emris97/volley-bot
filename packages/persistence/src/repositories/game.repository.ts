@@ -1,3 +1,7 @@
+import type {
+  GameCreationDraft,
+  GamePublicationRepository,
+} from '@volley/application';
 import {
   asGameId,
   asGameTemplateId,
@@ -12,10 +16,15 @@ import { and, asc, eq, gt, inArray, or, sql } from 'drizzle-orm';
 import type { Database } from '../client.js';
 import {
   auditEvents,
+  gameCreationDrafts,
   games,
   outboxEvents,
   scheduledJobs,
 } from '../schema/index.js';
+import {
+  parseGameCreationDraftData,
+  serializeGameCreationDraftData,
+} from './game-creation-draft.repository.js';
 
 const toGame = (row: typeof games.$inferSelect): Game => ({
   id: asGameId(row.id),
@@ -71,7 +80,7 @@ const insertValues = (game: Game) => ({
   canonicalTelegramMessageId: game.canonicalTelegramMessageId,
 });
 
-export class GameRepository {
+export class GameRepository implements GamePublicationRepository {
   public constructor(private readonly database: Database) {}
 
   public async insert(game: Game, actorUserId?: UserId): Promise<Game> {
@@ -97,6 +106,106 @@ export class GameRepository {
         payload: { state: row.state },
       });
       return toGame(row);
+    });
+  }
+
+  public async publishDraft(
+    input: {
+      groupId: GroupId;
+      actorUserId: UserId;
+      draftId: string;
+      now: Date;
+    },
+    build: (draft: GameCreationDraft) => Game,
+  ): Promise<{ game: Game; created: boolean }> {
+    return this.database.transaction(async (transaction) => {
+      const [draftRow] = await transaction
+        .select()
+        .from(gameCreationDrafts)
+        .where(
+          and(
+            eq(gameCreationDrafts.groupId, input.groupId),
+            eq(gameCreationDrafts.actorUserId, input.actorUserId),
+          ),
+        )
+        .for('update')
+        .limit(1);
+      if (draftRow === undefined) {
+        throw new Error('Game creation draft not found');
+      }
+      const draft = parseGameCreationDraftData(
+        draftRow.data,
+        asGroupId(draftRow.groupId),
+        input.actorUserId,
+      );
+      if (draft.draftId !== input.draftId) {
+        throw new Error('Game creation draft is stale');
+      }
+      if (
+        !draft.previewed ||
+        draft.snapshot === undefined ||
+        draft.startsAtIso === undefined ||
+        (draft.step !== 'PREVIEW' && draft.step !== 'PUBLISHED')
+      ) {
+        throw new Error('Complete game preview is required before publish');
+      }
+      if (draft.publishedGameId !== undefined) {
+        const [published] = await transaction
+          .select()
+          .from(games)
+          .where(
+            and(
+              eq(games.groupId, input.groupId),
+              eq(games.id, draft.publishedGameId),
+            ),
+          )
+          .limit(1);
+        if (published === undefined)
+          throw new Error('Published game not found');
+        return { game: toGame(published), created: false };
+      }
+
+      const game = { ...build(draft), revision: 0 };
+      if (game.groupId !== input.groupId) {
+        throw new Error('Published game group does not match draft');
+      }
+      const [created] = await transaction
+        .insert(games)
+        .values(insertValues(game))
+        .returning();
+      if (created === undefined) throw new Error('Game insert returned no row');
+      await transaction.insert(outboxEvents).values({
+        groupId: created.groupId,
+        eventType: 'GAME_CREATED',
+        aggregateType: 'GAME',
+        aggregateId: created.id,
+        payload: { state: created.state },
+      });
+      await transaction.insert(auditEvents).values({
+        groupId: created.groupId,
+        actorUserId: input.actorUserId,
+        eventType: 'GAME_CREATED',
+        entityType: 'GAME',
+        entityId: created.id,
+        payload: { state: created.state },
+      });
+      await transaction
+        .update(gameCreationDrafts)
+        .set({
+          data: serializeGameCreationDraftData({
+            ...draft,
+            step: 'PUBLISHED',
+            publishedGameId: asGameId(created.id),
+          }),
+          updatedAt: input.now,
+        })
+        .where(
+          and(
+            eq(gameCreationDrafts.groupId, input.groupId),
+            eq(gameCreationDrafts.actorUserId, input.actorUserId),
+          ),
+        );
+      return { game: toGame(created), created: true };
     });
   }
 

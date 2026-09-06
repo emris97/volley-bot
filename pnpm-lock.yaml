@@ -182,6 +182,9 @@ importers:
 
   packages/persistence:
     dependencies:
+      '@volley/application':
+        specifier: workspace:*
+        version: link:../application
       '@volley/domain':
         specifier: workspace:*
         version: link:../domain
