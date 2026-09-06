@@ -38,6 +38,21 @@ describe('renderGameMessage', () => {
     expect(rendered.text).toContain('A &lt; B');
     expect(rendered.text).toContain('&lt;Admin&gt;');
   });
+
+  it('advertises only the compact revision-bound management callback', () => {
+    const rendered = renderGameMessage(view({ revision: 35 }));
+    const manage = rendered.keyboard
+      .flat()
+      .find(({ text }) => text === 'Управление');
+
+    expect(manage?.callbackData).toBe('ga:v1:manage:AY9roGLSe9GPExLgyEJGEA:z');
+    expect(manage?.callbackData).not.toContain(
+      '018f6ba0-62d2-7bd1-8f13-12e0c8424610',
+    );
+    expect(Buffer.byteLength(manage?.callbackData ?? '', 'utf8')).toBeLessThan(
+      64,
+    );
+  });
 });
 
 const view = (overrides: Partial<GameMessageView> = {}): GameMessageView => ({
@@ -52,6 +67,7 @@ const view = (overrides: Partial<GameMessageView> = {}): GameMessageView => ({
   startsAt: new Date('2026-09-04T16:00:00.000Z'),
   timeZone: 'Europe/Astrakhan',
   state: 'OPEN',
+  revision: 4,
   capacity: 14,
   roster: [],
   waitlist: [],

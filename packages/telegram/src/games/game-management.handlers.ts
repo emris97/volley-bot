@@ -3,6 +3,7 @@ import type {
   DeleteDraftGameCommand,
   GamePage,
   ListGamesCommand,
+  MaterialGameField,
   OrganizerContext,
   UpdateGameCommand,
 } from '@volley/application';
@@ -18,7 +19,14 @@ interface GameStateChanger {
 }
 
 interface GameUpdater {
-  execute(command: UpdateGameCommand): Promise<unknown>;
+  execute(command: UpdateGameCommand): Promise<GameUpdateResult>;
+}
+
+interface GameUpdateResult {
+  game: Game;
+  rosterCount: number;
+  waitlistCount: number;
+  materialFields: readonly MaterialGameField[];
 }
 
 interface DraftGameDeleter {
@@ -46,7 +54,7 @@ export class GameManagementHandlers {
     return this.changeGameState.execute(command);
   }
 
-  public async update(command: UpdateGameCommand): Promise<unknown> {
+  public async update(command: UpdateGameCommand): Promise<GameUpdateResult> {
     return this.updateGame.execute(command);
   }
 

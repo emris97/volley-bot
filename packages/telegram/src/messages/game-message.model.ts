@@ -12,6 +12,7 @@ export interface GameMessageView {
   startsAt: Date;
   timeZone: string;
   state: GameState;
+  revision: number;
   capacity: number;
   roster: readonly string[];
   waitlist: readonly string[];

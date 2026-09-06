@@ -20,7 +20,7 @@ describe('GameManagementHandlers', () => {
       },
       {
         execute: async () => ({
-          game: { state: 'OPEN' as const },
+          game: game({ state: 'OPEN' }),
           rosterCount: 0,
           waitlistCount: 0,
           materialFields: [],
@@ -53,6 +53,32 @@ describe('GameManagementHandlers', () => {
     await handlers.deleteDraft(command);
 
     expect(deleteDraft).toHaveBeenCalledWith(command);
+  });
+
+  it('delegates revision-bound edits and returns the complete UpdateGame result', async () => {
+    const updated = {
+      game: game({ venue: 'Новая арена', revision: 5 }),
+      rosterCount: 10,
+      waitlistCount: 2,
+      materialFields: ['venue'] as const,
+    };
+    const execute = vi.fn().mockResolvedValue(updated);
+    const handlers = new GameManagementHandlers(
+      { execute: vi.fn() },
+      {
+        execute,
+      },
+    );
+    const command = {
+      groupId: asGroupId('group'),
+      gameId: asGameId('game'),
+      actorUserId: asUserId('organizer'),
+      expectedRevision: 4,
+      changes: { venue: 'Новая арена' },
+    };
+
+    await expect(handlers.update(command)).resolves.toEqual(updated);
+    expect(execute).toHaveBeenCalledWith(command);
   });
 
   it('live-resolves the selected group and requests exactly eight games', async () => {

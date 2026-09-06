@@ -2,6 +2,7 @@ export { auditEvents } from './audit.js';
 export { attendanceEntries, attendanceSnapshots } from './attendance.js';
 export { games, gameTemplates } from './games.js';
 export { gameCreationDrafts } from './game-creation-drafts.js';
+export { gameEditSessions } from './game-edit-sessions.js';
 export { groupMembers, groups } from './groups.js';
 export { guestRegistrationDrafts } from './guest-registration-drafts.js';
 export { outboxEvents } from './outbox.js';

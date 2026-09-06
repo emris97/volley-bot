@@ -16,6 +16,7 @@ export * from './games/change-game-state.js';
 export * from './games/create-game.js';
 export * from './games/delete-draft-game.js';
 export * from './games/game-edit-policy.js';
+export * from './games/game-edit-session.js';
 export * from './games/game-creation-draft.js';
 export * from './games/create-template.js';
 export * from './games/get-game.js';

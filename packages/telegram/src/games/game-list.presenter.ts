@@ -1,13 +1,19 @@
 import { asGameId, type Game, type GameId } from '@volley/domain';
-import type { GameListBucket } from '@volley/application';
+import {
+  editableFields,
+  type GameEditableField,
+  type GameListBucket,
+  type GameUpdateChanges,
+} from '@volley/application';
 import type { OrganizerView } from '../organizer/main-menu.presenter.js';
 import {
   compactGameUuid,
   expandGameCompactUuid,
 } from './game-creation.model.js';
 
-export type GameAction =
+type StaticGameAction =
   | 'view'
+  | 'manage'
   | 'edit'
   | 'publish'
   | 'publish-confirm'
@@ -29,6 +35,25 @@ export type GameAction =
   | 'next-u'
   | 'next-h';
 
+export type GameEditField = Exclude<GameEditableField, 'currency'>;
+export type GameEditFieldCode =
+  | 'n'
+  | 'v'
+  | 'a'
+  | 's'
+  | 'd'
+  | 'c'
+  | 'o'
+  | 'x'
+  | 'p'
+  | 'q'
+  | 'r'
+  | 'm'
+  | 'k'
+  | 'g';
+type GameEditAction = `edit-${GameEditFieldCode}` | `edit-confirm-${string}`;
+export type GameAction = StaticGameAction | GameEditAction;
+
 export type VisibleGameListBucket = Exclude<GameListBucket, 'CANCELLED'>;
 
 export interface ManagementGameView {
@@ -40,12 +65,30 @@ export interface ManagementGameView {
   canonicalPinFailedAt: Date | null;
 }
 
+export interface ManagementSummaryView {
+  participationCount: number;
+  attendance: {
+    presentCount: number;
+    billableCount: number;
+  } | null;
+  settlement: {
+    totalMinor: bigint;
+    paidCount: number;
+    paidMinor: bigint;
+    unpaidCount: number;
+    unpaidMinor: bigint;
+    waivedCount: number;
+    waivedMinor: bigint;
+  } | null;
+}
+
 export const gameActionCallback = (
   action: GameAction,
   gameId: GameId,
   revision: number,
 ): string => {
   if (
+    !isGameAction(action ?? '') ||
     !Number.isSafeInteger(revision) ||
     revision < 0 ||
     revision > 2_147_483_647
@@ -68,7 +111,7 @@ export const parseGameActionCallback = (
   if (
     namespace !== 'ga' ||
     version !== 'v1' ||
-    !gameActions.has(action as GameAction) ||
+    !isGameAction(action ?? '') ||
     compactId === undefined ||
     !/^[0-9a-z]+$/.test(revisionCode ?? '') ||
     !Number.isSafeInteger(revision) ||
@@ -92,6 +135,29 @@ export const parseGameActionCallback = (
   } catch {
     throw new Error('Некорректная кнопка управления игрой.');
   }
+};
+
+export const gameEditFieldAction = (
+  field: GameEditField,
+): `edit-${GameEditFieldCode}` => `edit-${gameEditFieldCodes[field]}`;
+
+export const parseGameEditAction = (
+  action: GameAction,
+):
+  | { kind: 'FIELD'; field: GameEditField }
+  | { kind: 'CONFIRM'; interactionRevision: number }
+  | null => {
+  const field = gameEditFieldsByAction.get(action);
+  if (field !== undefined) return { kind: 'FIELD', field };
+  const match = /^edit-confirm-([0-9a-z]+)$/.exec(action);
+  if (match === null) return null;
+  const interactionRevision = Number.parseInt(match[1]!, 36);
+  return Number.isSafeInteger(interactionRevision) &&
+    interactionRevision >= 0 &&
+    interactionRevision <= 2_147_483_647 &&
+    interactionRevision.toString(36) === match[1]
+    ? { kind: 'CONFIRM', interactionRevision }
+    : null;
 };
 
 export const renderGameList = (input: {
@@ -187,6 +253,154 @@ export const renderGameManagement = (
   };
 };
 
+export const renderGameEditFields = (
+  input: ManagementGameView,
+  notice?: string,
+): OrganizerView => {
+  const allowed = new Set(
+    editableFields({
+      state: input.game.state,
+      registrationCount: input.registrationCount,
+    }),
+  );
+  const fields = gameEditFields.filter((field) => allowed.has(field));
+  return {
+    text: [notice, '<b>Изменение игры</b>', 'Выберите поле для изменения.']
+      .filter(Boolean)
+      .join('\n\n'),
+    parseMode: 'HTML',
+    keyboard: [
+      ...fields.map((field) => [
+        {
+          text: gameEditFieldLabels[field],
+          callbackData: gameActionCallback(
+            gameEditFieldAction(field),
+            requiredGameId(input.game),
+            input.game.revision,
+          ),
+        },
+      ]),
+      [
+        {
+          text: 'Назад',
+          callbackData: gameActionCallback(
+            'view',
+            requiredGameId(input.game),
+            input.game.revision,
+          ),
+        },
+      ],
+    ],
+  };
+};
+
+export const renderGameEditInput = (
+  input: ManagementGameView,
+  field: GameEditField,
+  notice?: string,
+): OrganizerView => ({
+  text: [
+    notice,
+    `<b>${gameEditFieldLabels[field]}</b>`,
+    gameEditFieldHints[field],
+  ]
+    .filter(Boolean)
+    .join('\n\n'),
+  parseMode: 'HTML',
+  keyboard: [
+    [
+      {
+        text: 'Назад',
+        callbackData: gameActionCallback(
+          'edit',
+          requiredGameId(input.game),
+          input.game.revision,
+        ),
+      },
+    ],
+  ],
+});
+
+export const renderGameEditConfirmation = (
+  input: ManagementGameView,
+  session: {
+    selectedField: GameEditField;
+    interactionRevision: number;
+    pendingChanges: GameUpdateChanges;
+  },
+): OrganizerView => {
+  const field = session.selectedField;
+  return {
+    text: [
+      '<b>Подтвердите изменение</b>',
+      `Поле: ${gameEditFieldLabels[field]}`,
+      `Было: ${escapeHtml(formatGameFieldValue(input.game[field], field, input.game.timeZone))}`,
+      `Стало: ${escapeHtml(formatGameFieldValue(session.pendingChanges[field], field, input.game.timeZone))}`,
+    ].join('\n'),
+    parseMode: 'HTML',
+    keyboard: [
+      [
+        {
+          text: 'Сохранить изменение',
+          callbackData: gameActionCallback(
+            `edit-confirm-${session.interactionRevision.toString(36)}`,
+            requiredGameId(input.game),
+            input.game.revision,
+          ),
+        },
+      ],
+      [
+        {
+          text: 'Назад',
+          callbackData: gameActionCallback(
+            gameEditFieldAction(field),
+            requiredGameId(input.game),
+            input.game.revision,
+          ),
+        },
+      ],
+    ],
+  };
+};
+
+export const renderGameSummary = (
+  input: ManagementGameView,
+  summary: ManagementSummaryView,
+): OrganizerView => ({
+  text: [
+    '<b>Итоги игры</b>',
+    `<b>${escapeHtml(input.game.name)}</b>`,
+    `Зарегистрировано: ${summary.participationCount}`,
+    summary.attendance === null
+      ? 'Посещаемость ещё не подтверждена.'
+      : [
+          `Присутствовали: ${summary.attendance.presentCount}`,
+          `Участвуют в расчёте: ${summary.attendance.billableCount}`,
+        ].join('\n'),
+    summary.settlement === null
+      ? 'Расчёт оплат ещё не создан.'
+      : [
+          `Сумма игры: ${costLabel(summary.settlement.totalMinor)}`,
+          `Оплачено: ${summary.settlement.paidCount} на ${costLabel(summary.settlement.paidMinor)}`,
+          `Не оплачено: ${summary.settlement.unpaidCount} на ${costLabel(summary.settlement.unpaidMinor)}`,
+          `Без оплаты: ${summary.settlement.waivedCount} на ${costLabel(summary.settlement.waivedMinor)}`,
+        ].join('\n'),
+  ].join('\n'),
+  parseMode: 'HTML',
+  keyboard: [
+    [
+      {
+        text: 'Назад',
+        callbackData: gameActionCallback(
+          'view',
+          requiredGameId(input.game),
+          input.game.revision,
+        ),
+      },
+    ],
+  ],
+});
+
 export const renderGameActionConfirmation = (
   input: ManagementGameView,
   action: ConfirmableGameAction,
@@ -278,6 +492,7 @@ const confirmationLabel: Record<ConfirmableGameAction, string> = {
 
 const gameActions = new Set<GameAction>([
   'view',
+  'manage',
   'edit',
   'publish',
   'publish-confirm',
@@ -299,6 +514,87 @@ const gameActions = new Set<GameAction>([
   'next-u',
   'next-h',
 ]);
+
+const gameEditFields = [
+  'name',
+  'venue',
+  'address',
+  'startsAt',
+  'durationMinutes',
+  'capacity',
+  'registrationOpensAt',
+  'registrationClosesAt',
+  'tentativePromptAt',
+  'tentativeResponseDeadline',
+  'reminderAt',
+  'memberPriorityEnabled',
+  'totalCostMinor',
+  'roundingMode',
+] as const satisfies readonly GameEditField[];
+
+const gameEditFieldCodes: Record<GameEditField, GameEditFieldCode> = {
+  name: 'n',
+  venue: 'v',
+  address: 'a',
+  startsAt: 's',
+  durationMinutes: 'd',
+  capacity: 'c',
+  registrationOpensAt: 'o',
+  registrationClosesAt: 'x',
+  tentativePromptAt: 'p',
+  tentativeResponseDeadline: 'q',
+  reminderAt: 'r',
+  memberPriorityEnabled: 'm',
+  totalCostMinor: 'k',
+  roundingMode: 'g',
+};
+
+const gameEditFieldsByAction = new Map<GameAction, GameEditField>(
+  gameEditFields.map((field) => [gameEditFieldAction(field), field]),
+);
+
+const gameEditFieldLabels: Record<GameEditField, string> = {
+  name: 'Название',
+  venue: 'Место',
+  address: 'Адрес',
+  startsAt: 'Дата и время начала',
+  durationMinutes: 'Длительность',
+  capacity: 'Количество мест',
+  registrationOpensAt: 'Открытие регистрации',
+  registrationClosesAt: 'Закрытие регистрации',
+  tentativePromptAt: 'Запрос подтверждения',
+  tentativeResponseDeadline: 'Время на ответ',
+  reminderAt: 'Напоминание',
+  memberPriorityEnabled: 'Приоритет участников группы',
+  totalCostMinor: 'Общая стоимость',
+  roundingMode: 'Округление',
+};
+
+const gameEditFieldHints: Record<GameEditField, string> = {
+  name: 'Отправьте название игры.',
+  venue: 'Отправьте название площадки.',
+  address: 'Отправьте адрес или «-», если адрес не нужен.',
+  startsAt: 'Отправьте дату и время в формате ДД.ММ.ГГГГ ЧЧ:ММ.',
+  durationMinutes: 'Отправьте длительность в минутах (15–720).',
+  capacity: 'Отправьте количество мест (1–200).',
+  registrationOpensAt: 'За сколько минут до игры открыть регистрацию?',
+  registrationClosesAt:
+    'За сколько минут до игры закрыть регистрацию? «-» — не закрывать заранее.',
+  tentativePromptAt:
+    'За сколько минут до игры запросить подтверждение участия?',
+  tentativeResponseDeadline:
+    'Сколько минут после запроса дать участникам на ответ?',
+  reminderAt: 'За сколько минут до игры отправить напоминание?',
+  memberPriorityEnabled: 'Отправьте «да» или «нет».',
+  totalCostMinor:
+    'Отправьте сумму в рублях или «-», если стоимость неизвестна.',
+  roundingMode: 'Отправьте «точно», «1», «10» или «50».',
+};
+
+const isGameAction = (action: string): action is GameAction =>
+  gameActions.has(action as GameAction) ||
+  /^edit-(?:n|v|a|s|d|c|o|x|p|q|r|m|k|g)$/.test(action) ||
+  /^edit-confirm-(?:0|[1-9a-z][0-9a-z]*)$/.test(action);
 
 const nextAction = (bucket: VisibleGameListBucket): GameAction =>
   bucket === 'UPCOMING' ? 'next-u' : 'next-h';
@@ -325,6 +621,39 @@ const costLabel = (minor: bigint | null): string =>
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
       }).format(Number(minor) / 100)} ₽`;
+
+const formatGameFieldValue = (
+  value: Game[GameEditableField] | undefined,
+  field: GameEditField,
+  timeZone: string,
+): string => {
+  if (value === null || value === undefined) return 'не указано';
+  if (
+    field === 'startsAt' ||
+    field === 'registrationOpensAt' ||
+    field === 'registrationClosesAt' ||
+    field === 'tentativePromptAt' ||
+    field === 'tentativeResponseDeadline' ||
+    field === 'reminderAt'
+  ) {
+    return formatDateTime(value as Date, timeZone);
+  }
+  if (field === 'durationMinutes') return `${String(value)} мин`;
+  if (field === 'capacity') return String(value);
+  if (field === 'memberPriorityEnabled') return value ? 'да' : 'нет';
+  if (field === 'totalCostMinor') return costLabel(value as bigint);
+  if (field === 'roundingMode') {
+    return (
+      {
+        EXACT: 'точно до копеек',
+        UP_1: 'до 1 ₽ вверх',
+        UP_10: 'до 10 ₽ вверх',
+        UP_50: 'до 50 ₽ вверх',
+      } as const
+    )[value as Game['roundingMode']];
+  }
+  return String(value);
+};
 
 const formatDate = (date: Date, timeZone: string): string =>
   new Intl.DateTimeFormat('ru-RU', {

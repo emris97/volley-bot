@@ -1,13 +1,20 @@
 import {
   AuthorizationDeniedError,
+  editableFields,
   GameEditNotAllowedError,
   GameRevisionConflictError,
   type ChangeGameStateCommand,
+  type ClearGameEditSessionInput,
   type DeleteDraftGameCommand,
+  type GameEditSession,
+  type GameUpdateChanges,
   type GamePage,
   type ListGamesCommand,
   type OrganizerAuthorization,
+  type SaveGameEditSessionChangesInput,
+  type StartGameEditSessionInput,
   type TelegramGateway,
+  type UpdateGameCommand,
 } from '@volley/application';
 import {
   asGameId,
@@ -26,14 +33,33 @@ import {
 import { CallbackCodec } from '../callbacks/callback-codec.js';
 import { toTelegramId } from '../group-onboarding.handlers.js';
 import type { OrganizerView } from '../organizer/main-menu.presenter.js';
+import {
+  LocalDateTimeResolutionError,
+  localDateTimeToInstant,
+} from '../organizer/local-date-time.js';
+import {
+  parseInteger,
+  parseLocalDate,
+  parseLocalTime,
+  parseRubles,
+  parseUnicodeText,
+  type ParseError,
+} from '../organizer/input.parsers.js';
 import { type PaymentHandlers } from '../payments/payment.handlers.js';
 import {
+  type GameEditField,
   parseGameActionCallback,
+  parseGameEditAction,
   renderGameActionConfirmation,
+  renderGameEditConfirmation,
+  renderGameEditFields,
+  renderGameEditInput,
   renderGameList,
   renderGameManagement,
+  renderGameSummary,
   type ConfirmableGameAction,
   type ManagementGameView,
+  type ManagementSummaryView,
 } from './game-list.presenter.js';
 
 export interface ManagementContextRecord extends ManagementGameView {
@@ -62,13 +88,37 @@ export interface ManagementDirectory {
   ): Promise<ManagementContextRecord | null>;
   markPrivateAvailable?(telegramUserId: TelegramId): Promise<void>;
   markPrivateUnavailable(telegramUserId: TelegramId): Promise<void>;
+  startEditSession(input: StartGameEditSessionInput): Promise<GameEditSession>;
+  resolveLatestEditScope(
+    telegramUserId: TelegramId,
+  ): Promise<{ groupId: GroupId; actorUserId: UserId } | null>;
+  loadEditSession(
+    groupId: GroupId,
+    actorUserId: UserId,
+  ): Promise<GameEditSession | null>;
+  saveEditSessionChanges(
+    input: SaveGameEditSessionChangesInput,
+  ): Promise<GameEditSession | null>;
+  clearEditSession(input: ClearGameEditSessionInput): Promise<boolean>;
+  loadSummary(
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<ManagementSummary | null>;
 }
 
 export interface ManagementActions {
   changeState(command: ChangeGameStateCommand): Promise<Game>;
   deleteDraft(command: DeleteDraftGameCommand): Promise<void>;
+  update(command: UpdateGameCommand): Promise<{
+    game: Game;
+    rosterCount: number;
+    waitlistCount: number;
+    materialFields: readonly ('startsAt' | 'venue' | 'address')[];
+  }>;
   listGames?(command: ListGamesCommand): Promise<GamePage>;
 }
+
+export type ManagementSummary = ManagementSummaryView;
 
 export type ManagementMenu = OrganizerView;
 
@@ -119,7 +169,8 @@ export class ManagementEntryHandlers {
       input.telegramUserId,
     );
 
-    if (callback.action === 'view') {
+    if (callback.action === 'view' || callback.action === 'manage') {
+      await this.clearCurrentEditSession(context);
       return { kind: 'VIEW', view: renderGameManagement(context) };
     }
     if (callback.action === 'attendance' || callback.action === 'payment') {
@@ -141,12 +192,13 @@ export class ManagementEntryHandlers {
       };
     }
     if (callback.action === 'summary') {
-      return context.game.state === 'COMPLETED'
-        ? {
-            kind: 'VIEW',
-            view: renderGameManagement(context, 'Итоги игры показаны выше.'),
-          }
-        : unavailableAction(context);
+      if (context.game.state !== 'COMPLETED') return unavailableAction(context);
+      const summary = await this.directory.loadSummary(
+        context.groupId,
+        context.gameId,
+      );
+      if (summary === null) throw new Error('Игра не найдена.');
+      return { kind: 'VIEW', view: renderGameSummary(context, summary) };
     }
     if (callback.action === 'next-u' || callback.action === 'next-h') {
       if (this.actions?.listGames === undefined) {
@@ -171,16 +223,99 @@ export class ManagementEntryHandlers {
       };
     }
     if (callback.action === 'edit') {
-      return callback.revision === context.game.revision &&
-        editableStates.has(context.game.state)
-        ? {
-            kind: 'VIEW',
-            view: renderGameManagement(
-              context,
-              'Выберите поле игры для изменения.',
-            ),
-          }
-        : staleOrUnavailable(context, callback.revision);
+      if (
+        callback.revision !== context.game.revision ||
+        !editableStates.has(context.game.state)
+      ) {
+        return staleOrUnavailable(context, callback.revision);
+      }
+      await this.clearCurrentEditSession(context);
+      return { kind: 'VIEW', view: renderGameEditFields(context) };
+    }
+
+    const editAction = parseGameEditAction(callback.action);
+    if (editAction?.kind === 'FIELD') {
+      if (callback.revision !== context.game.revision) {
+        return staleAction(context);
+      }
+      if (
+        !editableStates.has(context.game.state) ||
+        !editableFields({
+          state: context.game.state,
+          registrationCount: context.registrationCount,
+        }).includes(editAction.field)
+      ) {
+        return unavailableAction(context);
+      }
+      await this.directory.startEditSession({
+        groupId: context.groupId,
+        actorUserId: context.userId,
+        gameId: context.gameId,
+        expectedGameRevision: callback.revision,
+        selectedField: editAction.field,
+      });
+      return {
+        kind: 'VIEW',
+        view: renderGameEditInput(context, editAction.field),
+      };
+    }
+    if (editAction?.kind === 'CONFIRM') {
+      if (callback.revision !== context.game.revision) {
+        return staleAction(context);
+      }
+      const session = await this.directory.loadEditSession(
+        context.groupId,
+        context.userId,
+      );
+      if (
+        session === null ||
+        session.gameId !== context.gameId ||
+        session.expectedGameRevision !== callback.revision ||
+        session.interactionRevision !== editAction.interactionRevision ||
+        session.pendingChanges === null ||
+        !isSupportedGameEditField(session.selectedField)
+      ) {
+        return staleEditAction(context);
+      }
+      if (
+        !editableFields({
+          state: context.game.state,
+          registrationCount: context.registrationCount,
+        }).includes(session.selectedField)
+      ) {
+        await this.clearSession(session);
+        return unavailableAction(context);
+      }
+      if (this.actions === undefined) return unavailableAction(context);
+      if (!(await this.clearSession(session))) return staleEditAction(context);
+      try {
+        const result = await this.actions.update({
+          groupId: context.groupId,
+          gameId: context.gameId,
+          actorUserId: context.userId,
+          expectedRevision: session.expectedGameRevision,
+          changes: session.pendingChanges,
+        });
+        return {
+          kind: 'VIEW',
+          view: renderGameManagement(
+            {
+              ...context,
+              game: result.game,
+              rosterCount: result.rosterCount,
+              waitlistCount: result.waitlistCount,
+            },
+            'Игра изменена.',
+          ),
+        };
+      } catch (error) {
+        const message = managementErrorMessage(error);
+        if (message === null) throw error;
+        return {
+          kind: 'VIEW',
+          view: renderGameManagement(context, message),
+        };
+      }
     }
 
     const parsed = parseConfirmableAction(callback.action);
@@ -253,6 +388,76 @@ export class ManagementEntryHandlers {
     }
   }
 
+  public async handleText(
+    telegramUserId: TelegramId,
+    text: string,
+  ): Promise<OrganizerView | false> {
+    if (text.startsWith('/')) return false;
+    const scope = await this.directory.resolveLatestEditScope(telegramUserId);
+    if (scope === null) return false;
+    const session = await this.directory.loadEditSession(
+      scope.groupId,
+      scope.actorUserId,
+    );
+    if (session === null) return false;
+    const context = await this.resolveAuthorized(
+      session.gameId,
+      telegramUserId,
+    );
+    if (
+      context.groupId !== scope.groupId ||
+      context.userId !== scope.actorUserId ||
+      session.expectedGameRevision !== context.game.revision
+    ) {
+      await this.clearSession(session);
+      return renderGameManagement(
+        context,
+        'Игра уже была изменена. Откройте актуальную версию.',
+      );
+    }
+    if (
+      !isSupportedGameEditField(session.selectedField) ||
+      !editableFields({
+        state: context.game.state,
+        registrationCount: context.registrationCount,
+      }).includes(session.selectedField)
+    ) {
+      await this.clearSession(session);
+      return renderGameManagement(
+        context,
+        'Это поле нельзя изменить в текущем состоянии игры.',
+      );
+    }
+    const parsed = parseGameEditText(session.selectedField, text, context.game);
+    if ('error' in parsed) {
+      return renderGameEditInput(context, session.selectedField, parsed.error);
+    }
+    const updated = await this.directory.saveEditSessionChanges({
+      groupId: session.groupId,
+      actorUserId: session.actorUserId,
+      gameId: session.gameId,
+      expectedGameRevision: session.expectedGameRevision,
+      expectedInteractionRevision: session.interactionRevision,
+      pendingChanges: parsed.changes,
+    });
+    if (
+      updated === null ||
+      updated.pendingChanges === null ||
+      !isSupportedGameEditField(updated.selectedField)
+    ) {
+      return renderGameEditInput(
+        context,
+        session.selectedField,
+        'Эта форма изменения устарела. Выберите поле ещё раз.',
+      );
+    }
+    return renderGameEditConfirmation(context, {
+      selectedField: updated.selectedField,
+      interactionRevision: updated.interactionRevision,
+      pendingChanges: updated.pendingChanges,
+    });
+  }
+
   public async authorizeAction(input: {
     gameId: GameId;
     telegramUserId: TelegramId;
@@ -275,6 +480,25 @@ export class ManagementEntryHandlers {
 
   public markPrivateUnavailable(telegramUserId: TelegramId): Promise<void> {
     return this.directory.markPrivateUnavailable(telegramUserId);
+  }
+
+  private async clearCurrentEditSession(
+    context: ManagementContextRecord,
+  ): Promise<void> {
+    const session = await this.directory.loadEditSession(
+      context.groupId,
+      context.userId,
+    );
+    if (session !== null) await this.clearSession(session);
+  }
+
+  private async clearSession(session: GameEditSession): Promise<boolean> {
+    return this.directory.clearEditSession({
+      groupId: session.groupId,
+      actorUserId: session.actorUserId,
+      gameId: session.gameId,
+      expectedInteractionRevision: session.interactionRevision,
+    });
   }
 
   private async resolveAuthorized(
@@ -405,16 +629,54 @@ export const registerManagementEntryHandlers = (
     }
   });
   bot.callbackQuery(/^ga:/, async (context) => {
-    if (context.callbackQuery.message?.chat.type !== 'private') {
-      await context.answerCallbackQuery({
-        text: 'Управление доступно только в личном чате.',
-      });
-      return;
-    }
     try {
+      const callback = parseGameActionCallback(context.callbackQuery.data);
+      const telegramUserId = toTelegramId(context.callbackQuery.from.id);
+      const privateChat =
+        context.callbackQuery.message?.chat.type === 'private';
+      if (callback.action === 'manage') {
+        const menu = await handlers.open({
+          gameId: callback.gameId,
+          telegramUserId,
+          privateChat,
+        });
+        if (menu === null) {
+          await context.answerCallbackQuery({
+            text: 'Откройте личный чат с ботом и нажмите Start.',
+          });
+          return;
+        }
+        if (privateChat) {
+          await context.editMessageText(menu.text, viewOptions(menu));
+        } else {
+          try {
+            await context.api.sendMessage(
+              Number(telegramUserId),
+              menu.text,
+              viewOptions(menu),
+            );
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : String(error);
+            if (/forbidden|chat not found|bot was blocked/i.test(message)) {
+              await handlers.markPrivateUnavailable(telegramUserId);
+            } else {
+              throw error;
+            }
+          }
+        }
+        await context.answerCallbackQuery({ text: 'Проверьте личный чат.' });
+        return;
+      }
+      if (!privateChat) {
+        await context.answerCallbackQuery({
+          text: 'Управление доступно только в личном чате.',
+        });
+        return;
+      }
       const result = await handlers.handleAction({
         data: context.callbackQuery.data,
-        telegramUserId: toTelegramId(context.callbackQuery.from.id),
+        telegramUserId,
         privateChat: true,
       });
       if (result.kind === 'VIEW') {
@@ -485,6 +747,28 @@ export const registerManagementEntryHandlers = (
       const message = managementErrorMessage(error);
       if (message === null) throw error;
       await context.answerCallbackQuery({ text: message });
+    }
+  });
+  bot.on('message:text', async (context, next) => {
+    if (
+      context.from === undefined ||
+      context.chat.type !== 'private' ||
+      context.message.text.startsWith('/')
+    ) {
+      await next();
+      return;
+    }
+    try {
+      const view = await handlers.handleText(
+        toTelegramId(context.from.id),
+        context.message.text,
+      );
+      if (view === false) await next();
+      else await context.reply(view.text, viewOptions(view));
+    } catch (error) {
+      const message = managementErrorMessage(error);
+      if (message === null) throw error;
+      await context.reply(message);
     }
   });
   return bot;
@@ -581,6 +865,13 @@ const staleAction = (
   ),
 });
 
+const staleEditAction = (
+  context: ManagementContextRecord,
+): ManagementActionResult => ({
+  kind: 'VIEW',
+  view: renderGameManagement(context, 'Эта форма изменения устарела.'),
+});
+
 const unavailableAction = (
   context: ManagementContextRecord,
 ): ManagementActionResult => ({
@@ -605,12 +896,167 @@ const deletedDraftView = (): OrganizerView => ({
   keyboard: [[{ text: 'К играм', callbackData: 'om:v1:games:upcoming' }]],
 });
 
-const editableStates = new Set<GameState>([
-  'DRAFT',
-  'SCHEDULED',
-  'OPEN',
-  'CLOSED',
+const editableStates = new Set<GameState>(['DRAFT', 'SCHEDULED', 'OPEN']);
+
+const supportedGameEditFields = new Set<GameEditField>([
+  'name',
+  'venue',
+  'address',
+  'startsAt',
+  'durationMinutes',
+  'capacity',
+  'registrationOpensAt',
+  'registrationClosesAt',
+  'tentativePromptAt',
+  'tentativeResponseDeadline',
+  'reminderAt',
+  'memberPriorityEnabled',
+  'totalCostMinor',
+  'roundingMode',
 ]);
+
+const isSupportedGameEditField = (
+  field: GameEditSession['selectedField'],
+): field is GameEditField =>
+  supportedGameEditFields.has(field as GameEditField);
+
+type ParsedGameEditText = { changes: GameUpdateChanges } | { error: string };
+
+const parseGameEditText = (
+  field: GameEditField,
+  text: string,
+  game: Game,
+): ParsedGameEditText => {
+  if (field === 'name') {
+    const parsed = parseUnicodeText(text, 1, 80, 'NAME_LENGTH');
+    return isParseError(parsed)
+      ? { error: 'Название должно содержать от 1 до 80 символов.' }
+      : { changes: { name: parsed } };
+  }
+  if (field === 'venue') {
+    const parsed = parseUnicodeText(text, 1, 120, 'VENUE_LENGTH');
+    return isParseError(parsed)
+      ? { error: 'Место должно содержать от 1 до 120 символов.' }
+      : { changes: { venue: parsed } };
+  }
+  if (field === 'address') {
+    if (text.trim() === '-') return { changes: { address: null } };
+    const parsed = parseUnicodeText(text, 1, 300, 'ADDRESS_LENGTH');
+    return isParseError(parsed)
+      ? { error: 'Адрес должен содержать не более 300 символов.' }
+      : { changes: { address: parsed } };
+  }
+  if (field === 'startsAt') {
+    const [dateText, timeText, ...rest] = text.trim().split(/\s+/);
+    const date = parseLocalDate(dateText ?? '');
+    const time = parseLocalTime(timeText ?? '');
+    if (rest.length > 0 || isParseError(date) || isParseError(time)) {
+      return {
+        error:
+          'Введите дату и время в формате ДД.ММ.ГГГГ ЧЧ:ММ, например 10.09.2026 19:30.',
+      };
+    }
+    try {
+      return {
+        changes: {
+          startsAt: localDateTimeToInstant({
+            date,
+            time,
+            timeZone: game.timeZone,
+          }),
+        },
+      };
+    } catch (error) {
+      if (error instanceof LocalDateTimeResolutionError) {
+        return {
+          error:
+            'Дата и время неоднозначны или не существуют в часовом поясе группы. Выберите другое время.',
+        };
+      }
+      throw error;
+    }
+  }
+  if (field === 'durationMinutes') {
+    const parsed = parseInteger(text, 15, 720, 'DURATION_RANGE');
+    return isParseError(parsed)
+      ? { error: 'Введите длительность от 15 до 720 минут.' }
+      : { changes: { durationMinutes: parsed } };
+  }
+  if (field === 'capacity') {
+    const parsed = parseInteger(text, 1, 200, 'CAPACITY_RANGE');
+    return isParseError(parsed)
+      ? { error: 'Введите количество мест от 1 до 200.' }
+      : { changes: { capacity: parsed } };
+  }
+  if (field === 'totalCostMinor') {
+    if (text.trim() === '-') return { changes: { totalCostMinor: null } };
+    const parsed = parseRubles(text);
+    return isParseError(parsed)
+      ? {
+          error:
+            parsed.error === 'COST_RANGE'
+              ? 'Стоимость должна быть от 0 до 1 000 000 ₽.'
+              : 'Введите сумму в рублях, например 1250,50, или «-».',
+        }
+      : { changes: { totalCostMinor: parsed } };
+  }
+  if (field === 'memberPriorityEnabled') {
+    const normalized = text.trim().toLocaleLowerCase('ru-RU');
+    if (normalized === 'да')
+      return { changes: { memberPriorityEnabled: true } };
+    if (normalized === 'нет')
+      return { changes: { memberPriorityEnabled: false } };
+    return { error: 'Отправьте «да» или «нет».' };
+  }
+  if (field === 'roundingMode') {
+    const rounding = {
+      точно: 'EXACT',
+      '1': 'UP_1',
+      '10': 'UP_10',
+      '50': 'UP_50',
+    } as const;
+    const value =
+      rounding[text.trim().toLocaleLowerCase('ru-RU') as keyof typeof rounding];
+    return value === undefined
+      ? { error: 'Отправьте «точно», «1», «10» или «50».' }
+      : { changes: { roundingMode: value } };
+  }
+
+  const nullable = field === 'registrationClosesAt' && text.trim() === '-';
+  if (nullable) return { changes: { registrationClosesAt: null } };
+  const parsed = parseInteger(text, 0, 2_147_483_647, 'MINUTES_RANGE');
+  if (isParseError(parsed)) {
+    return {
+      error:
+        field === 'registrationClosesAt'
+          ? 'Введите целое неотрицательное количество минут или «-».'
+          : 'Введите целое неотрицательное количество минут.',
+    };
+  }
+  const beforeStart = new Date(game.startsAt.getTime() - parsed * 60_000);
+  if (field === 'registrationOpensAt') {
+    return { changes: { registrationOpensAt: beforeStart } };
+  }
+  if (field === 'registrationClosesAt') {
+    return { changes: { registrationClosesAt: beforeStart } };
+  }
+  if (field === 'tentativePromptAt') {
+    return { changes: { tentativePromptAt: beforeStart } };
+  }
+  if (field === 'reminderAt') {
+    return { changes: { reminderAt: beforeStart } };
+  }
+  return {
+    changes: {
+      tentativeResponseDeadline: new Date(
+        game.tentativePromptAt.getTime() + parsed * 60_000,
+      ),
+    },
+  };
+};
+
+const isParseError = (value: unknown): value is ParseError<string> =>
+  typeof value === 'object' && value !== null && 'error' in value;
 
 const managementErrorMessage = (error: unknown): string | null => {
   if (
@@ -637,7 +1083,7 @@ const managementErrorMessage = (error: unknown): string | null => {
   ) {
     return 'Некорректная кнопка управления игрой.';
   }
-  return /^(?:Игра|Некорректная|Действие|Это поле|Можно удалить|Введите)/.test(
+  return /^(?:Игра|Некорректн|Действие|Это поле|Можно удалить|Введите|Адрес|Длительность|Количество мест|Стоимость|Поддерживается|Проверьте|Время начала)/u.test(
     error.message,
   )
     ? error.message

@@ -26,6 +26,7 @@ export interface StoredGameMessageView {
   startsAt: Date;
   timeZone: string;
   state: GameState;
+  revision: number;
   capacity: number;
   roster: readonly string[];
   waitlist: readonly string[];
@@ -125,6 +126,7 @@ export class GameMessageRepository {
         startsAt: games.startsAt,
         timeZone: games.timeZone,
         state: games.state,
+        revision: games.revision,
         capacity: games.capacity,
       })
       .from(games)

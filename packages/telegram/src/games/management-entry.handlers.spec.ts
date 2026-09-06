@@ -1,6 +1,7 @@
 import {
   AuthorizationDeniedError,
   GameRevisionConflictError,
+  type GameEditSession,
 } from '@volley/application';
 import {
   asGameId,
@@ -14,11 +15,15 @@ import {
   createLazyTelegramUpdateHandler,
   createTelegramBot,
 } from '../bot.factory.js';
-import { gameActionCallback } from './game-list.presenter.js';
+import {
+  gameActionCallback,
+  gameEditFieldAction,
+} from './game-list.presenter.js';
 import {
   ManagementAccessDeniedError,
   type ManagementActions,
   ManagementEntryHandlers,
+  type ManagementSummary,
   registerManagementEntryHandlers,
 } from './management-entry.handlers.js';
 
@@ -282,9 +287,239 @@ describe('ManagementEntryHandlers', () => {
     });
     expect(harness.telegram.getChatMember).toHaveBeenCalledOnce();
   });
+
+  it('persists field input and calls UpdateGame only from its revisioned confirmation', async () => {
+    const update = vi.fn().mockResolvedValue({
+      game: managedGame({
+        state: 'SCHEDULED',
+        revision: 5,
+        venue: 'Новая арена',
+      }),
+      rosterCount: 2,
+      waitlistCount: 1,
+      materialFields: ['venue'],
+    });
+    const harness = handlersFor({
+      game: managedGame({ state: 'SCHEDULED', revision: 4 }),
+      actions: { update },
+    });
+
+    const editor = await harness.handlers.handleAction({
+      data: gameActionCallback(gameEditFieldAction('venue'), gameId, 4),
+      telegramUserId,
+      privateChat: true,
+    });
+    expect(editor).toMatchObject({
+      view: { text: expect.stringContaining('Отправьте название площадки') },
+    });
+
+    const confirmation = await harness.handlers.handleText(
+      telegramUserId,
+      '  Новая арена  ',
+    );
+    expect(confirmation).toMatchObject({
+      text: expect.stringContaining('Стало: Новая арена'),
+    });
+    expect(update).not.toHaveBeenCalled();
+
+    const result = await harness.handlers.handleAction({
+      data: gameActionCallback('edit-confirm-1', gameId, 4),
+      telegramUserId,
+      privateChat: true,
+    });
+    expect(update).toHaveBeenCalledWith({
+      groupId,
+      gameId,
+      actorUserId: userId,
+      expectedRevision: 4,
+      changes: { venue: 'Новая арена' },
+    });
+    expect(result).toMatchObject({
+      view: { text: expect.stringContaining('Игра изменена.') },
+    });
+
+    const replay = await harness.handlers.handleAction({
+      data: gameActionCallback('edit-confirm-1', gameId, 4),
+      telegramUserId,
+      privateChat: true,
+    });
+    expect(replay).toMatchObject({
+      view: { text: expect.stringContaining('Эта форма изменения устарела.') },
+    });
+    expect(update).toHaveBeenCalledOnce();
+  });
+
+  it('rejects stale field and interaction controls without updating the game', async () => {
+    const update = vi.fn();
+    const harness = handlersFor({ actions: { update } });
+
+    const staleField = await harness.handlers.handleAction({
+      data: gameActionCallback(gameEditFieldAction('venue'), gameId, 3),
+      telegramUserId,
+      privateChat: true,
+    });
+    expect(staleField).toMatchObject({
+      view: {
+        text: expect.stringContaining(
+          'Игра уже была изменена. Откройте актуальную версию.',
+        ),
+      },
+    });
+    expect(harness.directory.startEditSession).not.toHaveBeenCalled();
+
+    await harness.handlers.handleAction({
+      data: gameActionCallback(gameEditFieldAction('venue'), gameId, 4),
+      telegramUserId,
+      privateChat: true,
+    });
+    await harness.handlers.handleText(telegramUserId, 'Новая арена');
+    const replay = await harness.handlers.handleAction({
+      data: gameActionCallback('edit-confirm-0', gameId, 4),
+      telegramUserId,
+      privateChat: true,
+    });
+    expect(replay).toMatchObject({
+      view: { text: expect.stringContaining('Эта форма изменения устарела.') },
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('renders a revision conflict during edit in Russian and never retries the update', async () => {
+    const update = vi.fn().mockRejectedValue(new GameRevisionConflictError());
+    const harness = handlersFor({ actions: { update } });
+    await harness.handlers.handleAction({
+      data: gameActionCallback(gameEditFieldAction('capacity'), gameId, 4),
+      telegramUserId,
+      privateChat: true,
+    });
+    await harness.handlers.handleText(telegramUserId, '16');
+
+    const result = await harness.handlers.handleAction({
+      data: gameActionCallback('edit-confirm-1', gameId, 4),
+      telegramUserId,
+      privateChat: true,
+    });
+
+    expect(result).toMatchObject({
+      view: {
+        text: expect.stringContaining(
+          'Игра уже была изменена. Откройте актуальную версию.',
+        ),
+      },
+    });
+    expect(update).toHaveBeenCalledOnce();
+    expect(harness.directory.clearEditSession).toHaveBeenCalledOnce();
+  });
+
+  it('renders UpdateGame validation errors instead of escaping as webhook failures', async () => {
+    const update = vi
+      .fn()
+      .mockRejectedValue(new Error('Время начала игры должно быть в будущем.'));
+    const harness = handlersFor({ actions: { update } });
+    await harness.handlers.handleAction({
+      data: gameActionCallback(gameEditFieldAction('startsAt'), gameId, 4),
+      telegramUserId,
+      privateChat: true,
+    });
+    await harness.handlers.handleText(telegramUserId, '10.09.2026 19:30');
+
+    await expect(
+      harness.handlers.handleAction({
+        data: gameActionCallback('edit-confirm-1', gameId, 4),
+        telegramUserId,
+        privateChat: true,
+      }),
+    ).resolves.toMatchObject({
+      view: {
+        text: expect.stringContaining(
+          'Время начала игры должно быть в будущем.',
+        ),
+      },
+    });
+  });
+
+  it('renders authoritative attendance and settlement summary for a completed game', async () => {
+    const harness = handlersFor({
+      game: managedGame({ state: 'COMPLETED' }),
+      summary: {
+        participationCount: 14,
+        attendance: { presentCount: 12, billableCount: 11 },
+        settlement: {
+          totalMinor: 12_000n,
+          paidCount: 8,
+          paidMinor: 8_000n,
+          unpaidCount: 3,
+          unpaidMinor: 3_000n,
+          waivedCount: 1,
+          waivedMinor: 1_000n,
+        },
+      },
+    });
+
+    const result = await harness.handlers.handleAction({
+      data: gameActionCallback('summary', gameId, 4),
+      telegramUserId,
+      privateChat: true,
+    });
+
+    expect(harness.directory.loadSummary).toHaveBeenCalledWith(groupId, gameId);
+    expect(result).toMatchObject({
+      view: { text: expect.stringContaining('Присутствовали: 12') },
+    });
+    expect(JSON.stringify(result)).not.toContain(gameId);
+  });
 });
 
 describe('management Telegram adapter', () => {
+  it('routes a private field callback, text input, and confirmation to UpdateGame', async () => {
+    const update = vi.fn().mockResolvedValue({
+      game: managedGame({ revision: 5, venue: 'Новая арена' }),
+      rosterCount: 2,
+      waitlistCount: 1,
+      materialFields: ['venue'],
+    });
+    const source = handlersFor({ actions: { update } });
+    const harness = botHarness(source.handlers);
+
+    await harness.handle(
+      callbackUpdate(
+        gameActionCallback(gameEditFieldAction('venue'), gameId, 4),
+        true,
+      ),
+    );
+    await harness.handle(textUpdate('Новая арена'));
+    expect(update).not.toHaveBeenCalled();
+    await harness.handle(
+      callbackUpdate(gameActionCallback('edit-confirm-1', gameId, 4), true),
+    );
+
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gameId,
+        expectedRevision: 4,
+        changes: { venue: 'Новая арена' },
+      }),
+    );
+    expect(JSON.stringify(harness.apiCalls)).toContain('Игра изменена.');
+  });
+
+  it('accepts the canonical public manage callback and sends the private card', async () => {
+    const harness = botHarness(handlersFor().handlers);
+
+    await expect(
+      harness.handle(
+        callbackUpdate(gameActionCallback('manage', gameId, 4), false),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(harness.apiCalls).toContainEqual(
+      expect.objectContaining({
+        method: 'sendMessage',
+        payload: expect.objectContaining({ chat_id: 42 }),
+      }),
+    );
+  });
+
   it('renders the exact non-admin answer and never escapes as a webhook error', async () => {
     const harness = botHarness(
       handlersFor({ telegramStatus: 'member' }).handlers,
@@ -385,6 +620,7 @@ const handlersFor = (
     hasFinalizedAttendance?: boolean;
     telegramStatus?: 'creator' | 'administrator' | 'member' | 'left';
     actions?: Partial<ManagementActions>;
+    summary?: ManagementSummary;
   } = {},
 ) => {
   const game = options.game ?? managedGame();
@@ -402,6 +638,7 @@ const handlersFor = (
     hasFinalizedAttendance: options.hasFinalizedAttendance ?? true,
     canonicalPinFailedAt: null,
   };
+  let editSession: GameEditSession | null = null;
   const directory = {
     resolveGameGroup: vi.fn().mockResolvedValue({
       groupId,
@@ -411,6 +648,56 @@ const handlersFor = (
     resolve: vi.fn().mockResolvedValue(record),
     markPrivateAvailable: vi.fn(),
     markPrivateUnavailable: vi.fn(),
+    startEditSession: vi.fn().mockImplementation(async (input) => {
+      const now = new Date('2026-09-06T12:00:00.000Z');
+      editSession = {
+        ...input,
+        interactionRevision: 0,
+        pendingChanges: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      return editSession;
+    }),
+    resolveLatestEditScope: vi.fn().mockImplementation(async () =>
+      editSession === null
+        ? null
+        : {
+            groupId: editSession.groupId,
+            actorUserId: editSession.actorUserId,
+          },
+    ),
+    loadEditSession: vi.fn().mockImplementation(async () => editSession),
+    saveEditSessionChanges: vi.fn().mockImplementation(async (input) => {
+      if (
+        editSession === null ||
+        editSession.groupId !== input.groupId ||
+        editSession.actorUserId !== input.actorUserId ||
+        editSession.gameId !== input.gameId ||
+        editSession.expectedGameRevision !== input.expectedGameRevision ||
+        editSession.interactionRevision !== input.expectedInteractionRevision
+      ) {
+        return null;
+      }
+      editSession = {
+        ...editSession,
+        interactionRevision: editSession.interactionRevision + 1,
+        pendingChanges: input.pendingChanges,
+        updatedAt: new Date('2026-09-06T12:01:00.000Z'),
+      };
+      return editSession;
+    }),
+    clearEditSession: vi.fn().mockImplementation(async () => {
+      editSession = null;
+      return true;
+    }),
+    loadSummary: vi.fn().mockResolvedValue(
+      options.summary ?? {
+        participationCount: 0,
+        attendance: null,
+        settlement: null,
+      },
+    ),
   };
   const telegram = {
     getChatMember: vi.fn().mockResolvedValue({
@@ -422,6 +709,14 @@ const handlersFor = (
       options.actions?.changeState ?? vi.fn().mockResolvedValue(game),
     deleteDraft:
       options.actions?.deleteDraft ?? vi.fn().mockResolvedValue(undefined),
+    update:
+      options.actions?.update ??
+      vi.fn().mockResolvedValue({
+        game,
+        rosterCount: record.rosterCount,
+        waitlistCount: record.waitlistCount,
+        materialFields: [],
+      }),
     ...(options.actions?.listGames === undefined
       ? {}
       : { listGames: options.actions.listGames }),
@@ -502,8 +797,9 @@ const botHarness = (handlers: ManagementEntryHandlers) => {
   );
   return {
     apiCalls,
-    handle: (update: ReturnType<typeof callbackUpdate>) =>
-      createLazyTelegramUpdateHandler(bot).handleUpdate(update as never),
+    handle: (
+      update: ReturnType<typeof callbackUpdate> | ReturnType<typeof textUpdate>,
+    ) => createLazyTelegramUpdateHandler(bot).handleUpdate(update as never),
   };
 };
 
@@ -522,5 +818,16 @@ const callbackUpdate = (data: string, privateChat: boolean) => ({
         : { id: -1001, type: 'supergroup', title: 'Group' },
       text: 'game',
     },
+  },
+});
+
+const textUpdate = (text: string) => ({
+  update_id: Math.floor(Math.random() * 100_000),
+  message: {
+    message_id: 2,
+    date: 1,
+    chat: { id: 42, type: 'private', first_name: 'Ada' },
+    from: { id: 42, is_bot: false, first_name: 'Ada' },
+    text,
   },
 });

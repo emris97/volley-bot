@@ -13,6 +13,7 @@ export { AttendanceRepository } from './repositories/attendance.repository.js';
 export {
   ManagementRepository,
   type ManagementContextRecord,
+  type ManagementSummary,
 } from './repositories/management.repository.js';
 export {
   PaymentRepository,

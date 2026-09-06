@@ -50,6 +50,7 @@ describe('foundation migration', () => {
       'audit_events',
       'charge_status_events',
       'game_creation_drafts',
+      'game_edit_sessions',
       'game_templates',
       'games',
       'group_members',
@@ -72,7 +73,35 @@ describe('foundation migration', () => {
     ]);
     expect(firstTables).toContain('organizer_preferences');
     expect(firstTables).toContain('template_wizard_drafts');
+    expect(firstTables).toContain('game_edit_sessions');
     expect(firstMigration).toHaveLength(1);
+  });
+
+  it('adds durable tenant-scoped game edit sessions', async () => {
+    await applyTestMigrations(pool);
+
+    const columns = await pool.query<{
+      column_name: string;
+      is_nullable: 'YES' | 'NO';
+    }>(`
+      SELECT column_name, is_nullable
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'game_edit_sessions'
+      ORDER BY ordinal_position
+    `);
+
+    expect(columns.rows).toEqual([
+      { column_name: 'group_id', is_nullable: 'NO' },
+      { column_name: 'actor_user_id', is_nullable: 'NO' },
+      { column_name: 'game_id', is_nullable: 'NO' },
+      { column_name: 'expected_game_revision', is_nullable: 'NO' },
+      { column_name: 'selected_field', is_nullable: 'NO' },
+      { column_name: 'interaction_revision', is_nullable: 'NO' },
+      { column_name: 'pending_changes', is_nullable: 'YES' },
+      { column_name: 'active', is_nullable: 'NO' },
+      { column_name: 'created_at', is_nullable: 'NO' },
+      { column_name: 'updated_at', is_nullable: 'NO' },
+    ]);
   });
 
   it('adds organizer-management revisions and active template name uniqueness', async () => {
@@ -102,7 +131,9 @@ describe('foundation migration', () => {
     );
     expect(gameRevision.rows).toEqual([{ revision: 0 }]);
 
-    await expect(insertTemplate(pool, groupId, ' среда ')).rejects.toMatchObject({
+    await expect(
+      insertTemplate(pool, groupId, ' среда '),
+    ).rejects.toMatchObject({
       code: '23505',
     });
   });

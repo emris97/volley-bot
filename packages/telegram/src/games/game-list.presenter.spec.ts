@@ -1,11 +1,16 @@
 import { asGameId, asGroupId, type Game, type GameState } from '@volley/domain';
 import { describe, expect, it } from 'vitest';
 import {
+  gameEditFieldAction,
   gameActionCallback,
   parseGameActionCallback,
   renderGameActionConfirmation,
+  renderGameEditConfirmation,
+  renderGameEditFields,
+  renderGameEditInput,
   renderGameList,
   renderGameManagement,
+  renderGameSummary,
   type ManagementGameView,
 } from './game-list.presenter.js';
 
@@ -116,6 +121,71 @@ describe('game management presenter', () => {
         'Некорректная кнопка управления игрой.',
       );
     }
+  });
+
+  it('renders only policy-approved edit fields for an open game with registrations', () => {
+    const input = {
+      ...managementView('OPEN'),
+      registrationCount: 3,
+    };
+    const view = renderGameEditFields(input);
+    const labels = view.keyboard.flat().map(({ text }) => text);
+
+    expect(labels).toContain('Место');
+    expect(labels).toContain('Дата и время начала');
+    expect(labels).not.toContain('Открытие регистрации');
+    expect(labels).not.toContain('Приоритет участников группы');
+    expect(labels).not.toContain('Валюта');
+    expect(view.keyboard[0]![0]!.callbackData).toBe(
+      gameActionCallback(gameEditFieldAction('name'), asGameId(uuid), 12),
+    );
+    expect(view.text).not.toContain(uuid);
+  });
+
+  it('renders a revisioned input and separate interaction-bound confirmation', () => {
+    const input = managementView('SCHEDULED');
+    const editor = renderGameEditInput(input, 'venue');
+    const confirmation = renderGameEditConfirmation(input, {
+      selectedField: 'venue',
+      interactionRevision: 7,
+      pendingChanges: { venue: 'Новая арена' },
+    });
+
+    expect(editor.text).toContain('Отправьте название площадки');
+    expect(confirmation.text).toContain('Было: Арена');
+    expect(confirmation.text).toContain('Стало: Новая арена');
+    expect(confirmation.keyboard[0]![0]!.callbackData).toBe(
+      gameActionCallback('edit-confirm-7', asGameId(uuid), 12),
+    );
+  });
+
+  it('renders authoritative completed summary counts and explicit missing states', () => {
+    const withData = renderGameSummary(managementView('COMPLETED'), {
+      participationCount: 14,
+      attendance: { presentCount: 12, billableCount: 11 },
+      settlement: {
+        totalMinor: 12_000n,
+        paidCount: 8,
+        paidMinor: 8_000n,
+        unpaidCount: 3,
+        unpaidMinor: 3_000n,
+        waivedCount: 1,
+        waivedMinor: 1_000n,
+      },
+    });
+    const withoutData = renderGameSummary(managementView('COMPLETED'), {
+      participationCount: 14,
+      attendance: null,
+      settlement: null,
+    });
+
+    expect(withData.text).toContain('Зарегистрировано: 14');
+    expect(withData.text).toContain('Присутствовали: 12');
+    expect(withData.text).toContain('Оплачено: 8 на 80,00 ₽');
+    expect(withData.text).toContain('Не оплачено: 3 на 30,00 ₽');
+    expect(withData.text).not.toContain(uuid);
+    expect(withoutData.text).toContain('Посещаемость ещё не подтверждена.');
+    expect(withoutData.text).toContain('Расчёт оплат ещё не создан.');
   });
 });
 

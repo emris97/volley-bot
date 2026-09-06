@@ -46,7 +46,7 @@ describe('management repositories', () => {
 
   beforeEach(async () => {
     await pool.query(
-      'TRUNCATE attendance_snapshots, registrations, audit_events, outbox_events, games, group_members, groups, users CASCADE',
+      'TRUNCATE game_edit_sessions, attendance_snapshots, registrations, audit_events, outbox_events, games, group_members, groups, users CASCADE',
     );
   });
 
@@ -292,6 +292,240 @@ describe('management repositories', () => {
       repository.resolve(asGameId(gameId), telegramUserId),
     ).resolves.toMatchObject({ dmAvailable: true });
   });
+
+  it('persists revisioned edit interaction state and scopes every mutation to tenant and actor', async () => {
+    const groupId = await insertGroup(pool, '-3401');
+    const otherGroupId = await insertGroup(pool, '-3402');
+    const actorUserId = await insertUser(pool, '3401');
+    const gameId = asGameId(
+      await insertGame(
+        pool,
+        groupId,
+        'Editable game',
+        new Date('2026-10-06T16:00:00.000Z'),
+        'SCHEDULED',
+        { revision: 6 },
+      ),
+    );
+    const repository = new ManagementRepository(createDatabase(pool));
+
+    const started = await repository.startEditSession({
+      groupId,
+      actorUserId,
+      gameId,
+      expectedGameRevision: 6,
+      selectedField: 'startsAt',
+    });
+    expect(started).toMatchObject({
+      groupId,
+      actorUserId,
+      gameId,
+      expectedGameRevision: 6,
+      selectedField: 'startsAt',
+      interactionRevision: 0,
+      pendingChanges: null,
+      createdAt: expect.any(Date),
+      updatedAt: expect.any(Date),
+    });
+
+    await expect(
+      repository.saveEditSessionChanges({
+        groupId: otherGroupId,
+        actorUserId,
+        gameId,
+        expectedGameRevision: 6,
+        expectedInteractionRevision: 0,
+        pendingChanges: {
+          startsAt: new Date('2026-10-07T16:30:00.000Z'),
+        },
+      }),
+    ).resolves.toBeNull();
+    const pending = await repository.saveEditSessionChanges({
+      groupId,
+      actorUserId,
+      gameId,
+      expectedGameRevision: 6,
+      expectedInteractionRevision: 0,
+      pendingChanges: {
+        startsAt: new Date('2026-10-07T16:30:00.000Z'),
+      },
+    });
+    expect(pending).toMatchObject({
+      selectedField: 'startsAt',
+      interactionRevision: 1,
+      pendingChanges: {
+        startsAt: new Date('2026-10-07T16:30:00.000Z'),
+      },
+    });
+    await expect(
+      repository.saveEditSessionChanges({
+        groupId,
+        actorUserId,
+        gameId,
+        expectedGameRevision: 6,
+        expectedInteractionRevision: 0,
+        pendingChanges: { startsAt: new Date('2026-10-08T16:30:00.000Z') },
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      repository.loadEditSession(otherGroupId, actorUserId),
+    ).resolves.toBeNull();
+    await expect(
+      repository.resolveLatestEditScope(asTelegramId('3401')),
+    ).resolves.toEqual({ groupId, actorUserId });
+    await expect(
+      repository.clearEditSession({
+        groupId: otherGroupId,
+        actorUserId,
+        gameId,
+        expectedInteractionRevision: 1,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      repository.clearEditSession({
+        groupId,
+        actorUserId,
+        gameId,
+        expectedInteractionRevision: 1,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      repository.loadEditSession(groupId, actorUserId),
+    ).resolves.toBeNull();
+    await expect(
+      repository.resolveLatestEditScope(asTelegramId('3401')),
+    ).resolves.toBeNull();
+    await expect(
+      repository.startEditSession({
+        groupId,
+        actorUserId,
+        gameId,
+        expectedGameRevision: 6,
+        selectedField: 'totalCostMinor',
+      }),
+    ).resolves.toMatchObject({ interactionRevision: 3 });
+    await expect(
+      repository.saveEditSessionChanges({
+        groupId,
+        actorUserId,
+        gameId,
+        expectedGameRevision: 6,
+        expectedInteractionRevision: 3,
+        pendingChanges: { totalCostMinor: 125_050n },
+      }),
+    ).resolves.toMatchObject({
+      interactionRevision: 4,
+      pendingChanges: { totalCostMinor: 125_050n },
+    });
+  });
+
+  it('loads completed summary from the latest finalized attendance and active tenant settlement', async () => {
+    const groupId = await insertGroup(pool, '-3501');
+    const actorUserId = await insertUser(pool, '3501');
+    const gameId = await insertGame(
+      pool,
+      groupId,
+      'Completed game',
+      new Date('2026-10-07T16:00:00.000Z'),
+      'COMPLETED',
+    );
+    await insertRegistration(pool, groupId, gameId, actorUserId, 'ROSTERED');
+    await insertRegistration(pool, groupId, gameId, actorUserId, 'CANCELLED');
+    const older = await pool.query<{ id: string }>(
+      `INSERT INTO attendance_snapshots
+        (group_id, game_id, revision, finalized)
+       VALUES ($1, $2, 1, true)
+       RETURNING id`,
+      [groupId, gameId],
+    );
+    const latest = await pool.query<{ id: string }>(
+      `INSERT INTO attendance_snapshots
+        (group_id, game_id, revision, finalized)
+       VALUES ($1, $2, 2, true)
+       RETURNING id`,
+      [groupId, gameId],
+    );
+    const draft = await pool.query<{ id: string }>(
+      `INSERT INTO attendance_snapshots
+        (group_id, game_id, revision, finalized)
+       VALUES ($1, $2, 3, false)
+       RETURNING id`,
+      [groupId, gameId],
+    );
+    await insertAttendanceEntry(pool, groupId, older.rows[0]!.id, 'old', true);
+    await insertAttendanceEntry(pool, groupId, latest.rows[0]!.id, 'one', true);
+    await insertAttendanceEntry(
+      pool,
+      groupId,
+      latest.rows[0]!.id,
+      'two',
+      false,
+    );
+    await insertAttendanceEntry(
+      pool,
+      groupId,
+      draft.rows[0]!.id,
+      'draft',
+      true,
+    );
+    const settlement = await pool.query<{ id: string }>(
+      `INSERT INTO settlements (
+        group_id, game_id, attendance_snapshot_id, attendance_revision,
+        revision, total_minor, currency, rounding_mode, allocation_order,
+        collected_minor, surplus_minor, created_by
+      ) VALUES ($1, $2, $3, 2, 1, 3000, 'RUB', 'EXACT', '[]', 3000, 0, $4)
+      RETURNING id`,
+      [groupId, gameId, latest.rows[0]!.id, actorUserId],
+    );
+    await insertCharge(
+      pool,
+      groupId,
+      settlement.rows[0]!.id,
+      'paid',
+      1000,
+      'PAID',
+    );
+    await insertCharge(
+      pool,
+      groupId,
+      settlement.rows[0]!.id,
+      'unpaid',
+      1500,
+      'UNPAID',
+    );
+    await insertCharge(
+      pool,
+      groupId,
+      settlement.rows[0]!.id,
+      'waived',
+      500,
+      'WAIVED',
+    );
+
+    const repository = new ManagementRepository(createDatabase(pool));
+
+    await expect(
+      repository.loadSummary(groupId, asGameId(gameId)),
+    ).resolves.toEqual({
+      participationCount: 1,
+      attendance: { presentCount: 2, billableCount: 1 },
+      settlement: {
+        totalMinor: 3000n,
+        paidCount: 1,
+        paidMinor: 1000n,
+        unpaidCount: 1,
+        unpaidMinor: 1500n,
+        waivedCount: 1,
+        waivedMinor: 500n,
+      },
+    });
+    await expect(
+      repository.loadSummary(
+        await insertGroup(pool, '-3502'),
+        asGameId(gameId),
+      ),
+    ).resolves.toBeNull();
+  });
 });
 
 const insertGroup = async (pool: Pool, telegramChatId: string) => {
@@ -367,5 +601,38 @@ const insertRegistration = async (
       state,
       `management:${gameId}:${state}:${userId ?? 'guest'}`,
     ],
+  );
+};
+
+const insertAttendanceEntry = async (
+  pool: Pool,
+  groupId: string,
+  snapshotId: string,
+  participantRef: string,
+  billable: boolean,
+): Promise<void> => {
+  await pool.query(
+    `INSERT INTO attendance_entries (
+      snapshot_id, group_id, participant_ref, display_name, billable,
+      added_manually
+    ) VALUES ($1, $2, $3, $3, $4, true)`,
+    [snapshotId, groupId, participantRef, billable],
+  );
+};
+
+const insertCharge = async (
+  pool: Pool,
+  groupId: string,
+  settlementId: string,
+  participantRef: string,
+  amountMinor: number,
+  status: 'UNPAID' | 'PAID' | 'WAIVED',
+): Promise<void> => {
+  await pool.query(
+    `INSERT INTO settlement_charges (
+      settlement_id, group_id, participant_ref, display_name, added_manually,
+      amount_minor, status
+    ) VALUES ($1, $2, $3, $3, true, $4, $5)`,
+    [settlementId, groupId, participantRef, amountMinor, status],
   );
 };

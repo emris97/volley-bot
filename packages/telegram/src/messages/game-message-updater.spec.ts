@@ -131,6 +131,7 @@ const view = (): GameMessageView => ({
   startsAt: new Date('2026-09-04T16:00:00.000Z'),
   timeZone: 'Europe/Astrakhan',
   state: 'OPEN',
+  revision: 0,
   capacity: 14,
   roster: [],
   waitlist: [],
