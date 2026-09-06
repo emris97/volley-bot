@@ -195,6 +195,7 @@ export class GameRepository implements GamePublicationRepository {
           data: serializeGameCreationDraftData({
             ...draft,
             step: 'PUBLISHED',
+            cancelPending: false,
             publishedGameId: asGameId(created.id),
           }),
           updatedAt: input.now,

@@ -117,7 +117,7 @@ it('copies settings, invalidates previews, and keeps a published draft repeatabl
   await expect(firstProcess.publish(input)).rejects.toThrow(/preview/i);
 
   const preview = await firstProcess.preview(input);
-  expect(preview).toContain('venue:Arena');
+  expect(preview).toContain('Место: Arena');
   expect(stored).toMatchObject({ step: 'PREVIEW', previewed: true });
 
   await firstProcess.customize({ ...input, overrides: { capacity: 18 } });

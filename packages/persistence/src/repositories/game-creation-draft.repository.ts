@@ -48,6 +48,8 @@ export class GameCreationDraftRepository {
     if (
       draft.step !== 'TEMPLATE' ||
       draft.previewed ||
+      draft.editingField !== undefined ||
+      draft.cancelPending === true ||
       draft.templateId !== undefined ||
       draft.snapshot !== undefined ||
       draft.startsAtIso !== undefined ||
@@ -88,21 +90,40 @@ export class GameCreationDraftRepository {
           sql`${gameCreationDrafts.data} ->> 'draftId' = ${draft.draftId}`,
           sql`${gameCreationDrafts.data} ->> 'step' <> 'PUBLISHED'`,
           sql`${gameCreationDrafts.data} ->> 'publishedGameId' is null`,
+          ...(draft.viewRevision === undefined
+            ? []
+            : [
+                sql`coalesce(${gameCreationDrafts.data} ->> 'viewRevision', '0') = ${(draft.viewRevision - 1).toString()}`,
+              ]),
         ),
       )
       .returning({ groupId: gameCreationDrafts.groupId });
     return updated === undefined ? 'STALE' : 'SAVED';
   }
 
-  public async clear(groupId: GroupId, actorUserId: UserId): Promise<void> {
-    await this.database
+  public async clear(
+    groupId: GroupId,
+    actorUserId: UserId,
+    expected?: { draftId: string; viewRevision: number },
+  ): Promise<boolean> {
+    const [deleted] = await this.database
       .delete(gameCreationDrafts)
       .where(
         and(
           eq(gameCreationDrafts.groupId, groupId),
           eq(gameCreationDrafts.actorUserId, actorUserId),
+          ...(expected === undefined
+            ? []
+            : [
+                sql`${gameCreationDrafts.data} ->> 'draftId' = ${expected.draftId}`,
+                sql`coalesce(${gameCreationDrafts.data} ->> 'viewRevision', '0') = ${expected.viewRevision.toString()}`,
+                sql`${gameCreationDrafts.data} ->> 'step' <> 'PUBLISHED'`,
+                sql`${gameCreationDrafts.data} ->> 'publishedGameId' is null`,
+              ]),
         ),
-      );
+      )
+      .returning({ groupId: gameCreationDrafts.groupId });
+    return deleted !== undefined;
   }
 }
 
@@ -110,6 +131,9 @@ const draftKeys = new Set([
   'version',
   'draftId',
   'step',
+  'viewRevision',
+  'editingField',
+  'cancelPending',
   'templateId',
   'snapshot',
   'startsAtIso',
@@ -122,6 +146,22 @@ const steps = new Set<GameCreationDraftStep>([
   'CUSTOMIZE',
   'PREVIEW',
   'PUBLISHED',
+]);
+const editingFields = new Set([
+  'NAME',
+  'VENUE',
+  'ADDRESS',
+  'TIME',
+  'DURATION',
+  'CAPACITY',
+  'OPENING',
+  'CLOSING',
+  'CONFIRMATION_PROMPT',
+  'CONFIRMATION_RESPONSE',
+  'REMINDER',
+  'MEMBER_PRIORITY',
+  'COST',
+  'ROUNDING',
 ]);
 const snapshotKeys = [
   'name',
@@ -162,6 +202,27 @@ export const parseGameCreationDraftData = (
   }
   if (typeof value.previewed !== 'boolean') {
     throw new Error('Invalid preview state');
+  }
+  if (
+    value.viewRevision !== undefined &&
+    (!Number.isSafeInteger(value.viewRevision) ||
+      Number(value.viewRevision) < 0 ||
+      Number(value.viewRevision) > 2_147_483_647)
+  ) {
+    throw new Error('Invalid game draft view revision');
+  }
+  if (
+    value.editingField !== undefined &&
+    (typeof value.editingField !== 'string' ||
+      !editingFields.has(value.editingField))
+  ) {
+    throw new Error('Invalid game draft editor field');
+  }
+  if (
+    value.cancelPending !== undefined &&
+    typeof value.cancelPending !== 'boolean'
+  ) {
+    throw new Error('Invalid game draft cancel state');
   }
   if (
     value.templateId !== undefined &&
@@ -206,6 +267,17 @@ export const parseGameCreationDraftData = (
     groupId,
     actorUserId,
     step,
+    ...(value.viewRevision === undefined
+      ? {}
+      : { viewRevision: value.viewRevision as number }),
+    ...(value.editingField === undefined
+      ? {}
+      : {
+          editingField: value.editingField as GameCreationDraft['editingField'],
+        }),
+    ...(value.cancelPending === undefined
+      ? {}
+      : { cancelPending: value.cancelPending as boolean }),
     ...(value.templateId === undefined
       ? {}
       : { templateId: asGameTemplateId(value.templateId as string) }),
@@ -227,6 +299,9 @@ export const serializeGameCreationDraftData = (
     version: draft.version,
     draftId: draft.draftId,
     step: draft.step,
+    viewRevision: draft.viewRevision,
+    editingField: draft.editingField,
+    cancelPending: draft.cancelPending,
     templateId: draft.templateId,
     snapshot: draft.snapshot,
     startsAtIso: draft.startsAtIso,

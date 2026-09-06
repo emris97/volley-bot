@@ -134,6 +134,126 @@ it('rejects incomplete persisted snapshots', async () => {
   );
 });
 
+it('revives persisted game wizard view identity and active editor field', async () => {
+  const { groupId, actorUserId } = await identities('-3005', '305');
+  await insertData(groupId, actorUserId, {
+    version: 1,
+    draftId: '018f6ba062d27bd18f1312e0c8424611',
+    step: 'CUSTOMIZE',
+    viewRevision: 7,
+    editingField: 'CAPACITY',
+    cancelPending: false,
+    snapshot: {
+      name: 'Friday volleyball',
+      venue: 'Arena',
+      address: null,
+      startsAtLocalTime: '20:00',
+      durationMinutes: 120,
+      capacity: 12,
+      registrationOpensMinutesBefore: 10_080,
+      registrationClosesMinutesBefore: 60,
+      tentativePromptMinutesBefore: 1_440,
+      tentativeResponseMinutes: 60,
+      reminderMinutesBefore: 120,
+      memberPriorityEnabled: true,
+      defaultTotalCostMinor: null,
+      currency: 'RUB',
+      roundingMode: 'EXACT',
+    },
+    startsAtIso: '2026-09-12T16:00:00.000Z',
+    previewed: false,
+  });
+
+  await expect(
+    new GameCreationDraftRepository(createDatabase(pool)).load(
+      groupId,
+      actorUserId,
+    ),
+  ).resolves.toMatchObject({
+    viewRevision: 7,
+    editingField: 'CAPACITY',
+    cancelPending: false,
+  });
+});
+
+it('allows only one mutation from the same rendered game wizard view', async () => {
+  const { groupId, actorUserId } = await identities('-3006', '306');
+  const repository = new GameCreationDraftRepository(createDatabase(pool));
+  const initial: GameCreationDraft = {
+    version: 1,
+    draftId: '018f6ba062d27bd18f1312e0c8424611',
+    groupId,
+    actorUserId,
+    step: 'TEMPLATE',
+    viewRevision: 0,
+    cancelPending: false,
+    previewed: false,
+  };
+  await repository.replaceForNewFlow(initial);
+
+  const results = await Promise.all([
+    repository.compareAndSet({
+      ...initial,
+      step: 'DATE',
+      viewRevision: 1,
+      previewed: false,
+    }),
+    repository.compareAndSet({
+      ...initial,
+      step: 'DATE',
+      viewRevision: 1,
+      previewed: false,
+    }),
+  ]);
+
+  expect(results.filter((result) => result === 'SAVED')).toHaveLength(1);
+  expect(results.filter((result) => result === 'STALE')).toHaveLength(1);
+});
+
+it('does not clear a draft that publication has already retained', async () => {
+  const { groupId, actorUserId } = await identities('-3007', '307');
+  const draftId = '018f6ba062d27bd18f1312e0c8424611';
+  await insertData(groupId, actorUserId, {
+    version: 1,
+    draftId,
+    step: 'PUBLISHED',
+    viewRevision: 4,
+    cancelPending: true,
+    snapshot: {
+      name: 'Friday volleyball',
+      venue: 'Arena',
+      address: null,
+      startsAtLocalTime: '20:00',
+      durationMinutes: 120,
+      capacity: 12,
+      registrationOpensMinutesBefore: 10_080,
+      registrationClosesMinutesBefore: 60,
+      tentativePromptMinutesBefore: 1_440,
+      tentativeResponseMinutes: 60,
+      reminderMinutesBefore: 120,
+      memberPriorityEnabled: true,
+      defaultTotalCostMinor: null,
+      currency: 'RUB',
+      roundingMode: 'EXACT',
+    },
+    startsAtIso: '2026-09-12T16:00:00.000Z',
+    previewed: true,
+    publishedGameId: '40000000-0000-4000-8000-000000000001',
+  });
+  const repository = new GameCreationDraftRepository(createDatabase(pool));
+
+  await expect(
+    repository.clear(groupId, actorUserId, {
+      draftId,
+      viewRevision: 4,
+    }),
+  ).resolves.toBe(false);
+  await expect(repository.load(groupId, actorUserId)).resolves.toMatchObject({
+    step: 'PUBLISHED',
+    publishedGameId: '40000000-0000-4000-8000-000000000001',
+  });
+});
+
 const identities = async (telegramChatId: string, telegramUserId: string) => {
   const group = await pool.query<{ id: string }>(
     'INSERT INTO groups (telegram_chat_id, title) VALUES ($1, $2) RETURNING id',
