@@ -11,7 +11,11 @@ import {
   WORKER_DEPENDENCIES,
   type WorkerDependencies,
 } from '../infrastructure/worker-dependencies.module.js';
-import { BullMqJobPublisher, OutboxConsumer } from './outbox.consumer.js';
+import {
+  BullMqJobPublisher,
+  OutboxConsumer,
+  PublishedOutboxRecovery,
+} from './outbox.consumer.js';
 import {
   WORKER_RUN_STATE,
   type WorkerRunStateRegistry,
@@ -34,10 +38,9 @@ export const OUTBOX_WORKER = Symbol('OUTBOX_WORKER');
         });
         const database = createDatabase(dependencies.pool);
         const payments = new PaymentRepository(database);
-        const dispatcher = new OutboxDispatcher(
-          new OutboxRepository(database),
-          new BullMqJobPublisher(queue, metrics),
-        );
+        const outbox = new OutboxRepository(database);
+        const publisher = new BullMqJobPublisher(queue, metrics);
+        const dispatcher = new OutboxDispatcher(outbox, publisher);
         return new OutboxConsumer(
           dispatcher,
           async () => {
@@ -46,6 +49,7 @@ export const OUTBOX_WORKER = Symbol('OUTBOX_WORKER');
           1_000,
           () => payments.purgeExpiredState({ batchSize: 500 }),
           runState,
+          new PublishedOutboxRecovery(outbox, publisher),
         );
       },
     },

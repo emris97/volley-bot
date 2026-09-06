@@ -947,6 +947,12 @@ const updateEventPayload = (input: {
   revision: input.revision,
   scheduleRevision: input.scheduleRevision,
   materialFields: input.materialFields,
+  ...(input.materialFields.length > 0
+    ? {
+        displayBefore: gameDisplaySnapshot(input.before),
+        displayAfter: gameDisplaySnapshot(input.after),
+      }
+    : {}),
   ...(input.materialFields.includes('startsAt')
     ? {
         startsAtBefore: input.before.startsAt.toISOString(),
@@ -959,4 +965,12 @@ const updateEventPayload = (input: {
   ...(input.materialFields.includes('address')
     ? { addressBefore: input.before.address, addressAfter: input.after.address }
     : {}),
+});
+
+const gameDisplaySnapshot = (game: Game): Record<string, unknown> => ({
+  name: game.name,
+  startsAt: game.startsAt.toISOString(),
+  venue: game.venue,
+  address: game.address,
+  timeZone: game.timeZone,
 });

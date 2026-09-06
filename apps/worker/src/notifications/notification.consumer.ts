@@ -160,7 +160,7 @@ export class NotificationConsumer {
     const text =
       notificationType === 'GAME_CANCELLED'
         ? gameCancelledNotificationText(recipients[0]!.game.name)
-        : gameChangedText(recipients[0]!, payload);
+        : gameChangedText(payload);
     await Promise.all(
       recipients.map((recipient) =>
         this.sendOnce(
@@ -264,52 +264,52 @@ const gameEventNotificationType = (
   return null;
 };
 
-const gameChangedText = (
-  recipient: GameEventNotificationRecipientRecord,
-  payload: Record<string, unknown>,
-): string => {
-  const fields = new Set(
-    Array.isArray(payload.materialFields)
-      ? payload.materialFields.filter(
-          (field): field is 'startsAt' | 'venue' | 'address' =>
-            field === 'startsAt' || field === 'venue' || field === 'address',
-        )
-      : [],
-  );
-  const current = recipient.game;
+const gameChangedText = (payload: Record<string, unknown>): string => {
+  const before = payloadDisplaySnapshot(payload, 'displayBefore');
+  const after = payloadDisplaySnapshot(payload, 'displayAfter');
   return gameChangedNotificationText({
-    name: current.name,
-    timeZone: current.timeZone,
-    before: {
-      startsAt: fields.has('startsAt')
-        ? payloadDate(payload, 'startsAtBefore')
-        : current.startsAt,
-      venue: fields.has('venue')
-        ? payloadString(payload, 'venueBefore')
-        : current.venue,
-      address: fields.has('address')
-        ? payloadNullableString(payload, 'addressBefore')
-        : current.address,
-    },
-    after: {
-      startsAt: fields.has('startsAt')
-        ? payloadDate(payload, 'startsAtAfter')
-        : current.startsAt,
-      venue: fields.has('venue')
-        ? payloadString(payload, 'venueAfter')
-        : current.venue,
-      address: fields.has('address')
-        ? payloadNullableString(payload, 'addressAfter')
-        : current.address,
-    },
+    name: after.name,
+    timeZone: after.timeZone,
+    before,
+    after,
   });
 };
 
-const payloadDate = (payload: Record<string, unknown>, field: string): Date => {
-  const value = payloadString(payload, field);
+interface DisplaySnapshot {
+  name: string;
+  startsAt: Date;
+  venue: string;
+  address: string | null;
+  timeZone: string;
+}
+
+const payloadDisplaySnapshot = (
+  payload: Record<string, unknown>,
+  field: string,
+): DisplaySnapshot => {
+  const value = payload[field];
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`Game event ${field} is required`);
+  }
+  const snapshot = value as Record<string, unknown>;
+  return {
+    name: payloadString(snapshot, 'name', field),
+    startsAt: payloadDate(snapshot, 'startsAt', field),
+    venue: payloadString(snapshot, 'venue', field),
+    address: payloadNullableString(snapshot, 'address', field),
+    timeZone: payloadString(snapshot, 'timeZone', field),
+  };
+};
+
+const payloadDate = (
+  payload: Record<string, unknown>,
+  field: string,
+  parent?: string,
+): Date => {
+  const value = payloadString(payload, field, parent);
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) {
-    throw new Error(`Game event ${field} is invalid`);
+    throw new Error(`Game event ${payloadPath(parent, field)} is invalid`);
   }
   return date;
 };
@@ -317,10 +317,11 @@ const payloadDate = (payload: Record<string, unknown>, field: string): Date => {
 const payloadString = (
   payload: Record<string, unknown>,
   field: string,
+  parent?: string,
 ): string => {
   const value = payload[field];
   if (typeof value !== 'string') {
-    throw new Error(`Game event ${field} is required`);
+    throw new Error(`Game event ${payloadPath(parent, field)} is required`);
   }
   return value;
 };
@@ -328,14 +329,18 @@ const payloadString = (
 const payloadNullableString = (
   payload: Record<string, unknown>,
   field: string,
+  parent?: string,
 ): string | null => {
   const value = payload[field];
   if (value === null) return null;
   if (typeof value !== 'string') {
-    throw new Error(`Game event ${field} is required`);
+    throw new Error(`Game event ${payloadPath(parent, field)} is required`);
   }
   return value;
 };
+
+const payloadPath = (parent: string | undefined, field: string): string =>
+  parent === undefined ? field : `${parent}.${field}`;
 
 const asPayloadGroupId = (value: unknown): GroupId => {
   if (typeof value !== 'string')

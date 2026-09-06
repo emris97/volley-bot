@@ -34,7 +34,7 @@ describe('material notification lifecycle', () => {
   beforeEach(async () => system.reset());
   afterAll(async () => system.stop());
 
-  it('routes a persisted update and deduplicates recipient delivery', async () => {
+  it('recovers a published material update after Redis loss and deduplicates recipient delivery', async () => {
     const fixture = await system.createOpenGame({ capacity: 2 });
     const registration = await system.registerMember(
       fixture,

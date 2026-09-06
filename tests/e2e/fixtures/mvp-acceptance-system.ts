@@ -88,7 +88,10 @@ import {
 import { AppModule } from '../../../apps/api/src/app.module.js';
 import { NotificationConsumer } from '../../../apps/worker/src/notifications/notification.consumer.js';
 import { PaymentReminderConsumer } from '../../../apps/worker/src/payments/payment-reminder.consumer.js';
-import { BullMqJobPublisher } from '../../../apps/worker/src/outbox/outbox.consumer.js';
+import {
+  BullMqJobPublisher,
+  PublishedOutboxRecovery,
+} from '../../../apps/worker/src/outbox/outbox.consumer.js';
 import {
   BullMqDelayedJobScheduler,
   GameSchedulerConsumer,
@@ -942,6 +945,11 @@ export class MvpAcceptanceSystem {
     const eventId = eventResult.rows[0]?.id;
     if (eventId === undefined) throw new Error('Game update outbox missing');
     await this.outboxDispatcher.dispatchOnce();
+    await this.flushRedis();
+    await new PublishedOutboxRecovery(
+      new OutboxRepository(this.database),
+      new BullMqJobPublisher(this.outboxQueue as never),
+    ).replayOnce();
     const parentJobId = `outbox:${eventId}:event`;
     const parentJob = await this.outboxQueue.getJob(parentJobId);
     if (parentJob === undefined)

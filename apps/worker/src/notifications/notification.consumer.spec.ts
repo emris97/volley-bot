@@ -213,6 +213,20 @@ describe('NotificationConsumer', () => {
         startsAtAfter: '2026-09-11T16:00:00.000Z',
         venueBefore: 'Зал 1',
         venueAfter: 'Зал 2',
+        displayBefore: {
+          name: 'Среда вечером',
+          startsAt: '2026-09-10T15:00:00.000Z',
+          venue: 'Зал 1',
+          address: null,
+          timeZone: 'Europe/Astrakhan',
+        },
+        displayAfter: {
+          name: 'Среда вечером',
+          startsAt: '2026-09-11T16:00:00.000Z',
+          venue: 'Зал 2',
+          address: null,
+          timeZone: 'Europe/Astrakhan',
+        },
       },
       'outbox:event-id:notification',
     );
@@ -234,6 +248,62 @@ describe('NotificationConsumer', () => {
           'Игра «Среда вечером» изменена:\n' +
           'Было: 10.09.2026, 19:00 — Зал 1\n' +
           'Стало: 11.09.2026, 20:00 — Зал 2',
+      }),
+    );
+  });
+
+  it('renders an earlier update solely from its immutable snapshot after a later update commits', async () => {
+    const recipientAfterUpdateB = {
+      ...gameRecipient('25'),
+      game: {
+        name: 'Строка после обновления B',
+        venue: 'Зал B',
+        address: 'Адрес B',
+        startsAt: new Date('2026-09-12T17:00:00.000Z'),
+        timeZone: 'UTC',
+      },
+    };
+    const recipients = repositoryDouble([recipientAfterUpdateB]);
+    const sender = { send: vi.fn().mockResolvedValue(undefined) };
+    const consumer = new NotificationConsumer(
+      recipients,
+      sender as never,
+      { expireTentative: vi.fn() } as never,
+    );
+
+    await consumer.processGameEvent(
+      'GAME_UPDATED',
+      {
+        aggregateType: 'GAME',
+        aggregateId: recipientAfterUpdateB.gameId,
+        groupId: recipientAfterUpdateB.groupId,
+        materialFields: ['venue'],
+        venueBefore: 'Зал A1',
+        venueAfter: 'Зал A2',
+        displayBefore: {
+          name: 'Игра на момент A',
+          startsAt: '2026-09-10T15:00:00.000Z',
+          venue: 'Зал A1',
+          address: 'Адрес A',
+          timeZone: 'Europe/Astrakhan',
+        },
+        displayAfter: {
+          name: 'Игра на момент A',
+          startsAt: '2026-09-10T15:00:00.000Z',
+          venue: 'Зал A2',
+          address: 'Адрес A',
+          timeZone: 'Europe/Astrakhan',
+        },
+      },
+      'outbox:update-a:notification',
+    );
+
+    expect(sender.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text:
+          'Игра «Игра на момент A» изменена:\n' +
+          'Было: 10.09.2026, 19:00 — Зал A1 — Адрес A\n' +
+          'Стало: 10.09.2026, 19:00 — Зал A2 — Адрес A',
       }),
     );
   });

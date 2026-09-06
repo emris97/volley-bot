@@ -308,6 +308,20 @@ describe('RegistrationRepository concurrency', () => {
       venueAfter: 'New gym',
       addressBefore: null,
       addressAfter: 'New address',
+      displayBefore: {
+        name: 'Updated game',
+        startsAt: '2026-09-10T16:00:00.000Z',
+        venue: 'Gym',
+        address: null,
+        timeZone: 'UTC',
+      },
+      displayAfter: {
+        name: 'Updated game',
+        startsAt: '2026-09-11T16:00:00.000Z',
+        venue: 'New gym',
+        address: 'New address',
+        timeZone: 'UTC',
+      },
     });
 
     const concurrent = await Promise.allSettled([
