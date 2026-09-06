@@ -20,6 +20,10 @@ import {
 } from '@volley/domain';
 import type { Bot, Context } from 'grammy';
 import { toTelegramId } from '../group-onboarding.handlers.js';
+import {
+  isOrganizerAuthorizationDenied,
+  organizerAccessDeniedText,
+} from '../organizer/live-organizer-actor.resolver.js';
 
 export interface PaymentActorResolver {
   resolve(
@@ -417,13 +421,18 @@ export const registerPaymentHandlers = (
   bot.command('payment', async (context) => {
     if (context.from === undefined)
       throw new Error('Message sender is required');
-    const gameId = parseGameId(context.match ?? '');
-    const view = await handlers.start({
-      telegramUserId: toTelegramId(context.from.id),
-      gameId,
-      privateChat: context.chat.type === 'private',
-    });
-    await context.reply(view.text);
+    try {
+      const gameId = parseGameId(context.match ?? '');
+      const view = await handlers.start({
+        telegramUserId: toTelegramId(context.from.id),
+        gameId,
+        privateChat: context.chat.type === 'private',
+      });
+      await context.reply(view.text);
+    } catch (error) {
+      if (!isOrganizerAuthorizationDenied(error)) throw error;
+      await context.reply(organizerAccessDeniedText);
+    }
   });
   bot.on('message:text', async (context, next) => {
     if (
@@ -434,30 +443,43 @@ export const registerPaymentHandlers = (
       await next();
       return;
     }
-    const view = await handlers.handleText({
-      telegramUserId: toTelegramId(context.from.id),
-      privateChat: context.chat.type === 'private',
-      text: context.message.text,
-    });
-    if (view === null) {
-      await next();
-      return;
+    try {
+      const view = await handlers.handleText({
+        telegramUserId: toTelegramId(context.from.id),
+        privateChat: context.chat.type === 'private',
+        text: context.message.text,
+      });
+      if (view === null) {
+        await next();
+        return;
+      }
+      await context.reply(view.text, {
+        ...paymentReplyMarkup(view),
+      });
+    } catch (error) {
+      if (!isOrganizerAuthorizationDenied(error)) throw error;
+      await context.reply(organizerAccessDeniedText);
     }
-    await context.reply(view.text, {
-      ...paymentReplyMarkup(view),
-    });
   });
   bot.callbackQuery(/^pay:/, async (context) => {
-    const view = await handlers.handleCallback({
-      telegramUserId: toTelegramId(context.callbackQuery.from.id),
-      privateChat: context.callbackQuery.message?.chat.type === 'private',
-      updateId: context.update.update_id,
-      data: context.callbackQuery.data,
-    });
-    await context.editMessageText(view.text, {
-      ...paymentReplyMarkup(view),
-    });
-    await context.answerCallbackQuery({ text: 'payment:updated' });
+    try {
+      const view = await handlers.handleCallback({
+        telegramUserId: toTelegramId(context.callbackQuery.from.id),
+        privateChat: context.callbackQuery.message?.chat.type === 'private',
+        updateId: context.update.update_id,
+        data: context.callbackQuery.data,
+      });
+      await context.editMessageText(view.text, {
+        ...paymentReplyMarkup(view),
+      });
+      await context.answerCallbackQuery({ text: 'payment:updated' });
+    } catch (error) {
+      if (!isOrganizerAuthorizationDenied(error)) throw error;
+      await context.answerCallbackQuery({
+        text: organizerAccessDeniedText,
+        show_alert: true,
+      });
+    }
   });
   return bot;
 };

@@ -3,7 +3,7 @@ import type {
   OrganizerContext,
 } from '@volley/application';
 import type { GroupId, TelegramId } from '@volley/domain';
-import type { Bot, Context } from 'grammy';
+import { GrammyError, type Bot, type Context } from 'grammy';
 import {
   configuredGroupSummaryLines,
   type ConfiguredGroupSettings,
@@ -129,6 +129,10 @@ export class GroupSettingsHandlers {
 
     if (action === 'set') return renderConfirmation(next, code, token);
 
+    if (current.settings[settingFields[code]] === choice.value) {
+      return renderSummary(current.settings, 'Настройки уже актуальны.');
+    }
+
     const saved = await this.configure.execute({
       groupId: current.context.groupId,
       actorTelegramId: telegramUserId,
@@ -166,7 +170,11 @@ export const registerGroupSettingsHandlers = (
         toTelegramId(context.callbackQuery.from.id),
         context.callbackQuery.data,
       );
-      await context.editMessageText(view.text, viewOptions(view));
+      try {
+        await context.editMessageText(view.text, viewOptions(view));
+      } catch (error) {
+        if (!isMessageNotModified(error)) throw error;
+      }
       await context.answerCallbackQuery();
     } catch (error) {
       if (
@@ -250,17 +258,28 @@ const replaceSetting = (
   code: SettingCode,
   value: unknown,
 ): ConfiguredGroupSettings => {
-  const field: Readonly<Record<SettingCode, keyof ConfiguredGroupSettings>> = {
-    tz: 'timeZone',
-    mp: 'memberPriorityEnabled',
-    tp: 'tentativePromptMinutesBefore',
-    tr: 'tentativeResponseMinutes',
-    rm: 'reminderMinutesBefore',
-    ro: 'roundingMode',
-    pin: 'pinGameMessages',
-  };
-  return { ...settings, [field[code]]: value } as ConfiguredGroupSettings;
+  return {
+    ...settings,
+    [settingFields[code]]: value,
+  } as ConfiguredGroupSettings;
 };
+
+const settingFields: Readonly<
+  Record<SettingCode, keyof ConfiguredGroupSettings>
+> = {
+  tz: 'timeZone',
+  mp: 'memberPriorityEnabled',
+  tp: 'tentativePromptMinutesBefore',
+  tr: 'tentativeResponseMinutes',
+  rm: 'reminderMinutesBefore',
+  ro: 'roundingMode',
+  pin: 'pinGameMessages',
+};
+
+const isMessageNotModified = (error: unknown): boolean =>
+  error instanceof GrammyError &&
+  error.error_code === 400 &&
+  /^Bad Request: message is not modified(?::|$)/i.test(error.description);
 
 const staleText = 'Эта кнопка устарела. Откройте настройки заново.';
 

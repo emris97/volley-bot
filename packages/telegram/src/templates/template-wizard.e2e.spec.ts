@@ -256,10 +256,38 @@ describe('template wizard Telegram flow', () => {
       require: async () => {
         throw new OrganizerGroupSelectionRequiredError();
       },
+      list: async () => [],
     });
 
     await expect(harness.text('обычное сообщение')).resolves.toBeUndefined();
     expect(harness.fallbackCount()).toBe(1);
+  });
+
+  it('renders a group picker for /templates with multiple live groups and no selection', async () => {
+    harness = createHarness(drafts, templates, {
+      require: async () => {
+        throw new OrganizerGroupSelectionRequiredError();
+      },
+      list: async () => [
+        {
+          groupId,
+          telegramChatId: asTelegramId('-1005000'),
+          title: 'Volley',
+          timeZone: 'Europe/Moscow',
+          selected: false,
+        },
+        {
+          groupId: asGroupId('018f6ba0-62d2-7bd1-8f13-12e0c8424622'),
+          telegramChatId: asTelegramId('-1005001'),
+          title: 'Beach Volley',
+          timeZone: 'Europe/Moscow',
+          selected: false,
+        },
+      ],
+    });
+
+    await expect(harness.command('/templates')).resolves.toBeUndefined();
+    expect(harness.lastMessage()).toContain('Выберите группу');
   });
 
   it('renders an expected Russian view for stale wizard controls', async () => {
@@ -479,7 +507,18 @@ const createHarness = (
     timeZone: 'Europe/Moscow',
   };
   const handler = new TemplateWizardHandlers(
-    organizerContext ?? { require: async () => context },
+    organizerContext ?? {
+      require: async () => context,
+      list: async () => [
+        {
+          groupId,
+          telegramChatId: context.telegramChatId,
+          title: context.title,
+          timeZone: context.timeZone,
+          selected: true,
+        },
+      ],
+    },
     drafts,
     templates,
   );

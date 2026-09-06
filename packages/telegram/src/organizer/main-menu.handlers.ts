@@ -1,4 +1,7 @@
-import type { OrganizerGroupCandidate } from '@volley/application';
+import {
+  OrganizerGroupSelectionRequiredError,
+  type OrganizerGroupCandidate,
+} from '@volley/application';
 import { asGroupId, type GroupId, type TelegramId } from '@volley/domain';
 import type { Bot, Context } from 'grammy';
 import { toTelegramId } from '../group-onboarding.handlers.js';
@@ -46,23 +49,35 @@ export class OrganizerMenuHandlers {
     return this.openHome(telegramUserId);
   }
 
-  public openGames(
+  public async openGames(
     telegramUserId: TelegramId,
     kind: GameListKind = 'UPCOMING',
   ): Promise<OrganizerView> {
-    return this.sections.openGames(telegramUserId, kind);
+    return this.openOperational(telegramUserId, () =>
+      this.sections.openGames(telegramUserId, kind),
+    );
   }
 
-  public openNewGame(telegramUserId: TelegramId): Promise<OrganizerView> {
-    return this.sections.openNewGame(telegramUserId);
+  public async openNewGame(telegramUserId: TelegramId): Promise<OrganizerView> {
+    return this.openOperational(telegramUserId, () =>
+      this.sections.openNewGame(telegramUserId),
+    );
   }
 
-  public openTemplates(telegramUserId: TelegramId): Promise<OrganizerView> {
-    return this.sections.openTemplates(telegramUserId);
+  public async openTemplates(
+    telegramUserId: TelegramId,
+  ): Promise<OrganizerView> {
+    return this.openOperational(telegramUserId, () =>
+      this.sections.openTemplates(telegramUserId),
+    );
   }
 
-  public openSettings(telegramUserId: TelegramId): Promise<OrganizerView> {
-    return this.sections.openSettings(telegramUserId);
+  public async openSettings(
+    telegramUserId: TelegramId,
+  ): Promise<OrganizerView> {
+    return this.openOperational(telegramUserId, () =>
+      this.sections.openSettings(telegramUserId),
+    );
   }
 
   public openHelp(telegramUserId: TelegramId): Promise<OrganizerView> {
@@ -75,6 +90,21 @@ export class OrganizerMenuHandlers {
     return renderOrganizerGroupPicker(
       await this.organizerContext.list(telegramUserId),
     );
+  }
+
+  private async openOperational(
+    telegramUserId: TelegramId,
+    open: () => Promise<OrganizerView>,
+  ): Promise<OrganizerView> {
+    try {
+      return await open();
+    } catch (error) {
+      if (!isOrganizerSelectionError(error)) throw error;
+      const groups = await this.organizerContext.list(telegramUserId);
+      return groups.length >= 2
+        ? renderOrganizerGroupPicker(groups)
+        : renderOrganizerHome(groups);
+    }
   }
 
   public async handleCallback(
@@ -157,6 +187,11 @@ const parseGroupSelection = (data: string): GroupId | undefined => {
   const groupId = match?.[1];
   return groupId === undefined ? undefined : asGroupId(groupId);
 };
+
+const isOrganizerSelectionError = (error: unknown): boolean =>
+  error instanceof OrganizerGroupSelectionRequiredError ||
+  (error instanceof Error &&
+    error.name === 'OrganizerGroupSelectionRequiredError');
 
 const replyView = async (
   context: Context,

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   OrganizerGroupSelectionRequiredError,
+  type OrganizerGroupCandidate,
   type OrganizerContext,
 } from '@volley/application';
 import {
@@ -19,6 +20,10 @@ import {
   previousTemplateStep,
 } from '../organizer/settings-editor.model.js';
 import type { OrganizerView } from '../organizer/main-menu.presenter.js';
+import {
+  renderOrganizerGroupPicker,
+  renderOrganizerHome,
+} from '../organizer/main-menu.presenter.js';
 import {
   parseInteger,
   parseLocalTime,
@@ -41,6 +46,7 @@ import {
 
 export interface TemplateWizardOrganizerContext {
   require(telegramUserId: TelegramId): Promise<OrganizerContext>;
+  list(telegramUserId: TelegramId): Promise<readonly OrganizerGroupCandidate[]>;
 }
 
 export interface TemplateWizardServices {
@@ -85,7 +91,16 @@ export class TemplateWizardHandlers {
   ) {}
 
   public async open(telegramUserId: TelegramId): Promise<OrganizerView> {
-    const actor = await this.organizerContext.require(telegramUserId);
+    let actor: OrganizerContext;
+    try {
+      actor = await this.organizerContext.require(telegramUserId);
+    } catch (error) {
+      if (!isOrganizerSelectionError(error)) throw error;
+      const groups = await this.organizerContext.list(telegramUserId);
+      return groups.length >= 2
+        ? renderOrganizerGroupPicker(groups)
+        : renderOrganizerHome(groups);
+    }
     const draft = await this.drafts.load(actor.groupId, actor.userId);
     return draft === null
       ? this.listFor(actor, false)
@@ -700,6 +715,11 @@ const isExpectedTemplateError = (error: unknown): error is Error =>
     'TemplateInputError',
     'TemplateNotFoundError',
   ].includes(error.name);
+
+const isOrganizerSelectionError = (error: unknown): boolean =>
+  error instanceof OrganizerGroupSelectionRequiredError ||
+  (error instanceof Error &&
+    error.name === 'OrganizerGroupSelectionRequiredError');
 
 const expectedErrorText = (error: Error): string =>
   error.name === 'TemplateNameConflictError'

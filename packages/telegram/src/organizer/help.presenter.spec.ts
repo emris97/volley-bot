@@ -19,5 +19,11 @@ describe('renderOrganizerHelp', () => {
     expect(view.text).not.toMatch(
       /gameId|UUID|\/manage|\/attendance|\/payment/i,
     );
+    expect(view.text).toContain(
+      'Время открытия и закрытия регистрации задаётся в шаблоне',
+    );
+    expect(view.text).toContain(
+      'Посещаемость и оплата появляются в личном меню управления завершённой игрой',
+    );
   });
 });

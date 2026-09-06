@@ -10,6 +10,7 @@ export * from './organizer/help.presenter.js';
 export * from './organizer/main-menu.handlers.js';
 export * from './organizer/main-menu.presenter.js';
 export * from './organizer/input.parsers.js';
+export * from './organizer/live-organizer-actor.resolver.js';
 export * from './organizer/local-date-time.js';
 export * from './organizer/settings-editor.model.js';
 export * from './templates/template-wizard.model.js';

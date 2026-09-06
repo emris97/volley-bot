@@ -1,3 +1,5 @@
+import { Bot } from 'grammy';
+import type { Update, UserFromGetMe } from 'grammy/types';
 import { describe, expect, it, vi } from 'vitest';
 import { asGroupId, asTelegramId, asUserId } from '@volley/domain';
 import {
@@ -110,4 +112,73 @@ describe('GroupSettingsHandlers', () => {
       'expectedOnboardingProgress',
     );
   });
+
+  it('does not configure or audit a replayed confirmation already reflected in storage', async () => {
+    const { handlers, configure } = harness();
+
+    const view = await handlers.handleCallback(
+      telegramUserId,
+      'gs:v1:confirm:mp.y',
+    );
+
+    expect(configure.execute).not.toHaveBeenCalled();
+    expect(view.text).toContain('Настройки уже актуальны');
+  });
+
+  it('acknowledges a replay even when Telegram reports that the message is not modified', async () => {
+    const { handlers, configure } = harness();
+    const bot = new Bot('123456:abcdefghijklmnopqrstuvwxyz', { botInfo });
+    const methods: string[] = [];
+    bot.api.config.use(async (_previous, method) => {
+      methods.push(method);
+      if (method === 'editMessageText') {
+        return {
+          ok: false,
+          error_code: 400,
+          description: 'Bad Request: message is not modified',
+        } as never;
+      }
+      return { ok: true, result: true } as never;
+    });
+    registerGroupSettingsHandlers(bot, handlers);
+
+    await expect(
+      bot.handleUpdate(settingsCallbackUpdate()),
+    ).resolves.toBeUndefined();
+    expect(configure.execute).not.toHaveBeenCalled();
+    expect(methods).toContain('answerCallbackQuery');
+  });
 });
+
+const botInfo: UserFromGetMe = {
+  id: 999,
+  is_bot: true,
+  first_name: 'Volley',
+  username: 'volley_test_bot',
+  can_join_groups: true,
+  can_read_all_group_messages: false,
+  supports_inline_queries: false,
+  can_connect_to_business: false,
+  has_main_web_app: false,
+  has_topics_enabled: false,
+  allows_users_to_create_topics: false,
+  can_manage_bots: false,
+  supports_join_request_queries: false,
+};
+
+const settingsCallbackUpdate = (): Update =>
+  ({
+    update_id: 1,
+    callback_query: {
+      id: 'callback-1',
+      from: { id: 42, is_bot: false, first_name: 'Admin' },
+      chat_instance: 'instance',
+      data: 'gs:v1:confirm:mp.y',
+      message: {
+        message_id: 10,
+        date: 1_700_000_000,
+        chat: { id: 42, type: 'private', first_name: 'Admin' },
+        text: 'Настройки уже актуальны.',
+      },
+    },
+  }) as Update;

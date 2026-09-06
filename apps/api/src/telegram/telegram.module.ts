@@ -76,6 +76,7 @@ import {
   registerTemplateWizardHandlers,
   registerTentativeHandlers,
   renderOrganizerHelp,
+  LiveOrganizerGameActorResolver,
   type TelegramUpdateHandler,
 } from '@volley/telegram';
 import { APP_ENV, DATABASE } from '../infrastructure/infrastructure.module.js';
@@ -189,6 +190,10 @@ export const registerProductionTelegramHandlers = (
         };
 
         const configureGroup = new ConfigureGroup(authorization, groups);
+        const liveOrganizerGameActor = new LiveOrganizerGameActorResolver(
+          telegram,
+          management,
+        );
         const onboarding = new GroupOnboardingHandlers(
           new OnboardGroup(telegram, groups, links),
           configureGroup,
@@ -204,7 +209,7 @@ export const registerProductionTelegramHandlers = (
           new RegisterGuest(registrations),
         );
         const paymentHandlers = new PaymentHandlers(
-          registrations,
+          liveOrganizerGameActor,
           new PreviewSettlement(authorization, payments),
           new FinalizeSettlement(authorization, payments),
           new ChangeChargeStatus(authorization, payments),
@@ -213,7 +218,7 @@ export const registerProductionTelegramHandlers = (
           authorization,
         );
         const attendanceHandlers = new AttendanceHandlers(
-          registrations,
+          liveOrganizerGameActor,
           new ConfirmAttendance(authorization, attendance),
           attendance,
         );

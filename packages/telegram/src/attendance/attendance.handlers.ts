@@ -18,6 +18,10 @@ import {
 } from '@volley/domain';
 import type { Bot, Context } from 'grammy';
 import { toTelegramId } from '../group-onboarding.handlers.js';
+import {
+  isOrganizerAuthorizationDenied,
+  organizerAccessDeniedText,
+} from '../organizer/live-organizer-actor.resolver.js';
 
 export interface AttendanceActorResolver {
   resolve(
@@ -416,11 +420,16 @@ export const registerAttendanceHandlers = (
       throw new Error('Message sender is required');
     if (context.chat.type !== 'private')
       throw new Error('Private chat required');
-    const preview = await handlers.start({
-      telegramUserId: toTelegramId(context.from.id),
-      gameId: parseGameId(context.match ?? ''),
-    });
-    await context.reply(preview.text, attendanceReplyMarkup(preview));
+    try {
+      const preview = await handlers.start({
+        telegramUserId: toTelegramId(context.from.id),
+        gameId: parseGameId(context.match ?? ''),
+      });
+      await context.reply(preview.text, attendanceReplyMarkup(preview));
+    } catch (error) {
+      if (!isOrganizerAuthorizationDenied(error)) throw error;
+      await context.reply(organizerAccessDeniedText);
+    }
   });
   bot.on('message:text', async (context, next) => {
     const prompt = context.message.reply_to_message?.text?.split('\n')[0];
@@ -433,32 +442,45 @@ export const registerAttendanceHandlers = (
       await next();
       return;
     }
-    const preview = await handlers.addManualParticipant({
-      telegramUserId: toTelegramId(context.from.id),
-      token: prompt,
-      displayName: context.message.text,
-    });
-    await context.reply(preview.text, attendanceReplyMarkup(preview));
+    try {
+      const preview = await handlers.addManualParticipant({
+        telegramUserId: toTelegramId(context.from.id),
+        token: prompt,
+        displayName: context.message.text,
+      });
+      await context.reply(preview.text, attendanceReplyMarkup(preview));
+    } catch (error) {
+      if (!isOrganizerAuthorizationDenied(error)) throw error;
+      await context.reply(organizerAccessDeniedText);
+    }
   });
   bot.callbackQuery(/^at:/, async (context) => {
     if (context.callbackQuery.message?.chat.type !== 'private') {
       throw new Error('Private chat required');
     }
-    const preview = await handlers.handleCallback({
-      telegramUserId: toTelegramId(context.callbackQuery.from.id),
-      data: context.callbackQuery.data,
-    });
-    if (preview.manualParticipantPrompt === undefined) {
-      await context.editMessageText(
-        preview.text,
-        attendanceReplyMarkup(preview),
-      );
-    } else {
-      await context.reply(preview.manualParticipantPrompt.text, {
-        reply_markup: { force_reply: true, selective: true },
+    try {
+      const preview = await handlers.handleCallback({
+        telegramUserId: toTelegramId(context.callbackQuery.from.id),
+        data: context.callbackQuery.data,
+      });
+      if (preview.manualParticipantPrompt === undefined) {
+        await context.editMessageText(
+          preview.text,
+          attendanceReplyMarkup(preview),
+        );
+      } else {
+        await context.reply(preview.manualParticipantPrompt.text, {
+          reply_markup: { force_reply: true, selective: true },
+        });
+      }
+      await context.answerCallbackQuery({ text: 'attendance:updated' });
+    } catch (error) {
+      if (!isOrganizerAuthorizationDenied(error)) throw error;
+      await context.answerCallbackQuery({
+        text: organizerAccessDeniedText,
+        show_alert: true,
       });
     }
-    await context.answerCallbackQuery({ text: 'attendance:updated' });
   });
   return bot;
 };

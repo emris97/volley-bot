@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { OrganizerGroupSelectionRequiredError } from '@volley/application';
 import { asGroupId, asTelegramId } from '@volley/domain';
 import { OrganizerMenuHandlers } from './main-menu.handlers.js';
 
@@ -54,6 +55,58 @@ describe('OrganizerMenuHandlers', () => {
       'UPCOMING',
     );
   });
+
+  it.each([
+    [
+      'games',
+      (handlers: OrganizerMenuHandlers) => handlers.openGames(telegramUserId),
+    ],
+    [
+      'new game',
+      (handlers: OrganizerMenuHandlers) => handlers.openNewGame(telegramUserId),
+    ],
+    [
+      'templates',
+      (handlers: OrganizerMenuHandlers) =>
+        handlers.openTemplates(telegramUserId),
+    ],
+    [
+      'settings',
+      (handlers: OrganizerMenuHandlers) =>
+        handlers.openSettings(telegramUserId),
+    ],
+  ])(
+    'renders the group picker for %s when multiple live groups have no selection',
+    async (_name, open) => {
+      const candidates = [
+        organizerGroup(false),
+        {
+          ...organizerGroup(false),
+          groupId: asGroupId('018f6ba0-62d2-7bd1-8f13-12e0c8424622'),
+          title: 'Пляжный волейбол',
+        },
+      ];
+      const context = {
+        list: vi.fn().mockResolvedValue(candidates),
+        select: vi.fn(),
+      };
+      const sectionHandlers = sections();
+      for (const section of [
+        sectionHandlers.openGames,
+        sectionHandlers.openNewGame,
+        sectionHandlers.openTemplates,
+        sectionHandlers.openSettings,
+      ]) {
+        section.mockRejectedValue(new OrganizerGroupSelectionRequiredError());
+      }
+      const handlers = new OrganizerMenuHandlers(context, sectionHandlers);
+
+      await expect(open(handlers)).resolves.toMatchObject({
+        text: expect.stringContaining('Выберите группу'),
+      });
+      expect(context.list).toHaveBeenCalledWith(telegramUserId);
+    },
+  );
 
   it('accepts only versioned group-selection callbacks', async () => {
     const context = {
