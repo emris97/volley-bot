@@ -88,6 +88,19 @@ export class OutboxEventRouter {
             childJobId(sourceJobId, 'notification'),
           );
         }
+        if (
+          (eventType === 'GAME_UPDATED' &&
+            Array.isArray(payload.materialFields) &&
+            payload.materialFields.length > 0) ||
+          (eventType === 'GAME_STATE_CHANGED' && payload.to === 'CANCELLED')
+        ) {
+          await ensureChildJob(
+            this.notificationQueue,
+            eventType,
+            payload,
+            childJobId(sourceJobId, 'notification'),
+          );
+        }
         if (eventType === 'PAYMENT_REMINDER_REQUESTED') {
           await ensureChildJob(
             this.paymentReminderQueue,
@@ -351,7 +364,7 @@ export const GAME_MESSAGE_WORKER = Symbol('GAME_MESSAGE_WORKER');
           logger,
         );
         const messageConsumer = new GameMessageConsumer(
-          new GameMessageUpdater(repository, gateway),
+          new GameMessageUpdater(repository, gateway, logger),
           metrics,
           logger,
         );
@@ -384,12 +397,22 @@ export const GAME_MESSAGE_WORKER = Symbol('GAME_MESSAGE_WORKER');
         );
         const promotionWorker = new Worker(
           'volley-notifications',
-          async (job) =>
-            promotionConsumer.process(
+          async (job) => {
+            const jobId = requiredJobId(job.id);
+            if (job.name === 'WAITLIST_PROMOTED') {
+              await promotionConsumer.process(
+                job.data,
+                jobId,
+                job.attemptsMade,
+              );
+              return;
+            }
+            await notificationConsumer.processGameEvent(
+              job.name,
               job.data,
-              requiredJobId(job.id),
-              job.attemptsMade,
-            ),
+              jobId,
+            );
+          },
           { connection: dependencies.redis, autorun: false },
         );
         const paymentReminderWorker = new Worker(

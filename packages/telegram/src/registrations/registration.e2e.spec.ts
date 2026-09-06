@@ -47,7 +47,7 @@ it('registers the callback sender for the referenced game only', async () => {
     data: codec.going(gameA),
   });
 
-  expect(text).toBe('registration:rostered:1');
+  expect(text).toBe('Вы в составе. Место: 1.');
   expect(calls).toEqual([
     expect.objectContaining({
       gameId: gameA,

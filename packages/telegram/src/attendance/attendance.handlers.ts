@@ -3,6 +3,7 @@ import type {
   AttendanceSnapshotReader,
   ConfirmAttendance,
   ConfirmAttendanceCommand,
+  OrganizerTextFlowCoordinator,
 } from '@volley/application';
 import {
   asAttendanceSnapshotId,
@@ -18,6 +19,10 @@ import {
 } from '@volley/domain';
 import type { Bot, Context } from 'grammy';
 import { toTelegramId } from '../group-onboarding.handlers.js';
+import {
+  isOrganizerAuthorizationDenied,
+  organizerAccessDeniedText,
+} from '../organizer/live-organizer-actor.resolver.js';
 
 export interface AttendanceActorResolver {
   resolve(
@@ -30,7 +35,7 @@ export interface AttendancePreview {
   text: string;
   snapshot: AttendanceSnapshot;
   buttons: readonly { text: string; callbackData: string }[];
-  manualParticipantPrompt?: { text: string; token: string };
+  manualParticipantPrompt?: { text: string };
 }
 
 export class AttendanceHandlers {
@@ -38,6 +43,7 @@ export class AttendanceHandlers {
     private readonly actors: AttendanceActorResolver,
     private readonly attendance: Pick<ConfirmAttendance, 'execute'>,
     private readonly snapshots: Pick<AttendanceSnapshotReader, 'findSnapshot'>,
+    private readonly textFlows?: OrganizerTextFlowCoordinator,
   ) {}
 
   public async preview(input: {
@@ -72,22 +78,34 @@ export class AttendanceHandlers {
     telegramUserId: TelegramId;
     gameId: GameId;
   }): Promise<AttendancePreview> {
-    return this.render(
-      await this.preview({
-        ...input,
-        expectedRevision: 0,
-        excludedRegistrationIds: [],
-        manualParticipants: [],
-      }),
-    );
+    const snapshot = await this.preview({
+      ...input,
+      expectedRevision: 0,
+      excludedRegistrationIds: [],
+      manualParticipants: [],
+    });
+    const actor = await this.actors.resolve(input.gameId, input.telegramUserId);
+    if (
+      actor.groupId !== snapshot.groupId ||
+      actor.gameId !== snapshot.gameId
+    ) {
+      throw new Error('Attendance actor identity mismatch');
+    }
+    await this.textFlows?.claim({
+      groupId: actor.groupId,
+      actorUserId: actor.userId,
+      kind: 'ATTENDANCE',
+      reference: attendanceFlowReference('VIEW', snapshot.id),
+    });
+    return this.render(snapshot);
   }
 
   public render(snapshot: AttendanceSnapshot): AttendancePreview {
     return {
       text: [
         snapshot.finalized
-          ? `attendance:confirmed:${snapshot.revision}`
-          : `attendance:preview:${snapshot.revision}`,
+          ? '✅ Посещаемость подтверждена'
+          : 'Посещаемость — черновик',
         ...snapshot.entries.map(
           (entry) =>
             `${entry.billable ? '✓' : '○'} ${entry.displayName} — ${entry.billable ? 'с взносом' : 'без взноса'}`,
@@ -137,7 +155,7 @@ export class AttendanceHandlers {
               ),
             },
             {
-              text: 'Confirm attendance',
+              text: 'Подтвердить посещаемость',
               callbackData: attendanceCallback(
                 'confirm',
                 snapshot.groupId,
@@ -169,11 +187,16 @@ export class AttendanceHandlers {
       throw new Error('Attendance callback identity mismatch');
     }
     if (callback.action === 'add') {
+      await this.textFlows?.claim({
+        groupId: actor.groupId,
+        actorUserId: actor.userId,
+        kind: 'ATTENDANCE',
+        reference: attendanceFlowReference('MANUAL', snapshot.id),
+      });
       return {
         ...this.render(snapshot),
         manualParticipantPrompt: {
-          token: input.data,
-          text: `${input.data}\nВведите имя участника`,
+          text: 'Введите имя участника.',
         },
       };
     }
@@ -220,18 +243,50 @@ export class AttendanceHandlers {
       manualParticipants,
       finalize: callback.action === 'confirm',
     });
+    if (callback.action === 'confirm') {
+      await this.textFlows?.release({
+        groupId: actor.groupId,
+        actorUserId: actor.userId,
+        kind: 'ATTENDANCE',
+      });
+    } else {
+      await this.textFlows?.claim({
+        groupId: actor.groupId,
+        actorUserId: actor.userId,
+        kind: 'ATTENDANCE',
+        reference: attendanceFlowReference('VIEW', result.id),
+      });
+    }
     return this.render(result);
   }
 
   public async addManualParticipant(input: {
     telegramUserId: TelegramId;
-    token: string;
+    token?: string;
     displayName: string;
-  }): Promise<AttendancePreview> {
-    const callback = parseAttendanceCallback(input.token);
-    if (callback.action !== 'add') {
-      throw new Error('Invalid manual attendance prompt');
+  }): Promise<AttendancePreview | null> {
+    const owned = await this.textFlows?.current(input.telegramUserId);
+    if (this.textFlows !== undefined && owned?.kind !== 'ATTENDANCE')
+      return null;
+    const ownedReference =
+      owned?.kind === 'ATTENDANCE' && owned.reference !== null
+        ? parseAttendanceFlowReference(owned.reference)
+        : null;
+    if (owned?.kind === 'ATTENDANCE' && ownedReference?.phase !== 'MANUAL') {
+      return null;
     }
+    const callback =
+      owned?.kind === 'ATTENDANCE' && ownedReference !== null
+        ? {
+            action: 'add' as const,
+            groupId: owned.groupId,
+            snapshotId: ownedReference.snapshotId,
+          }
+        : input.token === undefined
+          ? null
+          : parseAttendanceCallback(input.token);
+    if (callback === null || callback.action !== 'add')
+      throw new Error('Invalid manual attendance prompt');
     const snapshot = await this.snapshots.findSnapshot(
       callback.groupId,
       callback.snapshotId,
@@ -243,15 +298,19 @@ export class AttendanceHandlers {
     );
     if (
       actor.groupId !== callback.groupId ||
-      actor.gameId !== snapshot.gameId
+      actor.gameId !== snapshot.gameId ||
+      (owned !== undefined &&
+        (owned === null || owned.actorUserId !== actor.userId))
     ) {
       throw new Error('Attendance callback identity mismatch');
     }
     const displayName = input.displayName.trim();
     if (displayName.length === 0 || [...displayName].length > 80) {
-      throw new Error(
-        'Participant name must contain between 1 and 80 characters',
-      );
+      const preview = this.render(snapshot);
+      return {
+        ...preview,
+        text: `Имя должно содержать от 1 до 80 символов.\n\n${preview.text}`,
+      };
     }
     const result = await this.attendance.execute({
       groupId: actor.groupId,
@@ -276,6 +335,11 @@ export class AttendanceHandlers {
         },
       ],
       finalize: false,
+    });
+    await this.textFlows?.release({
+      groupId: actor.groupId,
+      actorUserId: actor.userId,
+      kind: 'ATTENDANCE',
     });
     return this.render(result);
   }
@@ -328,6 +392,35 @@ type AttendanceCallback =
       candidateIndex: number;
     };
 
+type AttendanceFlowPhase = 'VIEW' | 'MANUAL';
+
+const attendanceFlowReference = (
+  phase: AttendanceFlowPhase,
+  snapshotId: AttendanceSnapshotId,
+): string => `${phase}:${snapshotId}`;
+
+const parseAttendanceFlowReference = (
+  reference: string,
+): { phase: AttendanceFlowPhase; snapshotId: AttendanceSnapshotId } | null => {
+  const match =
+    /^(VIEW|MANUAL):([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.exec(
+      reference,
+    );
+  if (match !== null) {
+    return {
+      phase: match[1]!.toUpperCase() as AttendanceFlowPhase,
+      snapshotId: asAttendanceSnapshotId(match[2]!),
+    };
+  }
+  if (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(reference)) {
+    return {
+      phase: 'MANUAL',
+      snapshotId: asAttendanceSnapshotId(reference),
+    };
+  }
+  return null;
+};
+
 export const attendanceCallback = (
   action: AttendanceCallback['action'],
   groupId: GroupId,
@@ -335,10 +428,12 @@ export const attendanceCallback = (
   candidateIndex?: number,
 ): string => {
   if (
-    (action === 'toggle' || action === 'billable' || action === 'remove') &&
-    (candidateIndex === undefined ||
-      !Number.isSafeInteger(candidateIndex) ||
-      candidateIndex < 0)
+    ((action === 'toggle' || action === 'billable' || action === 'remove') &&
+      (candidateIndex === undefined ||
+        !Number.isSafeInteger(candidateIndex) ||
+        candidateIndex < 0 ||
+        candidateIndex > 2_147_483_647)) ||
+    ((action === 'confirm' || action === 'add') && candidateIndex !== undefined)
   ) {
     throw new Error('Invalid attendance callback');
   }
@@ -365,6 +460,7 @@ export const attendanceCallback = (
 const parseAttendanceCallback = (value: string): AttendanceCallback => {
   const [prefix, action, groupId, snapshotId, candidateIndex, ...rest] =
     value.split(':');
+  const parsedCandidateIndex = Number.parseInt(candidateIndex ?? '', 36);
   if (
     prefix !== 'at' ||
     !['t', 'b', 'r', 'c', 'a'].includes(action ?? '') ||
@@ -372,7 +468,12 @@ const parseAttendanceCallback = (value: string): AttendanceCallback => {
     snapshotId === undefined ||
     rest.length > 0 ||
     (['t', 'b', 'r'].includes(action ?? '') &&
-      (candidateIndex === undefined || !/^[0-9a-z]+$/i.test(candidateIndex))) ||
+      (candidateIndex === undefined ||
+        !/^(?:0|[1-9a-z][0-9a-z]*)$/.test(candidateIndex) ||
+        !Number.isSafeInteger(parsedCandidateIndex) ||
+        parsedCandidateIndex < 0 ||
+        parsedCandidateIndex > 2_147_483_647 ||
+        parsedCandidateIndex.toString(36) !== candidateIndex)) ||
     (!['t', 'b', 'r'].includes(action ?? '') && candidateIndex !== undefined)
   ) {
     throw new Error('Invalid attendance callback');
@@ -385,7 +486,7 @@ const parseAttendanceCallback = (value: string): AttendanceCallback => {
         action === 't' ? 'toggle' : action === 'b' ? 'billable' : 'remove',
       groupId: asGroupId(decodedGroupId),
       snapshotId: asAttendanceSnapshotId(decodedSnapshotId),
-      candidateIndex: Number.parseInt(candidateIndex!, 36),
+      candidateIndex: parsedCandidateIndex,
     };
   }
   return {
@@ -403,7 +504,11 @@ const decodeCompactUuid = (value: string): string => {
     throw new Error('Invalid attendance callback');
   }
   const hex = Buffer.from(value, 'base64url').toString('hex');
-  if (hex.length !== 32) throw new Error('Invalid attendance callback');
+  if (
+    hex.length !== 32 ||
+    Buffer.from(hex, 'hex').toString('base64url') !== value
+  )
+    throw new Error('Invalid attendance callback');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
 
@@ -416,49 +521,66 @@ export const registerAttendanceHandlers = (
       throw new Error('Message sender is required');
     if (context.chat.type !== 'private')
       throw new Error('Private chat required');
-    const preview = await handlers.start({
-      telegramUserId: toTelegramId(context.from.id),
-      gameId: parseGameId(context.match ?? ''),
-    });
-    await context.reply(preview.text, attendanceReplyMarkup(preview));
+    try {
+      const preview = await handlers.start({
+        telegramUserId: toTelegramId(context.from.id),
+        gameId: parseGameId(context.match ?? ''),
+      });
+      await context.reply(preview.text, attendanceReplyMarkup(preview));
+    } catch (error) {
+      if (!isOrganizerAuthorizationDenied(error)) throw error;
+      await context.reply(organizerAccessDeniedText);
+    }
   });
   bot.on('message:text', async (context, next) => {
-    const prompt = context.message.reply_to_message?.text?.split('\n')[0];
     if (
       context.chat.type !== 'private' ||
       context.from === undefined ||
-      prompt === undefined ||
-      !prompt.startsWith('at:a:')
+      context.message.text.startsWith('/')
     ) {
       await next();
       return;
     }
-    const preview = await handlers.addManualParticipant({
-      telegramUserId: toTelegramId(context.from.id),
-      token: prompt,
-      displayName: context.message.text,
-    });
-    await context.reply(preview.text, attendanceReplyMarkup(preview));
+    try {
+      const preview = await handlers.addManualParticipant({
+        telegramUserId: toTelegramId(context.from.id),
+        displayName: context.message.text,
+      });
+      if (preview === null) {
+        await next();
+        return;
+      }
+      await context.reply(preview.text, attendanceReplyMarkup(preview));
+    } catch (error) {
+      if (!isOrganizerAuthorizationDenied(error)) throw error;
+      await context.reply(organizerAccessDeniedText);
+    }
   });
   bot.callbackQuery(/^at:/, async (context) => {
     if (context.callbackQuery.message?.chat.type !== 'private') {
       throw new Error('Private chat required');
     }
-    const preview = await handlers.handleCallback({
-      telegramUserId: toTelegramId(context.callbackQuery.from.id),
-      data: context.callbackQuery.data,
-    });
-    if (preview.manualParticipantPrompt === undefined) {
-      await context.editMessageText(
-        preview.text,
-        attendanceReplyMarkup(preview),
-      );
-    } else {
-      await context.reply(preview.manualParticipantPrompt.text, {
-        reply_markup: { force_reply: true, selective: true },
+    try {
+      const preview = await handlers.handleCallback({
+        telegramUserId: toTelegramId(context.callbackQuery.from.id),
+        data: context.callbackQuery.data,
+      });
+      if (preview.manualParticipantPrompt === undefined) {
+        await context.editMessageText(
+          preview.text,
+          attendanceReplyMarkup(preview),
+        );
+      } else {
+        await context.reply(preview.manualParticipantPrompt.text);
+      }
+      await context.answerCallbackQuery({ text: 'Посещаемость обновлена.' });
+    } catch (error) {
+      if (!isOrganizerAuthorizationDenied(error)) throw error;
+      await context.answerCallbackQuery({
+        text: organizerAccessDeniedText,
+        show_alert: true,
       });
     }
-    await context.answerCallbackQuery({ text: 'attendance:updated' });
   });
   return bot;
 };

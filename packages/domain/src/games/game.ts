@@ -33,6 +33,7 @@ export interface Game {
   currency: Currency;
   roundingMode: RoundingMode;
   state: GameState;
+  revision: number;
   scheduleRevision: number;
   canonicalTelegramMessageId: bigint | null;
 }

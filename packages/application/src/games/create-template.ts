@@ -5,6 +5,7 @@ import type {
   UserId,
 } from '@volley/domain';
 import type { GameAuthorization, TemplateRepository } from './ports.js';
+import { validateTemplateSnapshot } from './template-validation.js';
 
 export interface CreateTemplateCommand extends GameTemplateSnapshot {
   groupId: GroupId;
@@ -22,8 +23,11 @@ export class CreateTemplate {
       command.groupId,
       command.actorUserId,
     );
-    const { actorUserId: _actorUserId, ...template } = command;
+    const { actorUserId: _actorUserId, groupId, ...template } = command;
     void _actorUserId;
-    return this.templates.insert(template);
+    return this.templates.insert({
+      groupId,
+      ...validateTemplateSnapshot(template),
+    });
   }
 }

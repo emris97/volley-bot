@@ -14,9 +14,28 @@ export class FakeTelegramGateway {
   >();
   public readonly groupMessages: Array<{ chatId: TelegramId; text: string }> =
     [];
+  private readonly memberships = new Map<
+    string,
+    'creator' | 'administrator' | 'member' | 'left'
+  >();
 
-  public async getChatMember(): Promise<{ status: 'creator' }> {
-    return { status: 'creator' };
+  public async getChatMember(
+    chatId: TelegramId,
+    telegramUserId: TelegramId,
+  ): Promise<{
+    status: 'creator' | 'administrator' | 'member' | 'left';
+  }> {
+    return {
+      status: this.memberships.get(`${chatId}:${telegramUserId}`) ?? 'creator',
+    };
+  }
+
+  public setChatMember(
+    chatId: TelegramId,
+    telegramUserId: TelegramId,
+    status: 'creator' | 'administrator' | 'member' | 'left',
+  ): void {
+    this.memberships.set(`${chatId}:${telegramUserId}`, status);
   }
 
   public async sendPrivate(
@@ -53,5 +72,6 @@ export class FakeTelegramGateway {
   public clear(): void {
     this.privateMessages.clear();
     this.groupMessages.length = 0;
+    this.memberships.clear();
   }
 }

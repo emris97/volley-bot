@@ -9,6 +9,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 import { groups } from './groups.js';
@@ -46,6 +47,8 @@ export const gameTemplates = pgTable(
       .$type<RoundingMode>()
       .default('EXACT')
       .notNull(),
+    archivedAt: timestamp('archived_at', { mode: 'date', withTimezone: true }),
+    revision: integer('revision').default(0).notNull(),
     createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -55,7 +58,11 @@ export const gameTemplates = pgTable(
   },
   (table) => [
     index('game_templates_group_id_idx').on(table.groupId),
+    uniqueIndex('game_templates_active_name_unique')
+      .on(table.groupId, sql`lower(btrim(${table.name}))`)
+      .where(sql`${table.archivedAt} is null`),
     check('game_templates_capacity_check', sql`${table.capacity} > 0`),
+    check('game_templates_revision_check', sql`${table.revision} >= 0`),
     check('game_templates_duration_check', sql`${table.durationMinutes} > 0`),
     check(
       'game_templates_timing_check',
@@ -122,9 +129,14 @@ export const games = pgTable(
       .default('EXACT')
       .notNull(),
     state: text('state').$type<GameState>().default('DRAFT').notNull(),
+    revision: integer('revision').default(0).notNull(),
     scheduleRevision: integer('schedule_revision').default(0).notNull(),
     canonicalTelegramMessageId: bigint('canonical_telegram_message_id', {
       mode: 'bigint',
+    }),
+    canonicalPinFailedAt: timestamp('canonical_pin_failed_at', {
+      mode: 'date',
+      withTimezone: true,
     }),
     createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
       .defaultNow()
@@ -142,6 +154,7 @@ export const games = pgTable(
       sql`${table.state} in ('DRAFT', 'SCHEDULED', 'OPEN', 'CLOSED', 'COMPLETED', 'CANCELLED')`,
     ),
     check('games_schedule_revision_check', sql`${table.scheduleRevision} >= 0`),
+    check('games_revision_check', sql`${table.revision} >= 0`),
     check('games_currency_check', sql`${table.currency} in ('RUB')`),
     check(
       'games_rounding_mode_check',

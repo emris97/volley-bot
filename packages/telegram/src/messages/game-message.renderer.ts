@@ -1,4 +1,5 @@
 import { CallbackCodec } from '../callbacks/callback-codec.js';
+import { gameActionCallback } from '../games/game-list.presenter.js';
 import type {
   GameMessageView,
   RenderedTelegramMessage,
@@ -42,7 +43,7 @@ const keyboardFor = (
       [
         button(
           'Управление',
-          codec.encode({ version: 1, action: 'MANAGE', gameId: view.gameId }),
+          gameActionCallback('manage', view.gameId, view.revision),
         ),
       ],
     ];
@@ -51,12 +52,13 @@ const keyboardFor = (
     [
       button('Иду', codec.going(view.gameId)),
       button('Не уверен', codec.tentative(view.gameId)),
+      button('Не иду', codec.withdraw(view.gameId)),
     ],
     [button('Добавить гостя', codec.addGuest(view.gameId))],
     [
       button(
         'Управление',
-        codec.encode({ version: 1, action: 'MANAGE', gameId: view.gameId }),
+        gameActionCallback('manage', view.gameId, view.revision),
       ),
     ],
   ];

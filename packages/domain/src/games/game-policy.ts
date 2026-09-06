@@ -59,6 +59,7 @@ export const createGameFromTemplate = (
     currency: template.currency,
     roundingMode: template.roundingMode,
     state: 'DRAFT',
+    revision: 0,
     scheduleRevision: 0,
     canonicalTelegramMessageId: null,
   };

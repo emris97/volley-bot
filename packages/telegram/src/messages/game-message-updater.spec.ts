@@ -12,6 +12,8 @@ describe('GameMessageUpdater', () => {
     const games = {
       load: vi.fn().mockResolvedValue(current),
       setCanonicalMessageId: vi.fn().mockResolvedValue(undefined),
+      recordPinFailure: vi.fn().mockResolvedValue(undefined),
+      clearPinFailure: vi.fn().mockResolvedValue(undefined),
     };
     const telegram = {
       editMessage: vi
@@ -40,6 +42,8 @@ describe('GameMessageUpdater', () => {
     const games = {
       load: vi.fn().mockResolvedValue(current),
       setCanonicalMessageId: vi.fn(),
+      recordPinFailure: vi.fn(),
+      clearPinFailure: vi.fn(),
     };
     const telegram = {
       editMessage: vi.fn().mockRejectedValue(new Error('network down')),
@@ -58,6 +62,8 @@ describe('GameMessageUpdater', () => {
     const lockedRepository = {
       load: vi.fn().mockResolvedValue(current),
       setCanonicalMessageId: vi.fn(),
+      recordPinFailure: vi.fn(),
+      clearPinFailure: vi.fn().mockResolvedValue(undefined),
     };
     const games = {
       ...lockedRepository,
@@ -81,14 +87,20 @@ describe('GameMessageUpdater', () => {
     expect(lockedRepository.load).toHaveBeenCalledOnce();
   });
 
-  it('persists a replacement before pinning and retries pinning the canonical message', async () => {
+  it('records a pin failure without failing refresh and clears it after a later successful pin', async () => {
     const current = view();
     const games = {
       load: vi
         .fn()
         .mockResolvedValueOnce(current)
-        .mockResolvedValueOnce({ ...current, canonicalMessageId: 9001n }),
+        .mockResolvedValueOnce({
+          ...current,
+          canonicalMessageId: 9001n,
+          canonicalPinFailedAt: new Date(),
+        }),
       setCanonicalMessageId: vi.fn().mockResolvedValue(undefined),
+      recordPinFailure: vi.fn().mockResolvedValue(undefined),
+      clearPinFailure: vi.fn().mockResolvedValue(undefined),
     };
     const telegram = {
       editMessage: vi
@@ -101,21 +113,110 @@ describe('GameMessageUpdater', () => {
         .mockRejectedValueOnce(new Error('pin failed'))
         .mockResolvedValueOnce(undefined),
     };
-    const updater = new GameMessageUpdater(games, telegram);
+    const logger = { warn: vi.fn() };
+    const updater = new GameMessageUpdater(games, telegram, logger);
 
-    await expect(
-      updater.refresh(current.groupId, current.gameId),
-    ).rejects.toThrow('pin failed');
+    await updater.refresh(current.groupId, current.gameId);
     expect(games.setCanonicalMessageId).toHaveBeenCalledWith(
       current.groupId,
       current.gameId,
       9001n,
+    );
+    expect(games.recordPinFailure).toHaveBeenCalledWith(
+      current.groupId,
+      current.gameId,
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Canonical game message pin failed',
+      {
+        errorCategory: 'telegram.canonical_pin_failed',
+        groupId: current.groupId,
+        gameId: current.gameId,
+      },
     );
 
     await updater.refresh(current.groupId, current.gameId);
 
     expect(telegram.sendMessage).toHaveBeenCalledOnce();
     expect(telegram.pinMessage).toHaveBeenCalledTimes(2);
+    expect(games.clearPinFailure).toHaveBeenCalledWith(
+      current.groupId,
+      current.gameId,
+    );
+  });
+
+  it('clears an earlier pin warning after a successful edit and pin', async () => {
+    const current = { ...view(), canonicalPinFailedAt: new Date() };
+    const games = {
+      load: vi.fn().mockResolvedValue(current),
+      setCanonicalMessageId: vi.fn(),
+      recordPinFailure: vi.fn(),
+      clearPinFailure: vi.fn().mockResolvedValue(undefined),
+    };
+    const telegram = {
+      editMessage: vi.fn().mockResolvedValue(undefined),
+      sendMessage: vi.fn(),
+      pinMessage: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await new GameMessageUpdater(games, telegram).refresh(
+      current.groupId,
+      current.gameId,
+    );
+
+    expect(games.clearPinFailure).toHaveBeenCalledWith(
+      current.groupId,
+      current.gameId,
+    );
+  });
+
+  it('serializes replacement adoption so concurrent refreshers send one new card', async () => {
+    let current = view();
+    let lock = Promise.resolve();
+    const games = {
+      load: vi.fn(async () => current),
+      setCanonicalMessageId: vi.fn(async (_groupId, _gameId, messageId) => {
+        current = { ...current, canonicalMessageId: messageId };
+      }),
+      recordPinFailure: vi.fn(),
+      clearPinFailure: vi.fn().mockResolvedValue(undefined),
+      withLockedView: vi.fn(async (_groupId, _gameId, callback) => {
+        const previous = lock;
+        let release!: () => void;
+        lock = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        await previous;
+        try {
+          return await callback(games);
+        } finally {
+          release();
+        }
+      }),
+    };
+    const telegram = {
+      editMessage: vi
+        .fn()
+        .mockRejectedValueOnce(new TelegramMessageNotEditableError())
+        .mockResolvedValueOnce(undefined),
+      sendMessage: vi.fn().mockResolvedValue({ messageId: 9001n }),
+      pinMessage: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await Promise.all([
+      new GameMessageUpdater(games, telegram).refresh(
+        current.groupId,
+        current.gameId,
+      ),
+      new GameMessageUpdater(games, telegram).refresh(
+        current.groupId,
+        current.gameId,
+      ),
+    ]);
+
+    expect(games.withLockedView).toHaveBeenCalledTimes(2);
+    expect(telegram.sendMessage).toHaveBeenCalledOnce();
+    expect(games.setCanonicalMessageId).toHaveBeenCalledOnce();
   });
 });
 
@@ -124,6 +225,7 @@ const view = (): GameMessageView => ({
   gameId: asGameId('018f6ba0-62d2-7bd1-8f13-12e0c8424610'),
   telegramChatId: asTelegramId('-1001000000001'),
   canonicalMessageId: 99n,
+  canonicalPinFailedAt: null,
   pinMessage: true,
   name: 'Friday volleyball',
   venue: 'Arena',
@@ -131,6 +233,7 @@ const view = (): GameMessageView => ({
   startsAt: new Date('2026-09-04T16:00:00.000Z'),
   timeZone: 'Europe/Astrakhan',
   state: 'OPEN',
+  revision: 0,
   capacity: 14,
   roster: [],
   waitlist: [],

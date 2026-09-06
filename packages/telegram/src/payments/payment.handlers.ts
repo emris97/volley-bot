@@ -2,6 +2,7 @@ import type {
   ChangeChargeStatus,
   FinalizeSettlement,
   PaymentAuthorization,
+  OrganizerTextFlowCoordinator,
   PaymentTelegramRepository,
   PreviewSettlement,
   PreviewSettlementResult,
@@ -20,6 +21,10 @@ import {
 } from '@volley/domain';
 import type { Bot, Context } from 'grammy';
 import { toTelegramId } from '../group-onboarding.handlers.js';
+import {
+  isOrganizerAuthorizationDenied,
+  organizerAccessDeniedText,
+} from '../organizer/live-organizer-actor.resolver.js';
 
 export interface PaymentActorResolver {
   resolve(
@@ -58,6 +63,7 @@ export class PaymentHandlers {
     >,
     private readonly state: PaymentTelegramRepository,
     private readonly authorization: PaymentAuthorization,
+    private readonly textFlows?: OrganizerTextFlowCoordinator,
   ) {}
 
   public async start(input: PrivatePaymentInput): Promise<PaymentView> {
@@ -69,8 +75,14 @@ export class PaymentHandlers {
       gameId: actor.gameId,
       actorUserId: actor.userId,
     });
+    await this.textFlows?.claim({
+      groupId: actor.groupId,
+      actorUserId: actor.userId,
+      kind: 'PAYMENT',
+      reference: actor.gameId,
+    });
     return {
-      text: 'Введите общую сумму в рублях, например 2800.00',
+      text: 'Введите общую сумму в рублях, например 2 800,00.',
       buttons: [],
     };
   }
@@ -81,6 +93,8 @@ export class PaymentHandlers {
     text: string;
   }): Promise<PaymentView | null> {
     requirePrivateChat(input.privateChat);
+    const owned = await this.textFlows?.current(input.telegramUserId);
+    if (this.textFlows !== undefined && owned?.kind !== 'PAYMENT') return null;
     const session = await this.state.findInputByTelegramUserId(
       input.telegramUserId,
     );
@@ -95,16 +109,37 @@ export class PaymentHandlers {
     ) {
       throw new Error('Payment input identity mismatch');
     }
+    if (
+      owned !== undefined &&
+      (owned === null ||
+        owned.groupId !== session.groupId ||
+        owned.actorUserId !== session.actorUserId ||
+        owned.reference !== session.gameId)
+    ) {
+      return null;
+    }
+    const totalAmount = normalizeRubleInput(input.text);
+    if (totalAmount === null) {
+      return {
+        text: 'Не удалось распознать сумму. Введите её цифрами, например 2 800,00 ₽.',
+        buttons: [],
+      };
+    }
     const view = await this.preview({
       telegramUserId: input.telegramUserId,
       gameId: session.gameId,
       privateChat: true,
       attendanceRevision: session.attendanceRevision,
-      totalAmount: input.text,
+      totalAmount,
       currency: session.currency,
       roundingMode: session.roundingMode,
     });
     await this.state.clearInput(session.groupId, session.actorUserId);
+    await this.textFlows?.release({
+      groupId: session.groupId,
+      actorUserId: session.actorUserId,
+      kind: 'PAYMENT',
+    });
     return view;
   }
 
@@ -251,6 +286,13 @@ const requirePrivateChat = (privateChat: boolean): void => {
   if (!privateChat) throw new Error('Private chat required');
 };
 
+const normalizeRubleInput = (value: string): string | null => {
+  const withoutCurrency = value.trim().replace(/\s*₽\s*$/u, '');
+  const compact = withoutCurrency.replace(/[\s\u00a0\u202f]/gu, '');
+  if (!/^\d+(?:[.,]\d{1,2})?$/.test(compact)) return null;
+  return compact.replace(',', '.');
+};
+
 const toSettlementCommand = (
   input: SettlementFlowInput,
   actor: { groupId: GroupId; gameId: GameId; userId: UserId },
@@ -272,8 +314,16 @@ const toSettlementCommand = (
 const formatMinor = (amountMinor: bigint): string => {
   const whole = amountMinor / 100n;
   const fraction = (amountMinor % 100n).toString().padStart(2, '0');
-  return `${whole}.${fraction}`;
+  const grouped = whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  return `${grouped},${fraction}`;
 };
+
+const paymentStatusText = (status: SettlementChargeRecord['status']): string =>
+  status === 'PAID'
+    ? 'оплачено'
+    : status === 'UNPAID'
+      ? 'не оплачено'
+      : 'оплата не требуется';
 
 const renderPreview = (
   preview: PreviewSettlementResult,
@@ -283,12 +333,11 @@ const renderPreview = (
   text: [
     `Предпросмотр: ${preview.participantCount} участников`,
     ...preview.charges.map(
-      (charge) =>
-        `${charge.displayName}: ${formatMinor(charge.amountMinor)} RUB`,
+      (charge) => `${charge.displayName}: ${formatMinor(charge.amountMinor)} ₽`,
     ),
-    `К оплате: ${formatMinor(preview.totalMinor)} RUB`,
-    `Будет собрано: ${formatMinor(preview.collectedMinor)} RUB`,
-    `Излишек: ${formatMinor(preview.surplusMinor)} RUB`,
+    `К оплате: ${formatMinor(preview.totalMinor)} ₽`,
+    `Будет собрано: ${formatMinor(preview.collectedMinor)} ₽`,
+    `Излишек: ${formatMinor(preview.surplusMinor)} ₽`,
   ].join('\n'),
   buttons: [
     {
@@ -306,7 +355,7 @@ const renderSettlement = (
     `Расчёт #${settlement.revision}`,
     ...settlement.charges.map(
       (charge) =>
-        `${charge.displayName}: ${formatMinor(charge.amountMinor)} RUB — ${charge.status}`,
+        `${charge.displayName}: ${formatMinor(charge.amountMinor)} ₽ — ${paymentStatusText(charge.status)}`,
     ),
   ].join('\n'),
   buttons: settlement.charges.flatMap((charge) => [
@@ -406,7 +455,11 @@ const decodeCompactUuid = (value: string): string => {
     throw new Error('Invalid payment callback');
   }
   const hex = Buffer.from(value, 'base64url').toString('hex');
-  if (hex.length !== 32) throw new Error('Invalid payment callback');
+  if (
+    hex.length !== 32 ||
+    Buffer.from(hex, 'hex').toString('base64url') !== value
+  )
+    throw new Error('Invalid payment callback');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
 
@@ -417,13 +470,18 @@ export const registerPaymentHandlers = (
   bot.command('payment', async (context) => {
     if (context.from === undefined)
       throw new Error('Message sender is required');
-    const gameId = parseGameId(context.match ?? '');
-    const view = await handlers.start({
-      telegramUserId: toTelegramId(context.from.id),
-      gameId,
-      privateChat: context.chat.type === 'private',
-    });
-    await context.reply(view.text);
+    try {
+      const gameId = parseGameId(context.match ?? '');
+      const view = await handlers.start({
+        telegramUserId: toTelegramId(context.from.id),
+        gameId,
+        privateChat: context.chat.type === 'private',
+      });
+      await context.reply(view.text);
+    } catch (error) {
+      if (!isOrganizerAuthorizationDenied(error)) throw error;
+      await context.reply(organizerAccessDeniedText);
+    }
   });
   bot.on('message:text', async (context, next) => {
     if (
@@ -434,30 +492,43 @@ export const registerPaymentHandlers = (
       await next();
       return;
     }
-    const view = await handlers.handleText({
-      telegramUserId: toTelegramId(context.from.id),
-      privateChat: context.chat.type === 'private',
-      text: context.message.text,
-    });
-    if (view === null) {
-      await next();
-      return;
+    try {
+      const view = await handlers.handleText({
+        telegramUserId: toTelegramId(context.from.id),
+        privateChat: context.chat.type === 'private',
+        text: context.message.text,
+      });
+      if (view === null) {
+        await next();
+        return;
+      }
+      await context.reply(view.text, {
+        ...paymentReplyMarkup(view),
+      });
+    } catch (error) {
+      if (!isOrganizerAuthorizationDenied(error)) throw error;
+      await context.reply(organizerAccessDeniedText);
     }
-    await context.reply(view.text, {
-      ...paymentReplyMarkup(view),
-    });
   });
   bot.callbackQuery(/^pay:/, async (context) => {
-    const view = await handlers.handleCallback({
-      telegramUserId: toTelegramId(context.callbackQuery.from.id),
-      privateChat: context.callbackQuery.message?.chat.type === 'private',
-      updateId: context.update.update_id,
-      data: context.callbackQuery.data,
-    });
-    await context.editMessageText(view.text, {
-      ...paymentReplyMarkup(view),
-    });
-    await context.answerCallbackQuery({ text: 'payment:updated' });
+    try {
+      const view = await handlers.handleCallback({
+        telegramUserId: toTelegramId(context.callbackQuery.from.id),
+        privateChat: context.callbackQuery.message?.chat.type === 'private',
+        updateId: context.update.update_id,
+        data: context.callbackQuery.data,
+      });
+      await context.editMessageText(view.text, {
+        ...paymentReplyMarkup(view),
+      });
+      await context.answerCallbackQuery({ text: 'Расчёт обновлён.' });
+    } catch (error) {
+      if (!isOrganizerAuthorizationDenied(error)) throw error;
+      await context.answerCallbackQuery({
+        text: organizerAccessDeniedText,
+        show_alert: true,
+      });
+    }
   });
   return bot;
 };

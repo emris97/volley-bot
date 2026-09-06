@@ -203,6 +203,150 @@ describe('RegistrationRepository concurrency', () => {
       'ROSTERED',
     );
   });
+
+  it('updates the game revision transactionally, rebalances capacity, and separates schedule revisions', async () => {
+    const groupId = await insertGroupWithChat(pool, '-2004');
+    const gameId = await insertOpenGame(pool, groupId, 1);
+    const firstUserId = await insertUser(pool, '401');
+    const secondUserId = await insertUser(pool, '402');
+    const actorUserId = await insertUser(pool, '499');
+    const repository = new RegistrationRepository(createDatabase(pool));
+    await repository.registerParticipant({
+      groupId,
+      gameId,
+      userId: firstUserId,
+      intent: 'CONFIRMED',
+      membershipPriority: 1,
+      idempotencyKey: 'callback:update-first',
+    });
+    await repository.registerParticipant({
+      groupId,
+      gameId,
+      userId: secondUserId,
+      intent: 'CONFIRMED',
+      membershipPriority: 1,
+      idempotencyKey: 'callback:update-second',
+    });
+
+    const capacity = await repository.updateGame({
+      groupId,
+      gameId,
+      actorUserId,
+      expectedRevision: 0,
+      changes: { capacity: 2, name: '  Updated game  ' },
+    });
+
+    expect(capacity).toMatchObject({
+      game: {
+        revision: 1,
+        scheduleRevision: 0,
+        capacity: 2,
+        name: 'Updated game',
+      },
+      rosterCount: 2,
+      waitlistCount: 0,
+      materialFields: [],
+    });
+    await expect(
+      repository.updateGame({
+        groupId,
+        gameId,
+        actorUserId,
+        expectedRevision: 0,
+        changes: { capacity: 3 },
+      }),
+    ).rejects.toThrow('Игра уже была изменена. Откройте актуальную версию.');
+
+    const timing = await repository.updateGame({
+      groupId,
+      gameId,
+      actorUserId,
+      expectedRevision: 1,
+      changes: {
+        startsAt: new Date('2026-09-11T16:00:00.000Z'),
+        venue: 'New gym',
+        address: 'New address',
+      },
+    });
+    expect(timing).toMatchObject({
+      game: { revision: 2, scheduleRevision: 1 },
+      materialFields: ['startsAt', 'venue', 'address'],
+    });
+
+    await expect(
+      repository.updateGame({
+        groupId,
+        gameId,
+        actorUserId,
+        expectedRevision: 2,
+        changes: { memberPriorityEnabled: false },
+      }),
+    ).rejects.toThrow('Это поле нельзя изменить в текущем состоянии игры.');
+    await expect(
+      repository.updateGame({
+        groupId,
+        gameId,
+        actorUserId,
+        expectedRevision: 2,
+        changes: { startsAt: new Date('2026-09-05T16:00:00.000Z') },
+      }),
+    ).rejects.toThrow('Время начала игры должно быть в будущем.');
+
+    const updateEvents = await pool.query<{
+      payload: Record<string, unknown>;
+    }>(
+      "SELECT payload FROM outbox_events WHERE event_type = 'GAME_UPDATED' ORDER BY occurred_at, id",
+    );
+    expect(updateEvents.rows).toHaveLength(2);
+    expect(updateEvents.rows[1]!.payload).toMatchObject({
+      revision: 2,
+      scheduleRevision: 1,
+      materialFields: ['startsAt', 'venue', 'address'],
+      startsAtBefore: '2026-09-10T16:00:00.000Z',
+      startsAtAfter: '2026-09-11T16:00:00.000Z',
+      venueBefore: 'Gym',
+      venueAfter: 'New gym',
+      addressBefore: null,
+      addressAfter: 'New address',
+      displayBefore: {
+        name: 'Updated game',
+        startsAt: '2026-09-10T16:00:00.000Z',
+        venue: 'Gym',
+        address: null,
+        timeZone: 'UTC',
+      },
+      displayAfter: {
+        name: 'Updated game',
+        startsAt: '2026-09-11T16:00:00.000Z',
+        venue: 'New gym',
+        address: 'New address',
+        timeZone: 'UTC',
+      },
+    });
+
+    const concurrent = await Promise.allSettled([
+      repository.updateGame({
+        groupId,
+        gameId,
+        actorUserId,
+        expectedRevision: 2,
+        changes: { capacity: 3 },
+      }),
+      repository.updateGame({
+        groupId,
+        gameId,
+        actorUserId,
+        expectedRevision: 2,
+        changes: { venue: 'Concurrent gym' },
+      }),
+    ]);
+    expect(
+      concurrent.filter(({ status }) => status === 'fulfilled'),
+    ).toHaveLength(1);
+    expect(
+      concurrent.filter(({ status }) => status === 'rejected'),
+    ).toHaveLength(1);
+  });
 });
 
 const insertGroup = async (pool: Pool) => {

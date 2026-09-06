@@ -6,10 +6,16 @@ import {
 } from '@volley/application';
 import type { GameId, GroupId, RegistrationId } from '@volley/domain';
 import type {
+  GameEventNotificationRecipientRecord,
   NotificationRecipientRecord,
   RegistrationRepository,
 } from '@volley/persistence';
-import { NotificationSender, tentativeCallback } from '@volley/telegram';
+import {
+  gameCancelledNotificationText,
+  gameChangedNotificationText,
+  NotificationSender,
+  tentativeCallback,
+} from '@volley/telegram';
 
 export interface NotificationRecipientRepository {
   listTentative(
@@ -22,6 +28,10 @@ export interface NotificationRecipientRepository {
     gameId: GameId,
     scheduleRevision: number,
   ): Promise<readonly NotificationRecipientRecord[]>;
+  listActiveForGame(
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<readonly GameEventNotificationRecipientRecord[]>;
   findByRegistration(
     registrationId: RegistrationId,
   ): Promise<NotificationRecipientRecord | null>;
@@ -136,6 +146,36 @@ export class NotificationConsumer {
     }
   }
 
+  public async processGameEvent(
+    eventType: string,
+    payload: Record<string, unknown>,
+    deterministicJobId: string,
+  ): Promise<void> {
+    const notificationType = gameEventNotificationType(eventType, payload);
+    if (notificationType === null) return;
+    const groupId = asPayloadGroupId(payload.groupId);
+    const gameId = asPayloadGameId(payload.aggregateId);
+    const recipients = await this.recipients.listActiveForGame(groupId, gameId);
+    if (recipients.length === 0) return;
+    const text =
+      notificationType === 'GAME_CANCELLED'
+        ? gameCancelledNotificationText(recipients[0]!.game.name)
+        : gameChangedText(payload);
+    await Promise.all(
+      recipients.map((recipient) =>
+        this.sendOnce(
+          deterministicJobId,
+          recipient,
+          intentFor(recipient, {
+            notificationType,
+            text,
+            buttons: [],
+          }),
+        ),
+      ),
+    );
+  }
+
   private async sendOnce(
     deterministicJobId: string,
     recipient: NotificationRecipientRecord,
@@ -206,3 +246,109 @@ const intentFor = (
     displayName: recipient.displayName,
   },
 });
+
+const gameEventNotificationType = (
+  eventType: string,
+  payload: Record<string, unknown>,
+): 'GAME_CHANGED' | 'GAME_CANCELLED' | null => {
+  if (
+    eventType === 'GAME_UPDATED' &&
+    Array.isArray(payload.materialFields) &&
+    payload.materialFields.length > 0
+  ) {
+    return 'GAME_CHANGED';
+  }
+  if (eventType === 'GAME_STATE_CHANGED' && payload.to === 'CANCELLED') {
+    return 'GAME_CANCELLED';
+  }
+  return null;
+};
+
+const gameChangedText = (payload: Record<string, unknown>): string => {
+  const before = payloadDisplaySnapshot(payload, 'displayBefore');
+  const after = payloadDisplaySnapshot(payload, 'displayAfter');
+  return gameChangedNotificationText({
+    name: after.name,
+    timeZone: after.timeZone,
+    before,
+    after,
+  });
+};
+
+interface DisplaySnapshot {
+  name: string;
+  startsAt: Date;
+  venue: string;
+  address: string | null;
+  timeZone: string;
+}
+
+const payloadDisplaySnapshot = (
+  payload: Record<string, unknown>,
+  field: string,
+): DisplaySnapshot => {
+  const value = payload[field];
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`Game event ${field} is required`);
+  }
+  const snapshot = value as Record<string, unknown>;
+  return {
+    name: payloadString(snapshot, 'name', field),
+    startsAt: payloadDate(snapshot, 'startsAt', field),
+    venue: payloadString(snapshot, 'venue', field),
+    address: payloadNullableString(snapshot, 'address', field),
+    timeZone: payloadString(snapshot, 'timeZone', field),
+  };
+};
+
+const payloadDate = (
+  payload: Record<string, unknown>,
+  field: string,
+  parent?: string,
+): Date => {
+  const value = payloadString(payload, field, parent);
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    throw new Error(`Game event ${payloadPath(parent, field)} is invalid`);
+  }
+  return date;
+};
+
+const payloadString = (
+  payload: Record<string, unknown>,
+  field: string,
+  parent?: string,
+): string => {
+  const value = payload[field];
+  if (typeof value !== 'string') {
+    throw new Error(`Game event ${payloadPath(parent, field)} is required`);
+  }
+  return value;
+};
+
+const payloadNullableString = (
+  payload: Record<string, unknown>,
+  field: string,
+  parent?: string,
+): string | null => {
+  const value = payload[field];
+  if (value === null) return null;
+  if (typeof value !== 'string') {
+    throw new Error(`Game event ${payloadPath(parent, field)} is required`);
+  }
+  return value;
+};
+
+const payloadPath = (parent: string | undefined, field: string): string =>
+  parent === undefined ? field : `${parent}.${field}`;
+
+const asPayloadGroupId = (value: unknown): GroupId => {
+  if (typeof value !== 'string')
+    throw new Error('Game event group is required');
+  return value as GroupId;
+};
+
+const asPayloadGameId = (value: unknown): GameId => {
+  if (typeof value !== 'string') throw new Error('Game event game is required');
+  return value as GameId;
+};

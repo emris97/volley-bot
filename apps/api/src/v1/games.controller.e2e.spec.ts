@@ -62,6 +62,7 @@ const gameInGroupA: Game = {
   currency: 'RUB',
   roundingMode: 'EXACT',
   state: 'OPEN',
+  revision: 0,
   scheduleRevision: 4,
   canonicalTelegramMessageId: 123n,
 };

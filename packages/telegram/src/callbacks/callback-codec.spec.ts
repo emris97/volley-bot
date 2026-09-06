@@ -26,5 +26,18 @@ describe('CallbackCodec', () => {
     expect(() => codec.decode('v1:go:not-a-uuid')).toThrow(
       /invalid game callback/i,
     );
+    expect(() => codec.decode(`v1:go:${String(gameId).toUpperCase()}`)).toThrow(
+      /invalid game callback/i,
+    );
+    expect(() => codec.decode(`v1:go:${gameId}:extra`)).toThrow(
+      /invalid game callback/i,
+    );
+    expect(() =>
+      codec.encode({
+        version: 1,
+        action: 'GOING',
+        gameId: asGameId(String(gameId).toUpperCase()),
+      }),
+    ).toThrow(/invalid game callback/i);
   });
 });

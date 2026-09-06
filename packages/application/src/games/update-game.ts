@@ -1,4 +1,9 @@
-import type { GameId, GroupId, UserId } from '@volley/domain';
+import type { Game, GameId, GroupId, UserId } from '@volley/domain';
+import {
+  normalizeGameChanges,
+  type GameUpdateChanges,
+  type MaterialGameField,
+} from './game-edit-policy.js';
 import type { GameAuthorization, GameUpdateRepository } from './ports.js';
 
 export interface UpdateGameCommand {
@@ -6,31 +11,27 @@ export interface UpdateGameCommand {
   gameId: GameId;
   actorUserId: UserId;
   expectedRevision: number;
-  changes: { capacity?: number };
+  changes: GameUpdateChanges;
 }
 
 export class UpdateGame {
   public constructor(
     private readonly authorization: GameAuthorization,
     private readonly games: GameUpdateRepository,
+    private readonly now: () => Date = () => new Date(),
   ) {}
 
   public async execute(command: UpdateGameCommand): Promise<{
-    scheduleRevision: number;
+    game: Game;
     rosterCount: number;
     waitlistCount: number;
+    materialFields: readonly MaterialGameField[];
   }> {
     await this.authorization.requireOrganizer(
       command.groupId,
       command.actorUserId,
     );
-    if (
-      command.changes.capacity !== undefined &&
-      (!Number.isSafeInteger(command.changes.capacity) ||
-        command.changes.capacity <= 0)
-    ) {
-      throw new Error('Capacity must be a positive integer');
-    }
-    return this.games.updateGame(command);
+    const changes = normalizeGameChanges(command.changes, this.now());
+    return this.games.updateGame({ ...command, changes });
   }
 }

@@ -17,6 +17,17 @@ export class BullMqJobPublisher implements JobPublisher {
   ) {}
 
   public async publish(job: PublishedJob): Promise<void> {
+    await this.publishJob(job, true);
+  }
+
+  public async publishRecovered(job: PublishedJob): Promise<void> {
+    await this.publishJob(job, false);
+  }
+
+  private async publishJob(
+    job: PublishedJob,
+    replayCompleted: boolean,
+  ): Promise<void> {
     this.metrics?.observeOutboxLag(
       Math.max(0, this.now().getTime() - job.occurredAt.getTime()) / 1_000,
     );
@@ -30,7 +41,7 @@ export class BullMqJobPublisher implements JobPublisher {
           this.metrics?.recordJobRetry('outbox');
           return;
         }
-        if (state !== 'completed') return;
+        if (state !== 'completed' || !replayCompleted) return;
         await existing.remove();
       }
       await this.queue.add(job.type, job.payload, {
@@ -57,6 +68,83 @@ export class BullMqJobPublisher implements JobPublisher {
   }
 }
 
+interface RecoveryEvent {
+  id: string;
+  type: string;
+  payload: Record<string, unknown>;
+  occurredAt: Date;
+  groupId: string;
+  aggregateType: string;
+  aggregateId: string;
+}
+
+interface RecoveryEventStore {
+  listRecoveryBatch(
+    limit: number,
+    after?: { occurredAt: Date; id: string },
+  ): Promise<readonly RecoveryEvent[]>;
+}
+
+interface RecoveryPublisher {
+  publishRecovered(job: PublishedJob): Promise<void>;
+}
+
+export interface PublishedOutboxRecoveryOptions {
+  pageSize: number;
+  sweepIntervalMs: number;
+  now: () => number;
+}
+
+const defaultRecoveryOptions: PublishedOutboxRecoveryOptions = {
+  pageSize: 100,
+  sweepIntervalMs: 60_000,
+  now: () => Date.now(),
+};
+
+export class PublishedOutboxRecovery {
+  private readonly options: PublishedOutboxRecoveryOptions;
+  private cursor?: { occurredAt: Date; id: string };
+  private nextSweepAt = 0;
+
+  public constructor(
+    private readonly store: RecoveryEventStore,
+    private readonly publisher: RecoveryPublisher,
+    options: Partial<PublishedOutboxRecoveryOptions> = {},
+  ) {
+    this.options = { ...defaultRecoveryOptions, ...options };
+  }
+
+  public async replayOnce(): Promise<void> {
+    if (this.cursor === undefined && this.options.now() < this.nextSweepAt) {
+      return;
+    }
+    const events = await this.store.listRecoveryBatch(
+      this.options.pageSize,
+      this.cursor,
+    );
+    for (const event of events) {
+      await this.publisher.publishRecovered({
+        id: `outbox:${event.id}`,
+        type: event.type,
+        payload: {
+          ...event.payload,
+          groupId: event.groupId,
+          aggregateType: event.aggregateType,
+          aggregateId: event.aggregateId,
+        },
+        occurredAt: event.occurredAt,
+      });
+    }
+    const last = events.at(-1);
+    if (events.length === this.options.pageSize && last !== undefined) {
+      this.cursor = { occurredAt: last.occurredAt, id: last.id };
+      return;
+    }
+    this.cursor = undefined;
+    this.nextSweepAt = this.options.now() + this.options.sweepIntervalMs;
+  }
+}
+
 export class OutboxConsumer implements ManagedWorker {
   private readonly logger = new Logger(OutboxConsumer.name);
   private timer?: NodeJS.Timeout;
@@ -70,6 +158,7 @@ export class OutboxConsumer implements ManagedWorker {
     private readonly purgeExpiredPaymentState: () => Promise<unknown> = async () =>
       undefined,
     private readonly runState?: WorkerRunStateRegistry,
+    private readonly recovery?: Pick<PublishedOutboxRecovery, 'replayOnce'>,
   ) {}
 
   public async start(): Promise<void> {
@@ -108,6 +197,14 @@ export class OutboxConsumer implements ManagedWorker {
     } catch (error) {
       this.logger.error(
         'Outbox dispatch failed',
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+    try {
+      await this.recovery?.replayOnce();
+    } catch (error) {
+      this.logger.error(
+        'Published outbox recovery failed',
         error instanceof Error ? error.stack : String(error),
       );
     }

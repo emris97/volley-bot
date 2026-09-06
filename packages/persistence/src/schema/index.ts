@@ -2,6 +2,7 @@ export { auditEvents } from './audit.js';
 export { attendanceEntries, attendanceSnapshots } from './attendance.js';
 export { games, gameTemplates } from './games.js';
 export { gameCreationDrafts } from './game-creation-drafts.js';
+export { gameEditSessions } from './game-edit-sessions.js';
 export { groupMembers, groups } from './groups.js';
 export { guestRegistrationDrafts } from './guest-registration-drafts.js';
 export { outboxEvents } from './outbox.js';
@@ -15,6 +16,9 @@ export {
   settlements,
 } from './payments.js';
 export { notificationDeliveries } from './notification-deliveries.js';
+export { organizerPreferences } from './organizer-preferences.js';
+export { organizerTextFlows } from './organizer-text-flows.js';
 export { registrations } from './registrations.js';
 export { scheduledJobs } from './scheduled-jobs.js';
+export { templateWizardDrafts } from './template-wizard-drafts.js';
 export { users } from './users.js';

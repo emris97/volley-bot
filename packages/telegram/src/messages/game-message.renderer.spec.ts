@@ -20,6 +20,7 @@ describe('renderGameMessage', () => {
     expect(rendered.keyboard.flat().map((button) => button.text)).toEqual([
       'Иду',
       'Не уверен',
+      'Не иду',
       'Добавить гостя',
       'Управление',
     ]);
@@ -38,6 +39,30 @@ describe('renderGameMessage', () => {
     expect(rendered.text).toContain('A &lt; B');
     expect(rendered.text).toContain('&lt;Admin&gt;');
   });
+
+  it('advertises only the compact revision-bound management callback', () => {
+    const rendered = renderGameMessage(view({ revision: 35 }));
+    const manage = rendered.keyboard
+      .flat()
+      .find(({ text }) => text === 'Управление');
+
+    expect(manage?.callbackData).toBe('ga:v1:manage:AY9roGLSe9GPExLgyEJGEA:z');
+    expect(manage?.callbackData).not.toContain(
+      '018f6ba0-62d2-7bd1-8f13-12e0c8424610',
+    );
+    expect(Buffer.byteLength(manage?.callbackData ?? '', 'utf8')).toBeLessThan(
+      64,
+    );
+  });
+
+  it('keeps canonical pin failures out of the public game card', () => {
+    const rendered = renderGameMessage(
+      view({ canonicalPinFailedAt: new Date('2026-09-01T12:00:00.000Z') }),
+    );
+
+    expect(rendered.text).not.toContain('закреп');
+    expect(rendered.text).not.toContain('ошиб');
+  });
 });
 
 const view = (overrides: Partial<GameMessageView> = {}): GameMessageView => ({
@@ -45,6 +70,7 @@ const view = (overrides: Partial<GameMessageView> = {}): GameMessageView => ({
   gameId: asGameId('018f6ba0-62d2-7bd1-8f13-12e0c8424610'),
   telegramChatId: asTelegramId('-1001000000001'),
   canonicalMessageId: 99n,
+  canonicalPinFailedAt: null,
   pinMessage: true,
   name: 'Friday volleyball',
   venue: 'Arena',
@@ -52,6 +78,7 @@ const view = (overrides: Partial<GameMessageView> = {}): GameMessageView => ({
   startsAt: new Date('2026-09-04T16:00:00.000Z'),
   timeZone: 'Europe/Astrakhan',
   state: 'OPEN',
+  revision: 4,
   capacity: 14,
   roster: [],
   waitlist: [],

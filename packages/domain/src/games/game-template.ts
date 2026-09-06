@@ -30,6 +30,8 @@ export interface GameTemplateSnapshot {
 export interface GameTemplate extends GameTemplateSnapshot {
   id: GameTemplateId;
   groupId: GroupId;
+  revision: number;
+  archivedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

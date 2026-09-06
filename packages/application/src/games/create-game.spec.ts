@@ -36,6 +36,8 @@ const template: GameTemplate = {
   defaultTotalCostMinor: null,
   currency: 'RUB',
   roundingMode: 'EXACT',
+  revision: 0,
+  archivedAt: null,
   createdAt: new Date('2026-08-01T00:00:00.000Z'),
   updatedAt: new Date('2026-08-01T00:00:00.000Z'),
 };
@@ -52,6 +54,9 @@ describe('CreateGame', () => {
           ? template
           : null,
       insert: async () => template,
+      list: async () => ({ items: [], nextCursor: null }),
+      update: async () => template,
+      setArchived: async () => template,
     };
     const games: GameRepository = {
       insert: async (game) => {
@@ -92,6 +97,9 @@ describe('CreateGame', () => {
       {
         findById: async () => null,
         insert: async () => template,
+        list: async () => ({ items: [], nextCursor: null }),
+        update: async () => template,
+        setArchived: async () => template,
       },
       {
         insert: async (game) => game,
@@ -120,6 +128,9 @@ describe('CreateGame', () => {
       {
         findById: async () => null,
         insert: async () => template,
+        list: async () => ({ items: [], nextCursor: null }),
+        update: async () => template,
+        setArchived: async () => template,
       },
       {
         insert: async (game) => {

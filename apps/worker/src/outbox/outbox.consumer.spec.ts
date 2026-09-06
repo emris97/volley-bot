@@ -7,7 +7,11 @@ import {
   type JobPublisher,
   type OutboxClaimStore,
 } from '@volley/application';
-import { BullMqJobPublisher, OutboxConsumer } from './outbox.consumer.js';
+import {
+  BullMqJobPublisher,
+  OutboxConsumer,
+  PublishedOutboxRecovery,
+} from './outbox.consumer.js';
 
 describe('OutboxDispatcher', () => {
   it('publishes retries with the same deterministic BullMQ job id', async () => {
@@ -146,6 +150,28 @@ describe('BullMqJobPublisher', () => {
     expect(queue.add).toHaveBeenCalledOnce();
   });
 
+  it('does not recreate a completed router job during repeat-safe recovery', async () => {
+    const completed = {
+      getState: vi.fn().mockResolvedValue('completed'),
+      remove: vi.fn(),
+    };
+    const queue = {
+      getJob: vi.fn().mockResolvedValue(completed),
+      add: vi.fn(),
+    };
+    const publisher = new BullMqJobPublisher(queue as unknown as Queue);
+
+    await publisher.publishRecovered({
+      id: 'outbox:018f6ba0-62d2-7bd1-8f13-12e0c8424610',
+      type: 'GAME_UPDATED',
+      payload: { materialFields: ['venue'] },
+      occurredAt: new Date(),
+    });
+
+    expect(completed.remove).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
   it('records retry, queue depth, and outbox lag through the production publisher', async () => {
     const failed = {
       getState: vi.fn().mockResolvedValue('failed'),
@@ -179,6 +205,57 @@ describe('BullMqJobPublisher', () => {
   });
 });
 
+describe('PublishedOutboxRecovery', () => {
+  it('replays bounded pages under original event identities and pauses after a sweep', async () => {
+    let now = 1_000;
+    const first = recoveryEvent('00000000-0000-0000-0000-000000000001', 1);
+    const second = recoveryEvent('00000000-0000-0000-0000-000000000002', 2);
+    const third = recoveryEvent('00000000-0000-0000-0000-000000000003', 3);
+    const store = {
+      listRecoveryBatch: vi
+        .fn()
+        .mockResolvedValueOnce([first, second])
+        .mockResolvedValueOnce([third])
+        .mockResolvedValueOnce([]),
+    };
+    const publisher = {
+      publishRecovered: vi.fn().mockResolvedValue(undefined),
+    };
+    const recovery = new PublishedOutboxRecovery(store, publisher, {
+      pageSize: 2,
+      sweepIntervalMs: 60_000,
+      now: () => now,
+    });
+
+    await recovery.replayOnce();
+    await recovery.replayOnce();
+    await recovery.replayOnce();
+
+    expect(store.listRecoveryBatch).toHaveBeenNthCalledWith(1, 2, undefined);
+    expect(store.listRecoveryBatch).toHaveBeenNthCalledWith(2, 2, {
+      occurredAt: second.occurredAt,
+      id: second.id,
+    });
+    expect(store.listRecoveryBatch).toHaveBeenCalledTimes(2);
+    expect(publisher.publishRecovered).toHaveBeenNthCalledWith(1, {
+      id: `outbox:${first.id}`,
+      type: first.type,
+      payload: {
+        ...first.payload,
+        groupId: first.groupId,
+        aggregateType: first.aggregateType,
+        aggregateId: first.aggregateId,
+      },
+      occurredAt: first.occurredAt,
+    });
+    expect(publisher.publishRecovered).toHaveBeenCalledTimes(3);
+
+    now += 60_000;
+    await recovery.replayOnce();
+    expect(store.listRecoveryBatch).toHaveBeenNthCalledWith(3, 2, undefined);
+  });
+});
+
 describe('OutboxConsumer maintenance', () => {
   it('purges one bounded batch of expired payment state per tick', async () => {
     const dispatchOnce = vi.fn().mockResolvedValue({
@@ -191,11 +268,14 @@ describe('OutboxConsumer maintenance', () => {
       inputSessionsDeleted: 0,
     });
     const closeResources = vi.fn().mockResolvedValue(undefined);
+    const replayOnce = vi.fn().mockResolvedValue(undefined);
     const consumer = new OutboxConsumer(
       { dispatchOnce } as unknown as OutboxDispatcher,
       closeResources,
       60_000,
       purgeExpiredPaymentState,
+      undefined,
+      { replayOnce },
     );
 
     await consumer.start();
@@ -203,6 +283,7 @@ describe('OutboxConsumer maintenance', () => {
 
     expect(dispatchOnce).toHaveBeenCalledOnce();
     expect(purgeExpiredPaymentState).toHaveBeenCalledOnce();
+    expect(replayOnce).toHaveBeenCalledOnce();
     expect(closeResources).toHaveBeenCalledOnce();
   });
 
@@ -236,4 +317,14 @@ const event = (id: string): ClaimedOutboxEvent => ({
   type: 'GAME_CHANGED',
   payload: {},
   occurredAt: new Date('2026-09-01T12:00:00.000Z'),
+});
+
+const recoveryEvent = (id: string, second: number) => ({
+  id,
+  type: 'GAME_UPDATED',
+  payload: { materialFields: ['venue'] },
+  occurredAt: new Date(`2026-09-01T12:00:0${second}.000Z`),
+  groupId: '018f6ba0-62d2-7bd1-8f13-12e0c8424611',
+  aggregateType: 'GAME',
+  aggregateId: '018f6ba0-62d2-7bd1-8f13-12e0c8424610',
 });

@@ -64,7 +64,7 @@ export const registerTentativeHandlers = (
       telegramUserId: toTelegramId(context.callbackQuery.from.id),
       data: context.callbackQuery.data,
     });
-    await context.answerCallbackQuery({ text: 'registration:updated' });
+    await context.answerCallbackQuery({ text: 'Регистрация обновлена.' });
   });
   return bot;
 };
@@ -73,24 +73,44 @@ export const tentativeCallback = (
   registrationId: RegistrationId,
   confirmationRevision: number,
   action: 'confirm' | 'withdraw',
-): string =>
-  `tc:${action === 'confirm' ? 'y' : 'n'}:${confirmationRevision}:${registrationId}`;
+): string => {
+  if (!canonicalUuidPattern.test(registrationId)) {
+    throw new Error('Invalid tentative callback registration id');
+  }
+  if (
+    !Number.isSafeInteger(confirmationRevision) ||
+    confirmationRevision < 0 ||
+    confirmationRevision > 2_147_483_647
+  ) {
+    throw new Error('Invalid tentative callback revision');
+  }
+  return `tc:${action === 'confirm' ? 'y' : 'n'}:${confirmationRevision.toString(36)}:${registrationId}`;
+};
 
 const parseTentativeCallback = (value: string) => {
   const [prefix, action, revision, registrationId, ...rest] = value.split(':');
+  const confirmationRevision = Number.parseInt(revision ?? '', 36);
   if (
     prefix !== 'tc' ||
     (action !== 'y' && action !== 'n') ||
     revision === undefined ||
-    !/^\d+$/.test(revision) ||
+    !/^(?:0|[1-9a-z][0-9a-z]*)$/.test(revision) ||
+    !Number.isSafeInteger(confirmationRevision) ||
+    confirmationRevision < 0 ||
+    confirmationRevision > 2_147_483_647 ||
+    confirmationRevision.toString(36) !== revision ||
     registrationId === undefined ||
+    !canonicalUuidPattern.test(registrationId) ||
     rest.length > 0
   ) {
     throw new Error('Invalid tentative callback');
   }
   return {
     action: action === 'y' ? ('confirm' as const) : ('withdraw' as const),
-    confirmationRevision: Number(revision),
+    confirmationRevision,
     registrationId: asRegistrationId(registrationId),
   };
 };
+
+const canonicalUuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

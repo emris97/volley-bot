@@ -50,12 +50,15 @@ describe('foundation migration', () => {
       'audit_events',
       'charge_status_events',
       'game_creation_drafts',
+      'game_edit_sessions',
       'game_templates',
       'games',
       'group_members',
       'groups',
       'guest_registration_drafts',
       'notification_deliveries',
+      'organizer_preferences',
+      'organizer_text_flows',
       'outbox_events',
       'payment_drafts',
       'payment_input_sessions',
@@ -65,12 +68,102 @@ describe('foundation migration', () => {
       'scheduled_jobs',
       'settlement_charges',
       'settlements',
+      'template_wizard_drafts',
       'users',
       'volley_schema_migrations',
     ]);
+    expect(firstTables).toContain('organizer_preferences');
+    expect(firstTables).toContain('template_wizard_drafts');
+    expect(firstTables).toContain('game_edit_sessions');
     expect(firstMigration).toHaveLength(1);
   });
+
+  it('adds durable tenant-scoped game edit sessions', async () => {
+    await applyTestMigrations(pool);
+
+    const columns = await pool.query<{
+      column_name: string;
+      is_nullable: 'YES' | 'NO';
+    }>(`
+      SELECT column_name, is_nullable
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'game_edit_sessions'
+      ORDER BY ordinal_position
+    `);
+
+    expect(columns.rows).toEqual([
+      { column_name: 'group_id', is_nullable: 'NO' },
+      { column_name: 'actor_user_id', is_nullable: 'NO' },
+      { column_name: 'game_id', is_nullable: 'NO' },
+      { column_name: 'expected_game_revision', is_nullable: 'NO' },
+      { column_name: 'selected_field', is_nullable: 'NO' },
+      { column_name: 'interaction_revision', is_nullable: 'NO' },
+      { column_name: 'pending_changes', is_nullable: 'YES' },
+      { column_name: 'active', is_nullable: 'NO' },
+      { column_name: 'created_at', is_nullable: 'NO' },
+      { column_name: 'updated_at', is_nullable: 'NO' },
+    ]);
+  });
+
+  it('adds organizer-management revisions and active template name uniqueness', async () => {
+    await applyTestMigrations(pool);
+    const groupId = await insertGroup(pool);
+
+    await insertTemplate(pool, groupId, 'Среда');
+    const templateRevision = await pool.query<{ revision: number }>(
+      'SELECT revision FROM game_templates WHERE group_id = $1',
+      [groupId],
+    );
+    expect(templateRevision.rows).toEqual([{ revision: 0 }]);
+
+    const gameRevision = await pool.query<{ revision: number }>(
+      `INSERT INTO games (
+        group_id, name, venue, starts_at, duration_minutes, capacity,
+        time_zone, registration_opens_at, tentative_prompt_at,
+        tentative_response_deadline, reminder_at, member_priority_enabled,
+        currency, rounding_mode
+      ) VALUES (
+        $1, 'Среда', 'Зал', '2026-09-09T16:00:00.000Z', 120, 14,
+        'Europe/Astrakhan', '2026-09-08T16:00:00.000Z',
+        '2026-09-09T12:00:00.000Z', '2026-09-09T13:00:00.000Z',
+        '2026-09-09T14:00:00.000Z', true, 'RUB', 'EXACT'
+      ) RETURNING revision`,
+      [groupId],
+    );
+    expect(gameRevision.rows).toEqual([{ revision: 0 }]);
+
+    await expect(
+      insertTemplate(pool, groupId, ' среда '),
+    ).rejects.toMatchObject({
+      code: '23505',
+    });
+  });
 });
+
+const insertGroup = async (pool: Pool): Promise<string> => {
+  const result = await pool.query<{ id: string }>(
+    `INSERT INTO groups (telegram_chat_id, title)
+     VALUES ('-1001000000001', 'Organizer management')
+     RETURNING id`,
+  );
+  return result.rows[0]!.id;
+};
+
+const insertTemplate = async (
+  pool: Pool,
+  groupId: string,
+  name: string,
+): Promise<void> => {
+  await pool.query(
+    `INSERT INTO game_templates (
+      group_id, name, venue, starts_at_local_time, duration_minutes, capacity,
+      registration_opens_minutes_before, tentative_prompt_minutes_before,
+      tentative_response_minutes, reminder_minutes_before,
+      member_priority_enabled, currency, rounding_mode
+    ) VALUES ($1, $2, 'Зал', '19:00', 120, 14, 1440, 720, 60, 120, true, 'RUB', 'EXACT')`,
+    [groupId, name],
+  );
+};
 
 const applicationTables = async (pool: Pool): Promise<string[]> => {
   const result = await pool.query<{ table_name: string }>(`

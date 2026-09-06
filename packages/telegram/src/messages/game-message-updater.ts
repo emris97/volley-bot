@@ -19,11 +19,17 @@ export interface GameMessageViewRepository {
     gameId: GameId,
     messageId: bigint,
   ): Promise<void>;
+  recordPinFailure(groupId: GroupId, gameId: GameId): Promise<void>;
+  clearPinFailure(groupId: GroupId, gameId: GameId): Promise<void>;
   withLockedView?<T>(
     groupId: GroupId,
     gameId: GameId,
     callback: (repository: GameMessageViewRepository) => Promise<T>,
   ): Promise<T>;
+}
+
+export interface GameMessageUpdaterLogger {
+  warn(message: string, fields: Record<string, unknown>): void;
 }
 
 export interface GameMessageTelegramGateway {
@@ -45,6 +51,7 @@ export class GameMessageUpdater {
   public constructor(
     private readonly games: GameMessageViewRepository,
     private readonly telegram: GameMessageTelegramGateway,
+    private readonly logger?: GameMessageUpdaterLogger,
   ) {}
 
   public refresh(groupId: GroupId, gameId: GameId): Promise<void> {
@@ -85,23 +92,44 @@ export class GameMessageUpdater {
           view.canonicalMessageId,
           rendered,
         );
-        if (view.pinMessage) {
-          await this.telegram.pinMessage?.(
-            view.telegramChatId,
-            view.canonicalMessageId,
-          );
-        }
+        await this.pinBestEffort(games, view, view.canonicalMessageId);
         return;
       } catch (error) {
         if (!(error instanceof TelegramMessageNotEditableError)) throw error;
       }
     }
 
+    // Telegram has no caller-provided idempotency key: a crash after this send
+    // and before canonical adoption can leave one orphan card (at-least-once).
     const sent = await this.telegram.sendMessage(view.telegramChatId, rendered);
     const messageId = BigInt(sent.messageId);
     await games.setCanonicalMessageId(groupId, gameId, messageId);
-    if (view.pinMessage) {
-      await this.telegram.pinMessage?.(view.telegramChatId, messageId);
+    await this.pinBestEffort(games, view, messageId);
+  }
+
+  private async pinBestEffort(
+    games: GameMessageViewRepository,
+    view: GameMessageView,
+    messageId: bigint,
+  ): Promise<void> {
+    if (!view.pinMessage || this.telegram.pinMessage === undefined) return;
+    let failed = false;
+    try {
+      await this.telegram.pinMessage(view.telegramChatId, messageId);
+    } catch {
+      failed = true;
     }
+    if (!failed) {
+      if (view.canonicalPinFailedAt !== null) {
+        await games.clearPinFailure(view.groupId, view.gameId);
+      }
+      return;
+    }
+    await games.recordPinFailure(view.groupId, view.gameId);
+    this.logger?.warn('Canonical game message pin failed', {
+      errorCategory: 'telegram.canonical_pin_failed',
+      groupId: view.groupId,
+      gameId: view.gameId,
+    });
   }
 }

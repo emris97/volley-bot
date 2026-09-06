@@ -3,7 +3,11 @@ import type { GameId, GroupId, TelegramId } from '@volley/domain';
 export type NotificationTarget =
   'PRIVATE' | 'GROUP_MENTION' | 'INVITER_PRIVATE';
 export type NotificationType =
-  'TENTATIVE_CONFIRMATION' | 'PARTICIPANT_REMINDER' | 'WAITLIST_PROMOTED';
+  | 'TENTATIVE_CONFIRMATION'
+  | 'PARTICIPANT_REMINDER'
+  | 'WAITLIST_PROMOTED'
+  | 'GAME_CHANGED'
+  | 'GAME_CANCELLED';
 
 export interface NotificationRecipient {
   kind: 'MEMBER' | 'GUEST';

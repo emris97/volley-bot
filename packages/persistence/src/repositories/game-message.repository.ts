@@ -19,6 +19,7 @@ export interface StoredGameMessageView {
   gameId: GameId;
   telegramChatId: TelegramId;
   canonicalMessageId: bigint | null;
+  canonicalPinFailedAt: Date | null;
   pinMessage: boolean;
   name: string;
   venue: string;
@@ -26,6 +27,7 @@ export interface StoredGameMessageView {
   startsAt: Date;
   timeZone: string;
   state: GameState;
+  revision: number;
   capacity: number;
   roster: readonly string[];
   waitlist: readonly string[];
@@ -53,6 +55,20 @@ export class GameMessageRepository {
     await this.setCanonicalWith(this.database, groupId, gameId, messageId);
   }
 
+  public async recordPinFailure(
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<void> {
+    await this.recordPinFailureWith(this.database, groupId, gameId);
+  }
+
+  public async clearPinFailure(
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<void> {
+    await this.clearPinFailureWith(this.database, groupId, gameId);
+  }
+
   public async withLockedView<T>(
     groupId: GroupId,
     gameId: GameId,
@@ -66,6 +82,8 @@ export class GameMessageRepository {
         gameId: GameId,
         messageId: bigint,
       ): Promise<void>;
+      recordPinFailure(groupId: GroupId, gameId: GameId): Promise<void>;
+      clearPinFailure(groupId: GroupId, gameId: GameId): Promise<void>;
     }) => Promise<T>,
   ): Promise<T> {
     if (this.pool === undefined) {
@@ -74,6 +92,10 @@ export class GameMessageRepository {
           this.load(lockedGroupId, lockedGameId),
         setCanonicalMessageId: (lockedGroupId, lockedGameId, messageId) =>
           this.setCanonicalMessageId(lockedGroupId, lockedGameId, messageId),
+        recordPinFailure: (lockedGroupId, lockedGameId) =>
+          this.recordPinFailure(lockedGroupId, lockedGameId),
+        clearPinFailure: (lockedGroupId, lockedGameId) =>
+          this.clearPinFailure(lockedGroupId, lockedGameId),
       });
     }
 
@@ -94,6 +116,14 @@ export class GameMessageRepository {
             lockedGameId,
             messageId,
           ),
+        recordPinFailure: (lockedGroupId, lockedGameId) =>
+          this.recordPinFailureWith(
+            lockedDatabase,
+            lockedGroupId,
+            lockedGameId,
+          ),
+        clearPinFailure: (lockedGroupId, lockedGameId) =>
+          this.clearPinFailureWith(lockedDatabase, lockedGroupId, lockedGameId),
       });
     } finally {
       try {
@@ -118,6 +148,7 @@ export class GameMessageRepository {
         gameId: games.id,
         telegramChatId: groups.telegramChatId,
         canonicalMessageId: games.canonicalTelegramMessageId,
+        canonicalPinFailedAt: games.canonicalPinFailedAt,
         pinMessage: groups.pinGameMessages,
         name: games.name,
         venue: games.venue,
@@ -125,7 +156,9 @@ export class GameMessageRepository {
         startsAt: games.startsAt,
         timeZone: games.timeZone,
         state: games.state,
+        revision: games.revision,
         capacity: games.capacity,
+        memberPriorityEnabled: games.memberPriorityEnabled,
       })
       .from(games)
       .innerJoin(groups, eq(groups.id, games.groupId))
@@ -135,11 +168,15 @@ export class GameMessageRepository {
 
     const rows = await database
       .select({
+        id: registrations.id,
         state: registrations.state,
         kind: registrations.kind,
         guestDisplayName: registrations.guestDisplayName,
         displayName: users.displayName,
         telegramUserId: users.telegramUserId,
+        manualRank: registrations.manualRank,
+        membershipPriority: registrations.membershipPriority,
+        confirmedAt: registrations.confirmedAt,
         createdAt: registrations.createdAt,
       })
       .from(registrations)
@@ -151,12 +188,15 @@ export class GameMessageRepository {
           ne(registrations.state, 'CANCELLED'),
         ),
       );
-    rows.sort(
-      (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
-    );
     const namesFor = (state: typeof registrations.$inferSelect.state) =>
       rows
         .filter((row) => row.state === state)
+        .toSorted(
+          state === 'ROSTERED' || state === 'WAITLISTED'
+            ? (left, right) =>
+                comparePlacementRows(left, right, game.memberPriorityEnabled)
+            : compareTentativeRows,
+        )
         .map((row) =>
           row.kind === 'GUEST'
             ? row.guestDisplayName!
@@ -186,6 +226,71 @@ export class GameMessageRepository {
       .set({ canonicalTelegramMessageId: messageId, updatedAt: new Date() })
       .where(and(eq(games.groupId, groupId), eq(games.id, gameId)));
   }
+
+  private async recordPinFailureWith(
+    database: QueryDatabase,
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<void> {
+    await database
+      .update(games)
+      .set({ canonicalPinFailedAt: new Date() })
+      .where(and(eq(games.groupId, groupId), eq(games.id, gameId)));
+  }
+
+  private async clearPinFailureWith(
+    database: QueryDatabase,
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<void> {
+    await database
+      .update(games)
+      .set({ canonicalPinFailedAt: null })
+      .where(and(eq(games.groupId, groupId), eq(games.id, gameId)));
+  }
 }
 
 type QueryDatabase = Database;
+
+type RegistrationMessageRow = {
+  id: string;
+  manualRank: number | null;
+  membershipPriority: number;
+  confirmedAt: Date | null;
+  createdAt: Date;
+};
+
+const comparePlacementRows = (
+  left: RegistrationMessageRow,
+  right: RegistrationMessageRow,
+  memberPriorityEnabled: boolean,
+): number =>
+  compareNullableRank(left.manualRank, right.manualRank) ||
+  (memberPriorityEnabled
+    ? right.membershipPriority - left.membershipPriority
+    : 0) ||
+  requiredConfirmedAt(left).getTime() - requiredConfirmedAt(right).getTime() ||
+  left.id.localeCompare(right.id);
+
+const compareTentativeRows = (
+  left: RegistrationMessageRow,
+  right: RegistrationMessageRow,
+): number =>
+  left.createdAt.getTime() - right.createdAt.getTime() ||
+  left.id.localeCompare(right.id);
+
+const compareNullableRank = (left: number | null, right: number | null) => {
+  if (left === null && right === null) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return left - right;
+};
+
+const requiredConfirmedAt = (row: RegistrationMessageRow): Date => {
+  if (row.confirmedAt === null) {
+    throw new Error(
+      `Confirmed registration ${row.id} has no confirmation time`,
+    );
+  }
+  return row.confirmedAt;
+};

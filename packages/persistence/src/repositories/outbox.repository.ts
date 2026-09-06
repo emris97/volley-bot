@@ -190,12 +190,36 @@ export class OutboxRepository {
           aggregate_id
         FROM outbox_events
         WHERE event_type = 'PAYMENT_REMINDER_REQUESTED'
+      ), game_notifications AS (
+        SELECT
+          id::text,
+          event_type,
+          payload,
+          occurred_at,
+          group_id,
+          aggregate_type,
+          aggregate_id
+        FROM outbox_events
+        WHERE aggregate_type = 'GAME'
+          AND (
+            (
+              event_type = 'GAME_UPDATED'
+              AND jsonb_typeof(payload -> 'materialFields') = 'array'
+              AND jsonb_array_length(payload -> 'materialFields') > 0
+            )
+            OR (
+              event_type = 'GAME_STATE_CHANGED'
+              AND payload ->> 'to' = 'CANCELLED'
+            )
+          )
       ), recovery_events AS (
         SELECT * FROM latest_game_refresh
         UNION ALL
         SELECT * FROM latest_promotions
         UNION ALL
         SELECT * FROM payment_reminders
+        UNION ALL
+        SELECT * FROM game_notifications
       )
       SELECT *
       FROM recovery_events

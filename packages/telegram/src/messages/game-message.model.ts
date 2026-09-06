@@ -5,6 +5,7 @@ export interface GameMessageView {
   gameId: GameId;
   telegramChatId: TelegramId;
   canonicalMessageId: bigint | null;
+  canonicalPinFailedAt: Date | null;
   pinMessage: boolean;
   name: string;
   venue: string;
@@ -12,6 +13,7 @@ export interface GameMessageView {
   startsAt: Date;
   timeZone: string;
   state: GameState;
+  revision: number;
   capacity: number;
   roster: readonly string[];
   waitlist: readonly string[];
