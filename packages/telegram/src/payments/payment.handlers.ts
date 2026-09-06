@@ -410,7 +410,11 @@ const decodeCompactUuid = (value: string): string => {
     throw new Error('Invalid payment callback');
   }
   const hex = Buffer.from(value, 'base64url').toString('hex');
-  if (hex.length !== 32) throw new Error('Invalid payment callback');
+  if (
+    hex.length !== 32 ||
+    Buffer.from(hex, 'hex').toString('base64url') !== value
+  )
+    throw new Error('Invalid payment callback');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
 
@@ -472,7 +476,7 @@ export const registerPaymentHandlers = (
       await context.editMessageText(view.text, {
         ...paymentReplyMarkup(view),
       });
-      await context.answerCallbackQuery({ text: 'payment:updated' });
+      await context.answerCallbackQuery({ text: 'Расчёт обновлён.' });
     } catch (error) {
       if (!isOrganizerAuthorizationDenied(error)) throw error;
       await context.answerCallbackQuery({

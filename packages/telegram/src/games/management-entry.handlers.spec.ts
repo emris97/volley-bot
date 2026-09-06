@@ -15,6 +15,7 @@ import {
   createLazyTelegramUpdateHandler,
   createTelegramBot,
 } from '../bot.factory.js';
+import { compactGameUuid } from './game-creation.model.js';
 import {
   gameActionCallback,
   gameEditFieldAction,
@@ -546,6 +547,37 @@ describe('management Telegram adapter', () => {
       harness.handle(callbackUpdate('ga:v1:close:not-an-id:!', true)),
     ).resolves.toBeUndefined();
 
+    expect(harness.apiCalls).toContainEqual(
+      expect.objectContaining({
+        method: 'answerCallbackQuery',
+        payload: expect.objectContaining({
+          text: 'Некорректная кнопка управления игрой.',
+        }),
+      }),
+    );
+  });
+
+  it('rejects a non-canonical compact UUID in legacy management callbacks', async () => {
+    const harness = botHarness(handlersFor().handlers);
+    const canonical = compactGameUuid(gameId);
+    const aliased = `${canonical.slice(0, -1)}${canonical.endsWith('A') ? 'B' : 'R'}`;
+
+    await expect(
+      harness.handle(callbackUpdate(`mg:a:${aliased}`, true)),
+    ).resolves.toBeUndefined();
+
+    expect(harness.apiCalls).toContainEqual(
+      expect.objectContaining({
+        method: 'answerCallbackQuery',
+        payload: expect.objectContaining({
+          text: 'Некорректная кнопка управления игрой.',
+        }),
+      }),
+    );
+
+    await expect(
+      harness.handle(callbackUpdate(`mg:a:${canonical}:extra`, true)),
+    ).resolves.toBeUndefined();
     expect(harness.apiCalls).toContainEqual(
       expect.objectContaining({
         method: 'answerCallbackQuery',

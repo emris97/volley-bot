@@ -183,7 +183,7 @@ export const registerOrganizerMenuHandlers = (
 
 const parseGroupSelection = (data: string): GroupId | undefined => {
   const match =
-    /^om:v1:group:([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.exec(data);
+    /^om:v1:group:([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/.exec(data);
   const groupId = match?.[1];
   return groupId === undefined ? undefined : asGroupId(groupId);
 };

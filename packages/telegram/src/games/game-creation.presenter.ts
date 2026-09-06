@@ -20,8 +20,35 @@ export const gameCreationCallback = (
   const value = `gc:v1:${action}${opaqueId === undefined ? '' : `:${opaqueId}`}`;
   if (Buffer.byteLength(value, 'utf8') >= 64)
     throw new Error('Telegram callback payload must be under 64 bytes');
+  if (!isGameCreationCallbackShape(action, opaqueId))
+    throw new Error('Invalid game creation callback');
   return value;
 };
+
+const gameCreationActions = new Set([
+  'g',
+  'c',
+  'r',
+  't',
+  'e',
+  'p',
+  'u',
+  'x',
+  'b',
+  'y',
+  'n',
+  's',
+  'k',
+]);
+
+export const isGameCreationCallbackShape = (
+  action: string,
+  opaqueId?: string,
+): boolean =>
+  gameCreationActions.has(action) &&
+  opaqueId !== undefined &&
+  opaqueId.length > 0 &&
+  !opaqueId.includes(':');
 
 export const renderGameGroupPicker = (
   groups: readonly OrganizerGroupCandidate[],

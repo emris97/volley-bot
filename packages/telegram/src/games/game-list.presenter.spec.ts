@@ -123,6 +123,17 @@ describe('game management presenter', () => {
     }
   });
 
+  it('rejects out-of-range embedded edit confirmation revisions', () => {
+    for (const action of ['edit-confirm-zik0zk', 'edit-confirm-zzzzzzzzzz']) {
+      expect(() =>
+        gameActionCallback(action as never, asGameId(uuid), 0),
+      ).toThrow('Некорректная кнопка управления игрой.');
+      expect(() =>
+        parseGameActionCallback(`ga:v1:${action}:EAAAAAAAQACAAAAAAAAAAQ:0`),
+      ).toThrow('Некорректная кнопка управления игрой.');
+    }
+  });
+
   it('renders only policy-approved edit fields for an open game with registrations', () => {
     const input = {
       ...managementView('OPEN'),

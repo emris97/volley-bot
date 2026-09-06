@@ -98,7 +98,7 @@ export class RegistrationHandlers {
     }
     if (callback.action === 'WITHDRAW') {
       if (actor.activeRegistrationId === null) {
-        throw new Error('No active registration for this game');
+        return 'Вы не записаны на эту игру.';
       }
       const result = await this.withdraw.execute({
         groupId: actor.groupId,
@@ -130,7 +130,9 @@ export const registerRegistrationHandlers = (
     });
     if (text.startsWith('https://')) {
       await context.reply(text);
-      await context.answerCallbackQuery({ text: 'registration:open-private' });
+      await context.answerCallbackQuery({
+        text: 'Откройте личный чат с ботом.',
+      });
     } else {
       await context.answerCallbackQuery({ text });
     }
@@ -140,10 +142,16 @@ export const registerRegistrationHandlers = (
 
 const statusText = (result: RegistrationResult): string => {
   if (result.state === 'ROSTERED') {
-    return `registration:rostered:${result.rosterPosition ?? ''}`;
+    return result.rosterPosition === undefined
+      ? 'Вы в составе.'
+      : `Вы в составе. Место: ${result.rosterPosition}.`;
   }
   if (result.state === 'WAITLISTED') {
-    return `registration:waitlisted:${result.waitlistPosition ?? ''}`;
+    return result.waitlistPosition === undefined
+      ? 'Вы в резерве.'
+      : `Вы в резерве. Позиция: ${result.waitlistPosition}.`;
   }
-  return `registration:${result.state.toLowerCase()}`;
+  return result.state === 'TENTATIVE'
+    ? 'Статус: не уверен.'
+    : 'Вы снялись с игры.';
 };

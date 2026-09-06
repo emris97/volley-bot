@@ -1113,7 +1113,10 @@ const decodeCompactUuid = (value: string): string => {
     throw new Error('Некорректная кнопка управления игрой.');
   }
   const hex = Buffer.from(value, 'base64url').toString('hex');
-  if (hex.length !== 32) {
+  if (
+    hex.length !== 32 ||
+    Buffer.from(hex, 'hex').toString('base64url') !== value
+  ) {
     throw new Error('Некорректная кнопка управления игрой.');
   }
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;

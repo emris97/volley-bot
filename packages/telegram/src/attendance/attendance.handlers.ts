@@ -141,7 +141,7 @@ export class AttendanceHandlers {
               ),
             },
             {
-              text: 'Confirm attendance',
+              text: 'Подтвердить посещаемость',
               callbackData: attendanceCallback(
                 'confirm',
                 snapshot.groupId,
@@ -339,10 +339,12 @@ export const attendanceCallback = (
   candidateIndex?: number,
 ): string => {
   if (
-    (action === 'toggle' || action === 'billable' || action === 'remove') &&
-    (candidateIndex === undefined ||
-      !Number.isSafeInteger(candidateIndex) ||
-      candidateIndex < 0)
+    ((action === 'toggle' || action === 'billable' || action === 'remove') &&
+      (candidateIndex === undefined ||
+        !Number.isSafeInteger(candidateIndex) ||
+        candidateIndex < 0 ||
+        candidateIndex > 2_147_483_647)) ||
+    ((action === 'confirm' || action === 'add') && candidateIndex !== undefined)
   ) {
     throw new Error('Invalid attendance callback');
   }
@@ -483,7 +485,7 @@ export const registerAttendanceHandlers = (
           reply_markup: { force_reply: true, selective: true },
         });
       }
-      await context.answerCallbackQuery({ text: 'attendance:updated' });
+      await context.answerCallbackQuery({ text: 'Посещаемость обновлена.' });
     } catch (error) {
       if (!isOrganizerAuthorizationDenied(error)) throw error;
       await context.answerCallbackQuery({

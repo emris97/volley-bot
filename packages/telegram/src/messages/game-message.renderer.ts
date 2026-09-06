@@ -52,6 +52,7 @@ const keyboardFor = (
     [
       button('Иду', codec.going(view.gameId)),
       button('Не уверен', codec.tentative(view.gameId)),
+      button('Не иду', codec.withdraw(view.gameId)),
     ],
     [button('Добавить гостя', codec.addGuest(view.gameId))],
     [

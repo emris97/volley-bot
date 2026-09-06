@@ -121,6 +121,15 @@ describe('OrganizerMenuHandlers', () => {
         'om:group:018f6ba0-62d2-7bd1-8f13-12e0c8424611',
       ),
     ).resolves.toBeNull();
+    await expect(
+      handlers.handleCallback(
+        telegramUserId,
+        `om:v1:group:${String(groupId).toUpperCase()}`,
+      ),
+    ).resolves.toBeNull();
+    await expect(
+      handlers.handleCallback(telegramUserId, `om:v1:group:${groupId}:extra`),
+    ).resolves.toBeNull();
     await handlers.handleCallback(
       telegramUserId,
       'om:v1:group:018f6ba0-62d2-7bd1-8f13-12e0c8424611',

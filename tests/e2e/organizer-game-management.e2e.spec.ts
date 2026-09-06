@@ -1,8 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { MvpAcceptanceSystem } from './fixtures/mvp-acceptance-system.js';
 
-const UUID_PATTERN =
-  /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/iu;
+const UUID_PATTERN = /[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/iu;
 
 describe('organizer game management through Telegram', () => {
   let system: MvpAcceptanceSystem;
@@ -38,6 +37,7 @@ describe('organizer game management through Telegram', () => {
 
     await system.deliverLatestCanonicalCard(game.id!);
     await system.runScheduledOpening(game.groupId, game.id!);
+    await system.deliverLatestCanonicalCard(game.id!);
     await system.pressGoingThroughTelegram(
       memberTelegramId,
       game.groupId,
@@ -50,6 +50,9 @@ describe('organizer game management through Telegram', () => {
     expect(await system.canonicalMessages(game.id!)).toHaveLength(1);
     expect(await system.finalizedAttendanceCount(game.id!)).toBe(1);
     expect(await system.finalizedSettlementCount(game.id!)).toBe(1);
+    expect(system.callbackAnswerTexts()).toEqual(
+      expect.arrayContaining(['Посещаемость обновлена.', 'Расчёт обновлён.']),
+    );
     expect(system.visibleMessages().join('\n')).not.toMatch(UUID_PATTERN);
     expect(
       system.generatedCallbacks().every((value) => value.length < 64),
@@ -149,6 +152,7 @@ describe('organizer game management through Telegram', () => {
     const afterDeletedCard = await system.canonicalMessages(game.id!);
     expect(afterDeletedCard).toHaveLength(1);
     expect(afterDeletedCard).not.toEqual(initialCard);
+    expect(await system.canonicalPinFailed(game.id!)).toBe(false);
 
     await system.deliverLatestCanonicalCard(game.id!, { uneditable: true });
     const afterUneditableCard = await system.canonicalMessages(game.id!);
@@ -170,7 +174,7 @@ describe('organizer game management through Telegram', () => {
     const delivery = await system.editVenueAndDeliverThroughTelegram(
       adminTelegramId,
       game.id!,
-      'Второй зал',
+      'Второй <зал> & двор',
     );
     expect(
       await system.notificationDeliveryCount(
@@ -178,11 +182,103 @@ describe('organizer game management through Telegram', () => {
         registration,
       ),
     ).toBe(1);
+    const materialMessages = system
+      .privateMessageTexts(memberTelegramId)
+      .filter((text) => text.includes('изменена:'));
+    expect(materialMessages).toHaveLength(1);
+    expect(materialMessages[0]).toContain('Стало:');
+    expect(materialMessages[0]).toContain('Второй &lt;зал&gt; &amp; двор');
 
     await system.cancelThroughTelegram(adminTelegramId, game.id!);
+    const cancellation = await system.deliverCancellationThroughWorkers(
+      game.id!,
+    );
+    expect(
+      await system.notificationDeliveryCount(
+        cancellation.deterministicJobId,
+        registration,
+      ),
+    ).toBe(1);
+    const cancellationMessages = system
+      .privateMessageTexts(memberTelegramId)
+      .filter((text) => text.includes('отменена.'));
+    expect(cancellationMessages).toEqual(['Игра «Надёжная игра» отменена.']);
     expect(await system.getGame(game.groupId, game.id!)).toMatchObject({
       state: 'CANCELLED',
     });
+  });
+
+  it('handles waitlisting, withdrawal, and guest registration through Telegram updates', async () => {
+    const adminTelegramId = '880051';
+    const rosteredTelegramId = '880052';
+    const waitlistedTelegramId = '880053';
+    await system.createConfiguredGroup(adminTelegramId);
+    await system.createTemplateThroughTelegram(adminTelegramId, {
+      name: 'Малая игра',
+      venue: 'Корт',
+      capacity: 1,
+    });
+    const game = await system.createAndPublishGameThroughTelegram(
+      adminTelegramId,
+      'Малая игра',
+    );
+    await system.deliverLatestCanonicalCard(game.id!);
+    await system.runScheduledOpening(game.groupId, game.id!);
+    await system.deliverLatestCanonicalCard(game.id!);
+
+    const rostered = await system.pressGoingThroughTelegram(
+      rosteredTelegramId,
+      game.groupId,
+      game.id!,
+    );
+    const waitlisted = await system.pressGoingThroughTelegram(
+      waitlistedTelegramId,
+      game.groupId,
+      game.id!,
+    );
+    expect(await system.registrationState(rostered)).toBe('ROSTERED');
+    expect(await system.registrationState(waitlisted)).toBe('WAITLISTED');
+    await system.deliverLatestCanonicalCard(game.id!);
+    expect(system.canonicalMessageText(game.id!)).toContain('Резерв: 1');
+
+    await system.withdrawThroughTelegram(
+      waitlistedTelegramId,
+      game.groupId,
+      game.id!,
+    );
+    expect(await system.registrationState(waitlisted)).toBe('CANCELLED');
+    await system.withdrawThroughTelegram(
+      waitlistedTelegramId,
+      game.groupId,
+      game.id!,
+    );
+    await system.deliverLatestCanonicalCard(game.id!);
+    expect(system.canonicalMessageText(game.id!)).toContain('Резерв: 0');
+
+    const guest = await system.addGuestThroughTelegram(
+      rosteredTelegramId,
+      game.groupId,
+      game.id!,
+      'Гость <Иван>',
+    );
+    expect(await system.registrationState(guest)).toBe('WAITLISTED');
+    await system.deliverLatestCanonicalCard(game.id!);
+    expect(system.canonicalMessageText(game.id!)).toContain('Резерв: 1');
+    expect(system.canonicalMessageText(game.id!)).toContain(
+      'Гость &lt;Иван&gt;',
+    );
+    expect(system.callbackAnswerTexts()).toEqual(
+      expect.arrayContaining([
+        'Вы в составе. Место: 1.',
+        'Вы в резерве. Позиция: 1.',
+        'Вы снялись с игры.',
+        'Вы не записаны на эту игру.',
+        'Откройте личный чат с ботом.',
+      ]),
+    );
+    expect(system.callbackAnswerTexts().join('\n')).not.toMatch(
+      /(?:registration|attendance|payment):/,
+    );
   });
 
   it('lets only one concurrent administrator edit win', async () => {

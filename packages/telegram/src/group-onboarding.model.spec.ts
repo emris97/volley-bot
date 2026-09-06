@@ -51,6 +51,7 @@ describe('group onboarding model', () => {
       `cfg:${groupId}:pin:yes`,
       `cfg:${groupId}:save:1:extra`,
       `other:${groupId}:mp:1`,
+      'cfg:018F6BA0-62D2-7BD1-8F13-12E0C8424611:mp:1',
     ]) {
       expect(() => parseOnboardingCallback(callback)).toThrow(
         expect.objectContaining({ code: 'INVALID_CALLBACK' }),

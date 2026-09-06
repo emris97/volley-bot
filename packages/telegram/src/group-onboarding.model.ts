@@ -96,7 +96,7 @@ export const parseOnboardingCallback = (value: string): OnboardingCallback => {
   const [, rawGroupId, rawCode, rawValue] = parts;
   if (
     rawGroupId === undefined ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
       rawGroupId,
     ) ||
     rawCode === undefined ||

@@ -121,5 +121,15 @@ describe('game creation presenter', () => {
       }),
     ).toBe(true);
     expect(() => gameCreationCallback('x'.repeat(64))).toThrow(/64 bytes/i);
+    for (const [action, opaqueId] of [
+      ['c', undefined],
+      ['r', undefined],
+      ['unknown', 'junk'],
+      ['c', 'valid:extra'],
+    ] as const) {
+      expect(() => gameCreationCallback(action, opaqueId)).toThrow(
+        'Invalid game creation callback',
+      );
+    }
   });
 });

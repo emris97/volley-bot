@@ -249,7 +249,7 @@ class CanonicalTelegramGateway {
       messageId: bigint;
       gameId: GameId;
       text: string;
-      callbacks: readonly string[];
+      callbacks: readonly { text: string; callbackData: string }[];
       active: boolean;
     }
   >();
@@ -322,8 +322,8 @@ class CanonicalTelegramGateway {
   }
 
   public callbacks(): readonly string[] {
-    return [...this.sentMessages.values()].flatMap(
-      ({ callbacks }) => callbacks,
+    return [...this.sentMessages.values()].flatMap(({ callbacks }) =>
+      callbacks.map(({ callbackData }) => callbackData),
     );
   }
 
@@ -337,6 +337,17 @@ class CanonicalTelegramGateway {
     return [...this.sentMessages.values()].filter(
       (message) => message.gameId === gameId,
     ).length;
+  }
+
+  public callbackData(gameId: GameId, buttonText: string): string {
+    const callback = [...this.sentMessages.values()]
+      .toReversed()
+      .find((message) => message.gameId === gameId && message.active)
+      ?.callbacks.find(({ text }) => text === buttonText)?.callbackData;
+    if (callback === undefined) {
+      throw new Error(`Canonical card button missing: ${buttonText}`);
+    }
+    return callback;
   }
 
   public delete(gameId: GameId, messageId: bigint): void {
@@ -359,8 +370,11 @@ class CanonicalTelegramGateway {
 
 const canonicalCallbacks = (
   message: RenderedTelegramMessage,
-): readonly string[] =>
-  message.keyboard.flat().map(({ callbackData }) => callbackData);
+): readonly { text: string; callbackData: string }[] =>
+  message.keyboard.flat().map(({ text, callbackData }) => ({
+    text,
+    callbackData,
+  }));
 
 const gameIdFromMessage = (message: RenderedTelegramMessage): GameId => {
   const callbacks = message.keyboard
@@ -568,6 +582,17 @@ export class MvpAcceptanceSystem {
         this.registrations,
       ),
       this.withdrawRegistration,
+      {
+        create: (gameId, inviterTelegramId): string => {
+          const token = this.signer.sign({
+            purpose: 'add-guest',
+            gameId,
+            inviterTelegramId,
+            expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+          });
+          return `https://t.me/${BOT_INFO.username}?start=${token}`;
+        },
+      },
     );
     this.guestFlowHandlers = new GuestFlowHandlers(
       this.signer,
@@ -887,6 +912,18 @@ export class MvpAcceptanceSystem {
     return message;
   }
 
+  public privateMessageTexts(telegramUserId: string): readonly string[] {
+    return this.telegram
+      .privateMessagesFor(asTelegramId(telegramUserId))
+      .map(({ text }) => text);
+  }
+
+  public callbackAnswerTexts(): readonly string[] {
+    return this.botApiCalls
+      .filter(({ method }) => method === 'answerCallbackQuery')
+      .map(({ payload }) => String(payload.text ?? ''));
+  }
+
   public latestPrivateButton(telegramUserId: string, text: string): string {
     const messages = this.telegram.privateMessagesFor(
       asTelegramId(telegramUserId),
@@ -1132,12 +1169,6 @@ export class MvpAcceptanceSystem {
       'UPDATE users SET display_name = $1, dm_available_at = NOW() WHERE id = $2',
       [`Player ${telegramUserId}`, membership.userId],
     );
-    const view = await this.messageRepository.load(groupId, gameId);
-    if (view === null) throw new Error('Registration card missing');
-    const going = renderGameMessage(view)
-      .keyboard.flat()
-      .find(({ text }) => text === 'Иду');
-    if (going === undefined) throw new Error('Going button missing');
     await this.webhook.handle(
       WEBHOOK_SECRET,
       gameCallbackUpdate({
@@ -1145,7 +1176,7 @@ export class MvpAcceptanceSystem {
         telegramUserId: asTelegramId(telegramUserId),
         chatId: group.telegramChatId,
         chatType: 'supergroup',
-        data: going.callbackData,
+        data: this.canonicalTelegram.callbackData(gameId, 'Иду'),
       }) as never,
     );
     const actor = await this.registrations.resolve(
@@ -1156,6 +1187,67 @@ export class MvpAcceptanceSystem {
       throw new Error('Telegram registration missing');
     }
     return actor.activeRegistrationId;
+  }
+
+  public async withdrawThroughTelegram(
+    telegramUserId: string,
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<void> {
+    const group = await this.groups.findById(groupId);
+    if (group === null) throw new Error('Withdrawal group missing');
+    await this.webhook.handle(
+      WEBHOOK_SECRET,
+      gameCallbackUpdate({
+        updateId: this.nextUpdateId(),
+        telegramUserId: asTelegramId(telegramUserId),
+        chatId: group.telegramChatId,
+        chatType: 'supergroup',
+        data: this.canonicalTelegram.callbackData(gameId, 'Не иду'),
+      }) as never,
+    );
+  }
+
+  public async addGuestThroughTelegram(
+    telegramUserId: string,
+    groupId: GroupId,
+    gameId: GameId,
+    guestDisplayName: string,
+  ): Promise<RegistrationId> {
+    const group = await this.groups.findById(groupId);
+    if (group === null) throw new Error('Guest registration group missing');
+    await this.webhook.handle(
+      WEBHOOK_SECRET,
+      gameCallbackUpdate({
+        updateId: this.nextUpdateId(),
+        telegramUserId: asTelegramId(telegramUserId),
+        chatId: group.telegramChatId,
+        chatType: 'supergroup',
+        data: this.canonicalTelegram.callbackData(gameId, 'Добавить гостя'),
+      }) as never,
+    );
+    const link = this.telegram.groupMessages
+      .toReversed()
+      .find(
+        ({ chatId, text }) =>
+          chatId === group.telegramChatId && text.startsWith('https://'),
+      )?.text;
+    const token =
+      link === undefined ? undefined : /[?&]start=([^\s&]+)/.exec(link)?.[1];
+    if (token === undefined) throw new Error('Guest deep link missing');
+    await this.sendPrivateCommand(telegramUserId, `/start ${token}`);
+    await this.sendPrivateText(telegramUserId, guestDisplayName);
+
+    const result = await this.pool.query<{ id: string }>(
+      `SELECT id FROM registrations
+       WHERE game_id = $1 AND kind = 'GUEST' AND guest_display_name = $2
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [gameId, guestDisplayName],
+    );
+    const registrationId = result.rows[0]?.id;
+    if (registrationId === undefined)
+      throw new Error('Guest registration missing');
+    return asRegistrationId(registrationId);
   }
 
   public async canonicalMessages(gameId: GameId): Promise<bigint[]> {
@@ -1215,7 +1307,7 @@ export class MvpAcceptanceSystem {
   ): Promise<void> {
     await this.openGameManagement(telegramUserId, gameId);
     await this.pressPrivateButton(telegramUserId, 'Посещаемость');
-    await this.pressPrivateButton(telegramUserId, 'Confirm attendance');
+    await this.pressPrivateButton(telegramUserId, 'Подтвердить посещаемость');
   }
 
   public async finalizeSettlementThroughTelegram(
@@ -1320,6 +1412,53 @@ export class MvpAcceptanceSystem {
       [deterministicJobId, registrationId],
     );
     return Number(result.rows[0]?.count ?? 0);
+  }
+
+  public async deliverCancellationThroughWorkers(
+    gameId: GameId,
+  ): Promise<{ deterministicJobId: string }> {
+    const eventResult = await this.pool.query<{ id: string }>(
+      `SELECT id FROM outbox_events
+       WHERE event_type = 'GAME_STATE_CHANGED' AND aggregate_id = $1
+         AND payload ->> 'to' = 'CANCELLED'
+       ORDER BY occurred_at DESC, id DESC LIMIT 1`,
+      [gameId],
+    );
+    const eventId = eventResult.rows[0]?.id;
+    if (eventId === undefined) throw new Error('Cancellation event missing');
+    await this.outboxDispatcher.dispatchOnce();
+    const parentJobId = `outbox:${eventId}:event`;
+    const parent = await this.outboxQueue.getJob(parentJobId);
+    if (parent === undefined)
+      throw new Error('Cancellation parent job missing');
+    await this.outboxRouter.process(
+      parent.name,
+      parent.data,
+      parentJobId,
+      parent.attemptsMade,
+    );
+    const deterministicJobId = `outbox:${eventId}:notification`;
+    const child = await this.notificationQueue.getJob(deterministicJobId);
+    if (child === undefined)
+      throw new Error('Cancellation notification job missing');
+    await Promise.allSettled([
+      this.notificationConsumer.processGameEvent(
+        child.name,
+        child.data,
+        deterministicJobId,
+      ),
+      this.notificationConsumer.processGameEvent(
+        child.name,
+        child.data,
+        deterministicJobId,
+      ),
+    ]);
+    await this.notificationConsumer.processGameEvent(
+      child.name,
+      child.data,
+      deterministicJobId,
+    );
+    return { deterministicJobId };
   }
 
   public async concurrentVenueEditsThroughTelegram(input: {
@@ -1938,7 +2077,8 @@ export class MvpAcceptanceSystem {
         telegramUserId: organizerTelegramId,
         chatId: organizerTelegramId,
         chatType: 'private',
-        data: requiredButton(withManual, 'Confirm attendance').callback_data,
+        data: requiredButton(withManual, 'Подтвердить посещаемость')
+          .callback_data,
       }) as never,
     );
     const stored = await this.pool.query<{ id: string }>(

@@ -38,6 +38,7 @@ import {
 } from './template-wizard.model.js';
 import {
   expandUuid,
+  isTemplateCallbackShape,
   renderCancelConfirmation,
   renderTemplateDetails,
   renderTemplateList,
@@ -503,7 +504,8 @@ const parseCallback = (
     version !== 'v1' ||
     action === undefined ||
     action.length === 0 ||
-    rest.length > 0
+    rest.length > 0 ||
+    !isTemplateCallbackShape(action, opaqueId)
   )
     return null;
   return { action, ...(opaqueId === undefined ? {} : { opaqueId }) };

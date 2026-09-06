@@ -76,7 +76,7 @@ export const parseTemplateDraftControlId = (
   const viewRevision = Number.parseInt(revisionCode ?? '', 36);
   return rest.length > 0 ||
     draftId === undefined ||
-    !/^[0-9a-f]{32}$/i.test(draftId) ||
+    !/^[0-9a-f]{32}$/.test(draftId) ||
     step === undefined ||
     !/^(?:0|[1-9a-z][0-9a-z]*)$/.test(revisionCode ?? '') ||
     !Number.isSafeInteger(viewRevision) ||

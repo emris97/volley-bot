@@ -3,6 +3,7 @@ import type { ConfirmAttendanceCommand } from '@volley/application';
 import {
   asGameId,
   asGroupId,
+  asAttendanceSnapshotId,
   asRegistrationId,
   asTelegramId,
   asUserId,
@@ -15,11 +16,15 @@ import {
 } from '../bot.factory.js';
 import {
   AttendanceHandlers,
+  attendanceCallback,
   registerAttendanceHandlers,
 } from './attendance.handlers.js';
 
 const groupId = asGroupId('018f6ba0-62d2-7bd1-8f13-12e0c8424611');
 const gameId = asGameId('018f6ba0-62d2-7bd1-8f13-12e0c8424610');
+const snapshotId = asAttendanceSnapshotId(
+  '018f6ba0-62d2-7bd1-8f13-12e0c8424610',
+);
 const registrationId = asRegistrationId('018f6ba0-62d2-7bd1-8f13-12e0c8424620');
 const secondRegistrationId = asRegistrationId(
   '018f6ba0-62d2-7bd1-8f13-12e0c8424621',
@@ -97,6 +102,9 @@ it('toggles an excluded roster member back in and finalizes through callback dat
   });
   snapshots.set(preview.id, preview);
   const rendered = firstHandlers.render(preview);
+  expect(rendered.buttons).toContainEqual(
+    expect.objectContaining({ text: 'Подтвердить посещаемость' }),
+  );
   const toggle = rendered.buttons.find((button) =>
     button.callbackData.startsWith('at:t:'),
   );
@@ -169,6 +177,18 @@ it('rejects malformed and unknown compact attendance callbacks', async () => {
       data: `at:c:${compactUuid('018f6ba0-62d2-7bd1-8f13-12e0c8424611')}:${compactUuid('018f6ba0-62d2-7bd1-8f13-12e0c8424610')}`,
     }),
   ).rejects.toThrow(/attendance preview not found/i);
+});
+
+it('generates only parser-compatible attendance callbacks', () => {
+  expect(() => attendanceCallback('confirm', groupId, snapshotId, 0)).toThrow(
+    /invalid attendance callback/i,
+  );
+  expect(() => attendanceCallback('add', groupId, snapshotId, 0)).toThrow(
+    /invalid attendance callback/i,
+  );
+  expect(() =>
+    attendanceCallback('toggle', groupId, snapshotId, 2_147_483_648),
+  ).toThrow(/invalid attendance callback/i);
 });
 
 it('adds a named manual participant through the registered private Telegram flow', async () => {
@@ -317,6 +337,10 @@ it('adds a named manual participant through the registered private Telegram flow
     (button) => button.text === 'Взнос: да — Late player',
   )!.callback_data;
   await updates.handleUpdate(attendanceCallbackUpdate(4, billableCallback));
+  expect(apiCalls.at(-1)).toMatchObject({
+    method: 'answerCallbackQuery',
+    payload: { text: 'Посещаемость обновлена.' },
+  });
   const toggledPreview = apiCalls.at(-2)!;
   const toggledManual = [...snapshots.values()]
     .at(-1)!

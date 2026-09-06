@@ -395,8 +395,45 @@ it('registers payment callbacks and rejects callback updates outside a private c
   const editMessageText = vi.fn().mockResolvedValue(undefined);
   const answerCallbackQuery = vi.fn().mockResolvedValue(undefined);
   const chargeId = '018f6ba0-62d2-7bd1-8f13-12e0c8424621';
+  const canonicalGameId = compactUuid(gameId);
+  const aliasedGameId = `${canonicalGameId.slice(0, -1)}${canonicalGameId.endsWith('A') ? 'B' : 'R'}`;
+  await expect(
+    registered!.handler({
+      update: { update_id: 11 },
+      callbackQuery: {
+        from: { id: Number(telegramUserId) },
+        data: `pay:r:${aliasedGameId}:${compactUuid(chargeId)}`,
+        message: { chat: { type: 'private' } },
+      },
+      editMessageText,
+      answerCallbackQuery,
+    }),
+  ).rejects.toThrow(/invalid payment callback/i);
+  expect(externalCalls).toEqual([]);
+
+  const canonicalChargeId = compactUuid(chargeId);
+  const aliasedChargeId = `${canonicalChargeId.slice(0, -1)}${canonicalChargeId.endsWith('A') ? 'B' : 'R'}`;
+  for (const malformed of [
+    `pay:r:${canonicalGameId}:${aliasedChargeId}`,
+    `pay:r:${canonicalGameId}:${canonicalChargeId}:extra`,
+  ]) {
+    await expect(
+      registered!.handler({
+        update: { update_id: 12 },
+        callbackQuery: {
+          from: { id: Number(telegramUserId) },
+          data: malformed,
+          message: { chat: { type: 'private' } },
+        },
+        editMessageText,
+        answerCallbackQuery,
+      }),
+    ).rejects.toThrow(/invalid payment callback/i);
+  }
+  expect(externalCalls).toEqual([]);
+
   await registered!.handler({
-    update: { update_id: 11 },
+    update: { update_id: 12 },
     callbackQuery: {
       from: { id: Number(telegramUserId) },
       data: `pay:r:${compactUuid(gameId)}:${compactUuid(chargeId)}`,
@@ -411,7 +448,7 @@ it('registers payment callbacks and rejects callback updates outside a private c
       groupId,
       actorUserId,
       chargeIds: [chargeId],
-      idempotencyKey: 'telegram-update:11',
+      idempotencyKey: 'telegram-update:12',
     },
   ]);
   expect(editMessageText).toHaveBeenCalledOnce();
@@ -573,6 +610,10 @@ it('runs registered private payment command through durable decimal input and fr
   expect(apiCalls.at(-2)).toMatchObject({
     method: 'editMessageText',
     payload: { text: expect.stringMatching(/расчёт #1/i) },
+  });
+  expect(apiCalls.at(-1)).toMatchObject({
+    method: 'answerCallbackQuery',
+    payload: { text: 'Расчёт обновлён.' },
   });
   expect(finalized).toEqual([
     expect.objectContaining({

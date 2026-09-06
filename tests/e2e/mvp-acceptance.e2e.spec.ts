@@ -125,8 +125,8 @@ describe('volleyball bot MVP acceptance', () => {
     expect(tentative.state).toBe('TENTATIVE');
     expect(system.handledRegistrationResponses()).toEqual(
       expect.arrayContaining([
-        expect.stringMatching(/^registration:rostered:/),
-        'registration:tentative',
+        expect.stringMatching(/^Вы в составе\./),
+        'Статус: не уверен.',
       ]),
     );
     expect(await system.registrationState(self.registrationId)).toBe(

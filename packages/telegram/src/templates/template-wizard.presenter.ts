@@ -170,8 +170,42 @@ export const templateCallback = (action: string, opaqueId?: string): string => {
   const value = `tw:v1:${action}${opaqueId === undefined ? '' : `:${opaqueId}`}`;
   if (Buffer.byteLength(value, 'utf8') >= 64)
     throw new Error('Telegram callback payload must be under 64 bytes');
+  if (!isTemplateCallbackShape(action, opaqueId))
+    throw new Error('Invalid template callback');
   return value;
 };
+
+const templateActionsWithoutOpaque = new Set(['create', 'active', 'archived']);
+const templateActionsWithOpaque = new Set([
+  'next',
+  'next-archived',
+  'open',
+  'edit',
+  'copy',
+  'archive',
+  'restore',
+  'back',
+  'cancel',
+  'resume',
+  'cancel-confirm',
+  'priority-yes',
+  'priority-no',
+  'round-exact',
+  'round-1',
+  'round-10',
+  'round-50',
+  'save',
+]);
+
+export const isTemplateCallbackShape = (
+  action: string,
+  opaqueId?: string,
+): boolean =>
+  (templateActionsWithoutOpaque.has(action) && opaqueId === undefined) ||
+  (templateActionsWithOpaque.has(action) &&
+    opaqueId !== undefined &&
+    opaqueId.length > 0 &&
+    !opaqueId.includes(':'));
 
 export const compactUuid = (value: string): string => {
   const hex = value.replaceAll('-', '');

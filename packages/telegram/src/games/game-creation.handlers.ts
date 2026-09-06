@@ -48,6 +48,7 @@ import {
   type GameDraftControl,
 } from './game-creation.model.js';
 import {
+  isGameCreationCallbackShape,
   renderGameCancelConfirmation,
   renderGameCancelled,
   renderGameCustomize,
@@ -1126,6 +1127,7 @@ const parseCallback = (
     version !== 'v1' ||
     action === undefined ||
     action.length === 0 ||
+    !isGameCreationCallbackShape(action, opaqueId) ||
     rest.length > 0
     ? null
     : { action, ...(opaqueId === undefined ? {} : { opaqueId }) };

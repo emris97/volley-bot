@@ -27,6 +27,9 @@ const actionsByCode = new Map(
 
 export class CallbackCodec {
   public encode(callback: GameCallback): string {
+    if (!canonicalUuidPattern.test(callback.gameId)) {
+      throw new Error('Invalid game callback');
+    }
     const encoded = `v${callback.version}:${actionCodes[callback.action]}:${callback.gameId}`;
     if (Buffer.byteLength(encoded, 'utf8') > 64) {
       throw new Error('Telegram callback payload exceeds 64 bytes');
@@ -41,12 +44,7 @@ export class CallbackCodec {
       throw new Error('Invalid game callback');
     }
     const action = actionsByCode.get(code);
-    if (
-      action === undefined ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-        gameId,
-      )
-    ) {
+    if (action === undefined || !canonicalUuidPattern.test(gameId)) {
       throw new Error('Invalid game callback');
     }
     return { version: 1, action, gameId: asGameId(gameId) };
@@ -68,3 +66,6 @@ export class CallbackCodec {
     return this.encode({ version: 1, action: 'ADD_GUEST', gameId });
   }
 }
+
+const canonicalUuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

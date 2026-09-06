@@ -591,10 +591,23 @@ const gameEditFieldHints: Record<GameEditField, string> = {
   roundingMode: 'Отправьте «точно», «1», «10» или «50».',
 };
 
-const isGameAction = (action: string): action is GameAction =>
-  gameActions.has(action as GameAction) ||
-  /^edit-(?:n|v|a|s|d|c|o|x|p|q|r|m|k|g)$/.test(action) ||
-  /^edit-confirm-(?:0|[1-9a-z][0-9a-z]*)$/.test(action);
+const isGameAction = (action: string): action is GameAction => {
+  if (
+    gameActions.has(action as GameAction) ||
+    /^edit-(?:n|v|a|s|d|c|o|x|p|q|r|m|k|g)$/.test(action)
+  ) {
+    return true;
+  }
+  const revisionCode = /^edit-confirm-(0|[1-9a-z][0-9a-z]*)$/.exec(action)?.[1];
+  if (revisionCode === undefined) return false;
+  const revision = Number.parseInt(revisionCode, 36);
+  return (
+    Number.isSafeInteger(revision) &&
+    revision >= 0 &&
+    revision <= 2_147_483_647 &&
+    revision.toString(36) === revisionCode
+  );
+};
 
 const nextAction = (bucket: VisibleGameListBucket): GameAction =>
   bucket === 'UPCOMING' ? 'next-u' : 'next-h';

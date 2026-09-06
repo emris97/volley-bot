@@ -19,7 +19,11 @@ import type {
   TemplateWizardDraftStore,
 } from './template-wizard.model.js';
 import { parseTemplateDraftControlId } from './template-wizard.model.js';
-import { compactUuid, expandUuid } from './template-wizard.presenter.js';
+import {
+  compactUuid,
+  expandUuid,
+  templateCallback,
+} from './template-wizard.presenter.js';
 import {
   registerTemplateWizardHandlers,
   TemplateWizardHandlers,
@@ -57,15 +61,35 @@ describe('template wizard Telegram flow', () => {
   });
 
   it('rejects non-canonical draft revisions and compact template ids', () => {
-    const draftId = '0'.repeat(32);
+    const draftId = 'abcdef0123456789abcdef0123456789';
     expect(parseTemplateDraftControlId(`${draftId}.n.00`)).toBeNull();
     expect(parseTemplateDraftControlId(`${draftId}.n.A`)).toBeNull();
+    expect(
+      parseTemplateDraftControlId(`${draftId.toUpperCase()}.n.0`),
+    ).toBeNull();
 
     const canonical = compactUuid('018f6ba0-62d2-7bd1-8f13-12e0c8424600');
     expect(canonical.endsWith('A')).toBe(true);
     expect(() => expandUuid(`${canonical.slice(0, -1)}B`)).toThrow(
       'Invalid compact UUID',
     );
+  });
+
+  it('rejects callback actions with invalid arity before mutating a draft', async () => {
+    expect(() => templateCallback('create', 'junk')).toThrow(
+      'Invalid template callback',
+    );
+    expect(() => templateCallback('open')).toThrow('Invalid template callback');
+    expect(() => templateCallback('unknown', 'junk')).toThrow(
+      'Invalid template callback',
+    );
+    await harness.callback('tw:v1:create:junk');
+    expect(await drafts.load(groupId, actorUserId)).toBeNull();
+    expect(harness.lastMessage()).toContain('больше не действует');
+
+    await harness.callback('tw:v1:open');
+    expect(await drafts.load(groupId, actorUserId)).toBeNull();
+    expect(harness.lastMessage()).toContain('больше не действует');
   });
 
   it('persists and resumes creation through preview and save', async () => {

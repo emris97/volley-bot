@@ -212,6 +212,18 @@ describe('private game creation bot flow', () => {
     expect(harness.lastMessage()).toContain('ДД.ММ.ГГГГ');
   });
 
+  it('rejects control-free continue and restart callbacks without mutating the draft', async () => {
+    await harness.command('/newgame');
+    await harness.click('Команда 1');
+    const before = await drafts.load(firstGroupId, actorUserId);
+
+    for (const data of ['gc:v1:c', 'gc:v1:r', 'gc:v1:r:junk:extra']) {
+      await harness.callback(data);
+      expect(await drafts.load(firstGroupId, actorUserId)).toEqual(before);
+      expect(harness.lastMessage()).toContain('кнопка устарела');
+    }
+  });
+
   it('requires confirmed cancellation and leaves no text-owning draft', async () => {
     organizer = new MemoryOrganizer([firstGroupId]);
     harness = createHarness(organizer, drafts, templates, publisher);

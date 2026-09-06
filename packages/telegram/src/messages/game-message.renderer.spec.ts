@@ -20,6 +20,7 @@ describe('renderGameMessage', () => {
     expect(rendered.keyboard.flat().map((button) => button.text)).toEqual([
       'Иду',
       'Не уверен',
+      'Не иду',
       'Добавить гостя',
       'Управление',
     ]);
