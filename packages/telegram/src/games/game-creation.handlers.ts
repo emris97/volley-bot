@@ -877,6 +877,7 @@ export class GameCreationHandlers {
         previewed: false,
       });
       await this.saveMutation(updated);
+      await this.claim(actor, updated);
       return this.renderCurrent(actor, updated);
     } catch (error) {
       return this.renderMutationError(actor, error);
@@ -930,6 +931,7 @@ export class GameCreationHandlers {
     try {
       const updated = nextGameDraftView({ ...draft, cancelPending: false });
       await this.saveMutation(updated);
+      await this.claim(actor, updated);
       return this.renderCurrent(actor, updated);
     } catch (error) {
       return this.renderMutationError(actor, error);

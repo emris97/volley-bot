@@ -189,6 +189,72 @@ describe('organizer game management through Telegram', () => {
     );
   });
 
+  it('restores game text ownership when an old valid Back callback reactivates its draft', async () => {
+    const adminTelegramId = '880023';
+    await system.createConfiguredGroup(adminTelegramId);
+    await system.createTemplateThroughTelegram(adminTelegramId, {
+      name: 'Основа для возврата',
+      venue: 'Основной зал',
+      capacity: 8,
+    });
+    await system.sendPrivateCommand(adminTelegramId, '/templates');
+    await system.pressPrivateButton(adminTelegramId, 'Создать шаблон');
+    await system.sendPrivateText(adminTelegramId, 'Нетронутый черновик');
+
+    await system.sendPrivateCommand(adminTelegramId, '/newgame');
+    await system.pressPrivateButton(adminTelegramId, 'Основа для возврата');
+    await system.sendPrivateText(adminTelegramId, '10.09.2026');
+    const oldBack = system.latestPrivateButton(adminTelegramId, 'Назад');
+
+    await system.sendPrivateCommand(adminTelegramId, '/templates');
+    await system.pressPrivateButton(adminTelegramId, 'Продолжить');
+    expect(await system.recreateTelegramApi()).toBe(true);
+    await system.pressCallback(adminTelegramId, oldBack);
+    await system.sendPrivateText(adminTelegramId, '11.09.2026');
+    expect(system.latestPrivateMessage(adminTelegramId).text).toContain(
+      'Настройки игры',
+    );
+
+    await system.sendPrivateCommand(adminTelegramId, '/templates');
+    await system.pressPrivateButton(adminTelegramId, 'Продолжить');
+    expect(system.latestPrivateMessage(adminTelegramId).text).toContain(
+      '<b>Место</b>',
+    );
+  });
+
+  it('restores game text ownership when cancellation No resumes its date step', async () => {
+    const adminTelegramId = '880024';
+    await system.createConfiguredGroup(adminTelegramId);
+    await system.createTemplateThroughTelegram(adminTelegramId, {
+      name: 'Основа для отмены',
+      venue: 'Основной зал',
+      capacity: 8,
+    });
+    await system.sendPrivateCommand(adminTelegramId, '/templates');
+    await system.pressPrivateButton(adminTelegramId, 'Создать шаблон');
+    await system.sendPrivateText(adminTelegramId, 'Второй черновик');
+
+    await system.sendPrivateCommand(adminTelegramId, '/newgame');
+    await system.pressPrivateButton(adminTelegramId, 'Основа для отмены');
+    await system.pressPrivateButton(adminTelegramId, 'Отмена');
+    const resumeCancel = system.latestPrivateButton(adminTelegramId, 'Нет');
+
+    await system.sendPrivateCommand(adminTelegramId, '/templates');
+    await system.pressPrivateButton(adminTelegramId, 'Продолжить');
+    expect(await system.recreateTelegramApi()).toBe(true);
+    await system.pressCallback(adminTelegramId, resumeCancel);
+    await system.sendPrivateText(adminTelegramId, '12.09.2026');
+    expect(system.latestPrivateMessage(adminTelegramId).text).toContain(
+      'Настройки игры',
+    );
+
+    await system.sendPrivateCommand(adminTelegramId, '/templates');
+    await system.pressPrivateButton(adminTelegramId, 'Продолжить');
+    expect(system.latestPrivateMessage(adminTelegramId).text).toContain(
+      '<b>Место</b>',
+    );
+  });
+
   it('deduplicates duplicate publication and material notices and recovers canonical cards', async () => {
     const adminTelegramId = '880031';
     const memberTelegramId = '880032';
