@@ -54,6 +54,7 @@ export {
 export { OutboxRepository } from './repositories/outbox.repository.js';
 export {
   NotificationRepository,
+  type GameEventNotificationRecipientRecord,
   type NotificationRecipientRecord,
 } from './repositories/notification.repository.js';
 export { ScheduledJobRepository } from './repositories/scheduled-job.repository.js';

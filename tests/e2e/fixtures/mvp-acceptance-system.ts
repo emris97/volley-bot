@@ -305,6 +305,7 @@ export class MvpAcceptanceSystem {
   private readonly registrationHandlers: RegistrationHandlers;
   private readonly guestFlowHandlers: GuestFlowHandlers;
   private readonly scheduledNotifications: GameSchedulerConsumer;
+  private readonly notificationConsumer: NotificationConsumer;
   private readonly outboxDispatcher: OutboxDispatcher;
   private readonly outboxRouter: OutboxEventRouter;
   private readonly waitlistPromotions: WaitlistPromotionConsumer;
@@ -504,13 +505,13 @@ export class MvpAcceptanceSystem {
       createLazyTelegramUpdateHandler(bot),
       WEBHOOK_SECRET,
     );
-    const notificationConsumer = new NotificationConsumer(
+    this.notificationConsumer = new NotificationConsumer(
       this.notifications,
       this.sender,
       this.registrations,
     );
     this.scheduledNotifications = new GameSchedulerConsumer(this.games, (job) =>
-      notificationConsumer.process(job),
+      this.notificationConsumer.process(job),
     );
     this.outboxDispatcher = new OutboxDispatcher(
       new OutboxRepository(database),
@@ -522,7 +523,7 @@ export class MvpAcceptanceSystem {
       paymentReminderQueue as never,
     );
     this.waitlistPromotions = new WaitlistPromotionConsumer(
-      notificationConsumer,
+      this.notificationConsumer,
     );
     this.paymentReminderConsumer = new PaymentReminderConsumer(
       new PaymentReminderRepository(database),
@@ -917,6 +918,56 @@ export class MvpAcceptanceSystem {
       [deterministicJobId, registrationId],
     );
     return result.rows[0]?.delivered ?? false;
+  }
+
+  public async updateVenueAndDeliverNotification(
+    fixture: AcceptanceFixture,
+    venue: string,
+  ): Promise<{ game: Game; deterministicJobId: string }> {
+    const updated = await this.registrations.updateGame({
+      groupId: fixture.groupId,
+      gameId: fixture.game.id!,
+      actorUserId: fixture.organizerUserId,
+      expectedRevision: fixture.game.revision,
+      changes: { venue },
+    });
+    const eventResult = await this.pool.query<{ id: string }>(
+      `SELECT id
+       FROM outbox_events
+       WHERE event_type = 'GAME_UPDATED' AND aggregate_id = $1
+       ORDER BY occurred_at DESC, id DESC
+       LIMIT 1`,
+      [fixture.game.id],
+    );
+    const eventId = eventResult.rows[0]?.id;
+    if (eventId === undefined) throw new Error('Game update outbox missing');
+    await this.outboxDispatcher.dispatchOnce();
+    const parentJobId = `outbox:${eventId}:event`;
+    const parentJob = await this.outboxQueue.getJob(parentJobId);
+    if (parentJob === undefined)
+      throw new Error('Game update router job missing');
+    await this.outboxRouter.process(
+      parentJob.name,
+      parentJob.data,
+      parentJobId,
+      parentJob.attemptsMade,
+    );
+    const deterministicJobId = `outbox:${eventId}:notification`;
+    const child = await this.notificationQueue.getJob(deterministicJobId);
+    if (child === undefined) {
+      throw new Error('Game update notification job missing');
+    }
+    await this.notificationConsumer.processGameEvent(
+      child.name,
+      child.data,
+      deterministicJobId,
+    );
+    await this.notificationConsumer.processGameEvent(
+      child.name,
+      child.data,
+      deterministicJobId,
+    );
+    return { game: updated.game, deterministicJobId };
   }
 
   public async waitlistPromotionReachedDelivery(

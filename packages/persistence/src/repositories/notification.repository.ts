@@ -23,6 +23,11 @@ interface NotificationRow extends Record<string, unknown> {
   inviter_telegram_user_id: string | null;
   display_name: string;
   confirmation_revision: number;
+  game_name: string;
+  game_venue: string;
+  game_address: string | null;
+  game_starts_at: Date | string;
+  game_time_zone: string;
 }
 
 export interface NotificationRecipientRecord {
@@ -35,6 +40,16 @@ export interface NotificationRecipientRecord {
   inviterTelegramUserId: TelegramId | null;
   displayName: string;
   confirmationRevision: number;
+}
+
+export interface GameEventNotificationRecipientRecord extends NotificationRecipientRecord {
+  game: {
+    name: string;
+    venue: string;
+    address: string | null;
+    startsAt: Date;
+    timeZone: string;
+  };
 }
 
 export class NotificationRepository {
@@ -54,6 +69,17 @@ export class NotificationRepository {
     scheduleRevision: number,
   ): Promise<readonly NotificationRecipientRecord[]> {
     return this.listByState(groupId, gameId, scheduleRevision, 'ROSTERED');
+  }
+
+  public listActiveForGame(
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<readonly GameEventNotificationRecipientRecord[]> {
+    return this.list(sql`
+      registration.group_id = ${groupId}
+      AND registration.game_id = ${gameId}
+      AND registration.state IN ('TENTATIVE', 'ROSTERED', 'WAITLISTED')
+    `);
   }
 
   public async findByRegistration(
@@ -187,7 +213,7 @@ export class NotificationRepository {
 
   private async list(
     predicate: ReturnType<typeof sql>,
-  ): Promise<readonly NotificationRecipientRecord[]> {
+  ): Promise<readonly GameEventNotificationRecipientRecord[]> {
     const result = await this.database.execute<NotificationRow>(sql`
       SELECT
         registration.id AS registration_id,
@@ -202,7 +228,12 @@ export class NotificationRepository {
           member.display_name,
           'Игрок ' || member.telegram_user_id::text
         ) AS display_name,
-        registration.confirmation_revision
+        registration.confirmation_revision,
+        game_row.name AS game_name,
+        game_row.venue AS game_venue,
+        game_row.address AS game_address,
+        game_row.starts_at AS game_starts_at,
+        game_row.time_zone AS game_time_zone
       FROM registrations AS registration
       INNER JOIN groups AS group_row ON group_row.id = registration.group_id
       INNER JOIN games AS game_row ON game_row.id = registration.game_id
@@ -227,6 +258,16 @@ export class NotificationRepository {
           : asTelegramId(row.inviter_telegram_user_id),
       displayName: row.display_name,
       confirmationRevision: row.confirmation_revision,
+      game: {
+        name: row.game_name,
+        venue: row.game_venue,
+        address: row.game_address,
+        startsAt:
+          row.game_starts_at instanceof Date
+            ? row.game_starts_at
+            : new Date(row.game_starts_at),
+        timeZone: row.game_time_zone,
+      },
     }));
   }
 }

@@ -53,6 +53,15 @@ describe('renderGameMessage', () => {
       64,
     );
   });
+
+  it('keeps canonical pin failures out of the public game card', () => {
+    const rendered = renderGameMessage(
+      view({ canonicalPinFailedAt: new Date('2026-09-01T12:00:00.000Z') }),
+    );
+
+    expect(rendered.text).not.toContain('закреп');
+    expect(rendered.text).not.toContain('ошиб');
+  });
 });
 
 const view = (overrides: Partial<GameMessageView> = {}): GameMessageView => ({
@@ -60,6 +69,7 @@ const view = (overrides: Partial<GameMessageView> = {}): GameMessageView => ({
   gameId: asGameId('018f6ba0-62d2-7bd1-8f13-12e0c8424610'),
   telegramChatId: asTelegramId('-1001000000001'),
   canonicalMessageId: 99n,
+  canonicalPinFailedAt: null,
   pinMessage: true,
   name: 'Friday volleyball',
   venue: 'Arena',

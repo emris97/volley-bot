@@ -7,6 +7,8 @@ import {
 } from '@volley/domain';
 import { NotificationConsumer } from './notification.consumer.js';
 import { MetricsRegistry } from '@volley/application';
+import { NotificationSender } from '@volley/telegram';
+import type { GameEventNotificationRecipientRecord } from '@volley/persistence';
 
 describe('NotificationConsumer', () => {
   it('delivers a waitlist promotion to the promoted registration', async () => {
@@ -26,6 +28,7 @@ describe('NotificationConsumer', () => {
       {
         listTentative: vi.fn(),
         listRostered: vi.fn(),
+        listActiveForGame: vi.fn(),
         findByRegistration: vi.fn().mockResolvedValue(recipient),
         claimDelivery: vi
           .fn()
@@ -67,6 +70,7 @@ describe('NotificationConsumer', () => {
     const recipients = {
       listTentative: vi.fn().mockResolvedValue([first, second]),
       listRostered: vi.fn(),
+      listActiveForGame: vi.fn(),
       findByRegistration: vi.fn(),
       claimDelivery: vi
         .fn()
@@ -126,6 +130,7 @@ describe('NotificationConsumer', () => {
       {
         listTentative: vi.fn().mockResolvedValue([current]),
         listRostered: vi.fn(),
+        listActiveForGame: vi.fn(),
         findByRegistration: vi.fn(),
         claimDelivery: vi.fn().mockResolvedValue({ status: 'BUSY' }),
         markDelivered: vi.fn(),
@@ -155,6 +160,7 @@ describe('NotificationConsumer', () => {
       {
         listTentative: vi.fn().mockResolvedValue([current]),
         listRostered: vi.fn(),
+        listActiveForGame: vi.fn(),
         findByRegistration: vi.fn(),
         claimDelivery: vi
           .fn()
@@ -184,6 +190,122 @@ describe('NotificationConsumer', () => {
       'volley_notification_failures_total{channel="private"} 1',
     );
   });
+
+  it('delivers one leased local-time notification for every active registration after a material edit', async () => {
+    const first = gameRecipient('20');
+    const second = gameRecipient('21');
+    const recipients = repositoryDouble([first, second]);
+    const sender = { send: vi.fn().mockResolvedValue(undefined) };
+    const consumer = new NotificationConsumer(
+      recipients,
+      sender as never,
+      { expireTentative: vi.fn() } as never,
+    );
+
+    await consumer.processGameEvent(
+      'GAME_UPDATED',
+      {
+        aggregateType: 'GAME',
+        aggregateId: first.gameId,
+        groupId: first.groupId,
+        materialFields: ['startsAt', 'venue'],
+        startsAtBefore: '2026-09-10T15:00:00.000Z',
+        startsAtAfter: '2026-09-11T16:00:00.000Z',
+        venueBefore: 'Зал 1',
+        venueAfter: 'Зал 2',
+      },
+      'outbox:event-id:notification',
+    );
+
+    expect(recipients.listActiveForGame).toHaveBeenCalledWith(
+      first.groupId,
+      first.gameId,
+    );
+    expect(recipients.claimDelivery).toHaveBeenNthCalledWith(
+      1,
+      'outbox:event-id:notification',
+      first.registrationId,
+    );
+    expect(sender.send).toHaveBeenCalledTimes(2);
+    expect(sender.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notificationType: 'GAME_CHANGED',
+        text:
+          'Игра «Среда вечером» изменена:\n' +
+          'Было: 10.09.2026, 19:00 — Зал 1\n' +
+          'Стало: 11.09.2026, 20:00 — Зал 2',
+      }),
+    );
+  });
+
+  it('notifies a guest through the inviter and escapes game values before HTML delivery', async () => {
+    const guest = {
+      ...gameRecipient('20'),
+      kind: 'GUEST' as const,
+      telegramUserId: null,
+      inviterTelegramUserId: asTelegramId('77'),
+      displayName: '<Гость>',
+      game: {
+        ...gameRecipient('20').game,
+        name: '<Среда & вечер>',
+      },
+    };
+    const recipients = repositoryDouble([guest]);
+    const telegram = {
+      sendPrivate: vi.fn().mockResolvedValue(undefined),
+      sendGroupMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    const consumer = new NotificationConsumer(
+      recipients,
+      new NotificationSender(telegram, { markUnavailable: vi.fn() }),
+      { expireTentative: vi.fn() } as never,
+    );
+
+    await consumer.processGameEvent(
+      'GAME_STATE_CHANGED',
+      {
+        aggregateType: 'GAME',
+        aggregateId: guest.gameId,
+        groupId: guest.groupId,
+        from: 'OPEN',
+        to: 'CANCELLED',
+      },
+      'outbox:cancelled:notification',
+    );
+
+    expect(telegram.sendPrivate).toHaveBeenCalledWith(
+      asTelegramId('77'),
+      '&lt;Гость&gt;: Игра «&lt;Среда &amp; вечер&gt;» отменена.',
+      [],
+    );
+  });
+
+  it('does not send a delivered game-event notification again', async () => {
+    const current = gameRecipient('24');
+    const recipients = repositoryDouble([current]);
+    recipients.claimDelivery.mockResolvedValue({ status: 'DELIVERED' });
+    const sender = { send: vi.fn() };
+    const consumer = new NotificationConsumer(
+      recipients,
+      sender as never,
+      { expireTentative: vi.fn() } as never,
+    );
+
+    await consumer.processGameEvent(
+      'GAME_STATE_CHANGED',
+      {
+        aggregateType: 'GAME',
+        aggregateId: current.gameId,
+        groupId: current.groupId,
+        from: 'CLOSED',
+        to: 'CANCELLED',
+      },
+      'outbox:cancelled:notification',
+    );
+
+    expect(sender.send).not.toHaveBeenCalled();
+    expect(recipients.markDelivered).not.toHaveBeenCalled();
+  });
 });
 
 const recipient = (telegramId: string) => ({
@@ -198,4 +320,29 @@ const recipient = (telegramId: string) => ({
   inviterTelegramUserId: null,
   displayName: `Игрок ${telegramId}`,
   confirmationRevision: 0,
+});
+
+const gameRecipient = (telegramId: string) => ({
+  ...recipient(telegramId),
+  game: {
+    name: 'Среда вечером',
+    venue: 'Зал 2',
+    address: null,
+    startsAt: new Date('2026-09-11T16:00:00.000Z'),
+    timeZone: 'Europe/Astrakhan',
+  },
+});
+
+const repositoryDouble = (
+  active: readonly GameEventNotificationRecipientRecord[],
+) => ({
+  listTentative: vi.fn(),
+  listRostered: vi.fn(),
+  listActiveForGame: vi.fn().mockResolvedValue(active),
+  findByRegistration: vi.fn(),
+  claimDelivery: vi
+    .fn()
+    .mockResolvedValue({ status: 'CLAIMED', claimToken: 'claim' }),
+  markDelivered: vi.fn().mockResolvedValue(undefined),
+  releaseDelivery: vi.fn().mockResolvedValue(undefined),
 });

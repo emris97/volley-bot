@@ -86,6 +86,47 @@ describe('OutboxRepository', () => {
     });
     expect(result.rows[0]?.last_error).toHaveLength(1_000);
   });
+
+  it('recovers material-change and cancellation notifications with their original identities', async () => {
+    const groupId = randomUUID();
+    await pool.query(
+      'INSERT INTO groups (id, telegram_chat_id, title) VALUES ($1, $2, $3)',
+      [groupId, '-1001000000002', 'Recovery group'],
+    );
+    const materialId = await insertGameEvent(pool, groupId, 'GAME_UPDATED', {
+      materialFields: ['startsAt'],
+      startsAtBefore: '2026-09-10T15:00:00.000Z',
+      startsAtAfter: '2026-09-11T16:00:00.000Z',
+    });
+    await insertGameEvent(pool, groupId, 'GAME_UPDATED', {
+      materialFields: [],
+    });
+    const cancellationId = await insertGameEvent(
+      pool,
+      groupId,
+      'GAME_STATE_CHANGED',
+      { from: 'OPEN', to: 'CANCELLED' },
+    );
+    await insertGameEvent(pool, groupId, 'GAME_STATE_CHANGED', {
+      from: 'OPEN',
+      to: 'CLOSED',
+    });
+
+    const recovered = (await repository.listRecoveryBatch(100)).filter(
+      ({ type }) => type !== 'GAME_RECOVERY_REFRESH',
+    );
+
+    expect(recovered).toHaveLength(2);
+    expect(recovered).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: materialId, type: 'GAME_UPDATED' }),
+        expect.objectContaining({
+          id: cancellationId,
+          type: 'GAME_STATE_CHANGED',
+        }),
+      ]),
+    );
+  });
 });
 
 const insertEvents = async (pool: Pool, count: number): Promise<void> => {
@@ -102,4 +143,20 @@ const insertEvents = async (pool: Pool, count: number): Promise<void> => {
       [groupId, randomUUID(), JSON.stringify({ index })],
     );
   }
+};
+
+const insertGameEvent = async (
+  pool: Pool,
+  groupId: string,
+  eventType: 'GAME_UPDATED' | 'GAME_STATE_CHANGED',
+  payload: Record<string, unknown>,
+): Promise<string> => {
+  const result = await pool.query<{ id: string }>(
+    `INSERT INTO outbox_events
+      (group_id, event_type, aggregate_type, aggregate_id, payload, published_at)
+     VALUES ($1, $2, 'GAME', $3, $4, NOW())
+     RETURNING id`,
+    [groupId, eventType, randomUUID(), JSON.stringify(payload)],
+  );
+  return result.rows[0]!.id;
 };

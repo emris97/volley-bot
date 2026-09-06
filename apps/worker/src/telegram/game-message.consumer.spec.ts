@@ -73,6 +73,130 @@ describe('GameMessageConsumer', () => {
     );
   });
 
+  it('routes ordinary game updates only to the canonical refresh queue', async () => {
+    const canonicalQueue = { getJob: vi.fn(), add: vi.fn() };
+    const notificationQueue = { getJob: vi.fn(), add: vi.fn() };
+    const router = new OutboxEventRouter(
+      canonicalQueue as never,
+      notificationQueue as never,
+      { getJob: vi.fn(), add: vi.fn() } as never,
+    );
+
+    await router.process(
+      'GAME_UPDATED',
+      {
+        aggregateType: 'GAME',
+        aggregateId: '018f6ba0-62d2-7bd1-8f13-12e0c8424610',
+        groupId: '018f6ba0-62d2-7bd1-8f13-12e0c8424611',
+        materialFields: [],
+      },
+      'outbox:ordinary:event',
+    );
+
+    expect(canonicalQueue.add).toHaveBeenCalledOnce();
+    expect(notificationQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('routes material updates and cancellations to one deterministic notification child', async () => {
+    const canonicalQueue = { getJob: vi.fn(), add: vi.fn() };
+    const notificationQueue = { getJob: vi.fn(), add: vi.fn() };
+    const router = new OutboxEventRouter(
+      canonicalQueue as never,
+      notificationQueue as never,
+      { getJob: vi.fn(), add: vi.fn() } as never,
+    );
+    const materialPayload = {
+      aggregateType: 'GAME',
+      aggregateId: '018f6ba0-62d2-7bd1-8f13-12e0c8424610',
+      groupId: '018f6ba0-62d2-7bd1-8f13-12e0c8424611',
+      materialFields: ['startsAt'],
+      startsAtBefore: '2026-09-10T15:00:00.000Z',
+      startsAtAfter: '2026-09-11T16:00:00.000Z',
+    };
+
+    await router.process(
+      'GAME_UPDATED',
+      materialPayload,
+      'outbox:material:event',
+    );
+    await router.process(
+      'GAME_STATE_CHANGED',
+      { ...materialPayload, from: 'OPEN', to: 'CANCELLED' },
+      'outbox:cancelled:event',
+    );
+
+    expect(notificationQueue.add).toHaveBeenNthCalledWith(
+      1,
+      'GAME_UPDATED',
+      materialPayload,
+      expect.objectContaining({ jobId: 'outbox:material:notification' }),
+    );
+    expect(notificationQueue.add).toHaveBeenNthCalledWith(
+      2,
+      'GAME_STATE_CHANGED',
+      expect.objectContaining({ to: 'CANCELLED' }),
+      expect.objectContaining({ jobId: 'outbox:cancelled:notification' }),
+    );
+  });
+
+  it('retries a failed material-notification child with the same identity', async () => {
+    const failedChild = {
+      getState: vi.fn().mockResolvedValue('failed'),
+      retry: vi.fn().mockResolvedValue(undefined),
+    };
+    const notificationQueue = {
+      getJob: vi.fn().mockResolvedValue(failedChild),
+      add: vi.fn(),
+    };
+    const router = new OutboxEventRouter(
+      { getJob: vi.fn(), add: vi.fn() } as never,
+      notificationQueue as never,
+      { getJob: vi.fn(), add: vi.fn() } as never,
+    );
+
+    await router.process(
+      'GAME_UPDATED',
+      {
+        aggregateType: 'GAME',
+        aggregateId: '018f6ba0-62d2-7bd1-8f13-12e0c8424610',
+        groupId: '018f6ba0-62d2-7bd1-8f13-12e0c8424611',
+        materialFields: ['venue'],
+      },
+      'outbox:same-event:event',
+    );
+
+    expect(notificationQueue.getJob).toHaveBeenCalledWith(
+      'outbox:same-event:notification',
+    );
+    expect(failedChild.retry).toHaveBeenCalledOnce();
+    expect(notificationQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('does not notify for a non-cancellation lifecycle transition', async () => {
+    const canonicalQueue = { getJob: vi.fn(), add: vi.fn() };
+    const notificationQueue = { getJob: vi.fn(), add: vi.fn() };
+    const router = new OutboxEventRouter(
+      canonicalQueue as never,
+      notificationQueue as never,
+      { getJob: vi.fn(), add: vi.fn() } as never,
+    );
+
+    await router.process(
+      'GAME_STATE_CHANGED',
+      {
+        aggregateType: 'GAME',
+        aggregateId: '018f6ba0-62d2-7bd1-8f13-12e0c8424610',
+        groupId: '018f6ba0-62d2-7bd1-8f13-12e0c8424611',
+        from: 'OPEN',
+        to: 'CLOSED',
+      },
+      'outbox:closed:event',
+    );
+
+    expect(canonicalQueue.add).toHaveBeenCalledOnce();
+    expect(notificationQueue.add).not.toHaveBeenCalled();
+  });
+
   it('routes payment reminders to their dedicated private-delivery queue', async () => {
     const canonicalQueue = { getJob: vi.fn(), add: vi.fn() };
     const notificationQueue = { getJob: vi.fn(), add: vi.fn() };

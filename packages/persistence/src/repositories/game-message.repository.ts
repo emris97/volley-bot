@@ -19,6 +19,7 @@ export interface StoredGameMessageView {
   gameId: GameId;
   telegramChatId: TelegramId;
   canonicalMessageId: bigint | null;
+  canonicalPinFailedAt: Date | null;
   pinMessage: boolean;
   name: string;
   venue: string;
@@ -54,6 +55,20 @@ export class GameMessageRepository {
     await this.setCanonicalWith(this.database, groupId, gameId, messageId);
   }
 
+  public async recordPinFailure(
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<void> {
+    await this.recordPinFailureWith(this.database, groupId, gameId);
+  }
+
+  public async clearPinFailure(
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<void> {
+    await this.clearPinFailureWith(this.database, groupId, gameId);
+  }
+
   public async withLockedView<T>(
     groupId: GroupId,
     gameId: GameId,
@@ -67,6 +82,8 @@ export class GameMessageRepository {
         gameId: GameId,
         messageId: bigint,
       ): Promise<void>;
+      recordPinFailure(groupId: GroupId, gameId: GameId): Promise<void>;
+      clearPinFailure(groupId: GroupId, gameId: GameId): Promise<void>;
     }) => Promise<T>,
   ): Promise<T> {
     if (this.pool === undefined) {
@@ -75,6 +92,10 @@ export class GameMessageRepository {
           this.load(lockedGroupId, lockedGameId),
         setCanonicalMessageId: (lockedGroupId, lockedGameId, messageId) =>
           this.setCanonicalMessageId(lockedGroupId, lockedGameId, messageId),
+        recordPinFailure: (lockedGroupId, lockedGameId) =>
+          this.recordPinFailure(lockedGroupId, lockedGameId),
+        clearPinFailure: (lockedGroupId, lockedGameId) =>
+          this.clearPinFailure(lockedGroupId, lockedGameId),
       });
     }
 
@@ -95,6 +116,14 @@ export class GameMessageRepository {
             lockedGameId,
             messageId,
           ),
+        recordPinFailure: (lockedGroupId, lockedGameId) =>
+          this.recordPinFailureWith(
+            lockedDatabase,
+            lockedGroupId,
+            lockedGameId,
+          ),
+        clearPinFailure: (lockedGroupId, lockedGameId) =>
+          this.clearPinFailureWith(lockedDatabase, lockedGroupId, lockedGameId),
       });
     } finally {
       try {
@@ -119,6 +148,7 @@ export class GameMessageRepository {
         gameId: games.id,
         telegramChatId: groups.telegramChatId,
         canonicalMessageId: games.canonicalTelegramMessageId,
+        canonicalPinFailedAt: games.canonicalPinFailedAt,
         pinMessage: groups.pinGameMessages,
         name: games.name,
         venue: games.venue,
@@ -186,6 +216,28 @@ export class GameMessageRepository {
     await database
       .update(games)
       .set({ canonicalTelegramMessageId: messageId, updatedAt: new Date() })
+      .where(and(eq(games.groupId, groupId), eq(games.id, gameId)));
+  }
+
+  private async recordPinFailureWith(
+    database: QueryDatabase,
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<void> {
+    await database
+      .update(games)
+      .set({ canonicalPinFailedAt: new Date() })
+      .where(and(eq(games.groupId, groupId), eq(games.id, gameId)));
+  }
+
+  private async clearPinFailureWith(
+    database: QueryDatabase,
+    groupId: GroupId,
+    gameId: GameId,
+  ): Promise<void> {
+    await database
+      .update(games)
+      .set({ canonicalPinFailedAt: null })
       .where(and(eq(games.groupId, groupId), eq(games.id, gameId)));
   }
 }
