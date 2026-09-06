@@ -118,12 +118,19 @@ export class PaymentHandlers {
     ) {
       return null;
     }
+    const totalAmount = normalizeRubleInput(input.text);
+    if (totalAmount === null) {
+      return {
+        text: 'Не удалось распознать сумму. Введите её цифрами, например 2 800,00 ₽.',
+        buttons: [],
+      };
+    }
     const view = await this.preview({
       telegramUserId: input.telegramUserId,
       gameId: session.gameId,
       privateChat: true,
       attendanceRevision: session.attendanceRevision,
-      totalAmount: input.text,
+      totalAmount,
       currency: session.currency,
       roundingMode: session.roundingMode,
     });
@@ -277,6 +284,13 @@ export class PaymentHandlers {
 
 const requirePrivateChat = (privateChat: boolean): void => {
   if (!privateChat) throw new Error('Private chat required');
+};
+
+const normalizeRubleInput = (value: string): string | null => {
+  const withoutCurrency = value.trim().replace(/\s*₽\s*$/u, '');
+  const compact = withoutCurrency.replace(/[\s\u00a0\u202f]/gu, '');
+  if (!/^\d+(?:[.,]\d{1,2})?$/.test(compact)) return null;
+  return compact.replace(',', '.');
 };
 
 const toSettlementCommand = (

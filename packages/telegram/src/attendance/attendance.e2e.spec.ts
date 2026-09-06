@@ -241,7 +241,13 @@ it('adds a named manual participant through the registered private Telegram flow
       return snapshot;
     },
   };
-  let activeFlow: OrganizerTextFlow | null = null;
+  let activeFlow: OrganizerTextFlow | null = {
+    groupId,
+    actorUserId: asUserId('018f6ba0-62d2-7bd1-8f13-12e0c8424613'),
+    kind: 'PAYMENT',
+    reference: gameId,
+    updatedAt: new Date(),
+  };
   const actorUserId = asUserId('018f6ba0-62d2-7bd1-8f13-12e0c8424613');
   const handlers = new AttendanceHandlers(
     {
@@ -305,6 +311,16 @@ it('adds a named manual participant through the registered private Telegram flow
   const updates = createLazyTelegramUpdateHandler(bot);
 
   await updates.handleUpdate(attendanceCommandUpdate(1));
+  expect(activeFlow).toMatchObject({
+    kind: 'ATTENDANCE',
+    reference: expect.stringMatching(/^VIEW:/),
+  });
+  await expect(
+    handlers.addManualParticipant({
+      telegramUserId: asTelegramId('42'),
+      displayName: 'Этот текст не должен добавляться',
+    }),
+  ).resolves.toBeNull();
   const previewCall = apiCalls.at(-1)!;
   const addCallback = (
     previewCall.payload.reply_markup as {
@@ -315,6 +331,10 @@ it('adds a named manual participant through the registered private Telegram flow
     .find((button) => button.text === 'Добавить участника')!.callback_data;
 
   await updates.handleUpdate(attendanceCallbackUpdate(2, addCallback));
+  expect(activeFlow).toMatchObject({
+    kind: 'ATTENDANCE',
+    reference: expect.stringMatching(/^MANUAL:/),
+  });
   const promptCall = apiCalls.findLast(
     (call) =>
       call.method === 'sendMessage' &&
@@ -323,9 +343,36 @@ it('adds a named manual participant through the registered private Telegram flow
   expect(promptCall.payload.text).toBe('Введите имя участника.');
   expect(promptCall.payload).not.toHaveProperty('reply_markup');
 
+  await expect(
+    updates.handleUpdate(
+      attendanceNameReplyUpdate(3, String(promptCall.payload.text), '   '),
+    ),
+  ).resolves.toBeUndefined();
+  expect(apiCalls.at(-1)).toMatchObject({
+    method: 'sendMessage',
+    payload: { text: expect.stringMatching(/имя.*1.*80/i) },
+  });
+  expect(activeFlow).toMatchObject({
+    kind: 'ATTENDANCE',
+    reference: expect.stringMatching(/^MANUAL:/),
+  });
+  await expect(
+    updates.handleUpdate(
+      attendanceNameReplyUpdate(
+        4,
+        String(promptCall.payload.text),
+        'Я'.repeat(81),
+      ),
+    ),
+  ).resolves.toBeUndefined();
+  expect(apiCalls.at(-1)).toMatchObject({
+    method: 'sendMessage',
+    payload: { text: expect.stringMatching(/имя.*1.*80/i) },
+  });
+
   await updates.handleUpdate(
     attendanceNameReplyUpdate(
-      3,
+      5,
       String(promptCall.payload.text),
       'Late player',
     ),
@@ -356,7 +403,7 @@ it('adds a named manual participant through the registered private Telegram flow
   const billableCallback = buttonsFrom(updatedPreview).find(
     (button) => button.text === 'Взнос: да — Late player',
   )!.callback_data;
-  await updates.handleUpdate(attendanceCallbackUpdate(4, billableCallback));
+  await updates.handleUpdate(attendanceCallbackUpdate(6, billableCallback));
   expect(apiCalls.at(-1)).toMatchObject({
     method: 'answerCallbackQuery',
     payload: { text: 'Посещаемость обновлена.' },
@@ -373,7 +420,7 @@ it('adds a named manual participant through the registered private Telegram flow
   const removeCallback = buttonsFrom(toggledPreview).find(
     (button) => button.text === 'Удалить — Late player',
   )!.callback_data;
-  await updates.handleUpdate(attendanceCallbackUpdate(5, removeCallback));
+  await updates.handleUpdate(attendanceCallbackUpdate(7, removeCallback));
   expect(
     [...snapshots.values()]
       .at(-1)!

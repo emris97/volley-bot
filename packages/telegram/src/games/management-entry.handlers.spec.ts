@@ -121,7 +121,7 @@ describe('ManagementEntryHandlers', () => {
       groupId,
       telegramUserId,
       role: 'MEMBER',
-      status: 'LEFT',
+      status: 'ACTIVE',
     });
   });
 

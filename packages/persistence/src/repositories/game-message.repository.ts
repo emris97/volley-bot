@@ -158,6 +158,7 @@ export class GameMessageRepository {
         state: games.state,
         revision: games.revision,
         capacity: games.capacity,
+        memberPriorityEnabled: games.memberPriorityEnabled,
       })
       .from(games)
       .innerJoin(groups, eq(groups.id, games.groupId))
@@ -192,7 +193,8 @@ export class GameMessageRepository {
         .filter((row) => row.state === state)
         .toSorted(
           state === 'ROSTERED' || state === 'WAITLISTED'
-            ? comparePlacementRows
+            ? (left, right) =>
+                comparePlacementRows(left, right, game.memberPriorityEnabled)
             : compareTentativeRows,
         )
         .map((row) =>
@@ -261,9 +263,12 @@ type RegistrationMessageRow = {
 const comparePlacementRows = (
   left: RegistrationMessageRow,
   right: RegistrationMessageRow,
+  memberPriorityEnabled: boolean,
 ): number =>
   compareNullableRank(left.manualRank, right.manualRank) ||
-  right.membershipPriority - left.membershipPriority ||
+  (memberPriorityEnabled
+    ? right.membershipPriority - left.membershipPriority
+    : 0) ||
   requiredConfirmedAt(left).getTime() - requiredConfirmedAt(right).getTime() ||
   left.id.localeCompare(right.id);
 

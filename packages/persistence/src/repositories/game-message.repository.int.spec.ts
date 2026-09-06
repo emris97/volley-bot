@@ -164,6 +164,24 @@ describe('GameMessageRepository pin recovery', () => {
     });
 
     await pool.query(
+      'UPDATE games SET member_priority_enabled = false WHERE id = $1',
+      [gameId],
+    );
+    await expect(repository.load(groupId, gameId)).resolves.toMatchObject({
+      roster: [
+        'Ручной первый',
+        'Ручной второй',
+        'Гость по порядку',
+        'Участник',
+      ],
+      waitlist: ['Резерв гость', 'Резерв участник'],
+    });
+    await pool.query(
+      'UPDATE games SET member_priority_enabled = true WHERE id = $1',
+      [gameId],
+    );
+
+    await pool.query(
       `UPDATE registrations
        SET manual_rank = CASE WHEN id = $1 THEN 0 ELSE NULL END,
            membership_priority = CASE WHEN id = $2 THEN 1 ELSE membership_priority END,

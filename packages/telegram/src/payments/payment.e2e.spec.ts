@@ -463,6 +463,7 @@ it('runs registered private payment command through durable decimal input and fr
   const apiCalls: Array<{ method: string; payload: Record<string, unknown> }> =
     [];
   const finalized: unknown[] = [];
+  const previewed: unknown[] = [];
   let inputSession: PaymentInputSession | null = null;
   let draft: PaymentDraft | null = null;
   const previewResult = {
@@ -550,7 +551,12 @@ it('runs registered private payment command through durable decimal input and fr
         {
           resolve: async () => ({ groupId, gameId, userId: actorUserId }),
         },
-        { execute: async () => previewResult },
+        {
+          execute: async (command) => {
+            previewed.push(command);
+            return previewResult;
+          },
+        },
         {
           execute: async (command) => {
             finalized.push(command);
@@ -595,7 +601,19 @@ it('runs registered private payment command through durable decimal input and fr
     payload: { text: expect.stringMatching(/сумм.*руб/i) },
   });
 
-  await createOperationalBot().handleUpdate(paymentAmountUpdate(2, '100.00'));
+  await expect(
+    createOperationalBot().handleUpdate(paymentAmountUpdate(2, 'не сумма')),
+  ).resolves.toBeUndefined();
+  expect(apiCalls.at(-1)).toMatchObject({
+    method: 'sendMessage',
+    payload: { text: expect.stringMatching(/сумм.*2 800,00/i) },
+  });
+  expect(inputSession).not.toBeNull();
+  expect(previewed).toEqual([]);
+
+  await createOperationalBot().handleUpdate(
+    paymentAmountUpdate(3, '2\u00a0800,00 ₽'),
+  );
   const previewCall = apiCalls.at(-1)!;
   expect(previewCall).toMatchObject({
     method: 'sendMessage',
@@ -609,7 +627,7 @@ it('runs registered private payment command through durable decimal input and fr
   const confirmData = keyboard[0]![0]!.callback_data;
 
   await createOperationalBot().handleUpdate(
-    paymentCallbackUpdate(3, confirmData),
+    paymentCallbackUpdate(4, confirmData),
   );
   expect(apiCalls.at(-2)).toMatchObject({
     method: 'editMessageText',
@@ -625,8 +643,11 @@ it('runs registered private payment command through durable decimal input and fr
       gameId,
       actorUserId,
       draftId,
-      totalAmount: '100.00',
+      totalAmount: '2800.00',
     }),
+  ]);
+  expect(previewed).toEqual([
+    expect.objectContaining({ totalAmount: '2800.00' }),
   ]);
 });
 

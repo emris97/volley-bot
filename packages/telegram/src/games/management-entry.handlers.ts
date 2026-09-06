@@ -3,6 +3,7 @@ import {
   editableFields,
   GameEditNotAllowedError,
   GameRevisionConflictError,
+  telegramMembership,
   type ChangeGameStateCommand,
   type ClearGameEditSessionInput,
   type DeleteDraftGameCommand,
@@ -545,19 +546,14 @@ export class ManagementEntryHandlers {
         location.telegramChatId,
         telegramUserId,
       );
-      const role =
-        member.status === 'creator'
-          ? 'OWNER'
-          : member.status === 'administrator'
-            ? 'ADMIN'
-            : null;
+      const membership = telegramMembership(member.status);
       await this.directory.refreshMembership({
         groupId: location.groupId,
         telegramUserId,
-        role: role ?? 'MEMBER',
-        status: role === null ? 'LEFT' : 'ACTIVE',
+        role: membership.role,
+        status: membership.status,
       });
-      if (role === null) throw new ManagementAccessDeniedError();
+      if (!membership.administrative) throw new ManagementAccessDeniedError();
     }
 
     const context = await this.directory.resolve(gameId, telegramUserId);

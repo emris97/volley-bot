@@ -78,14 +78,26 @@ export class AttendanceHandlers {
     telegramUserId: TelegramId;
     gameId: GameId;
   }): Promise<AttendancePreview> {
-    return this.render(
-      await this.preview({
-        ...input,
-        expectedRevision: 0,
-        excludedRegistrationIds: [],
-        manualParticipants: [],
-      }),
-    );
+    const snapshot = await this.preview({
+      ...input,
+      expectedRevision: 0,
+      excludedRegistrationIds: [],
+      manualParticipants: [],
+    });
+    const actor = await this.actors.resolve(input.gameId, input.telegramUserId);
+    if (
+      actor.groupId !== snapshot.groupId ||
+      actor.gameId !== snapshot.gameId
+    ) {
+      throw new Error('Attendance actor identity mismatch');
+    }
+    await this.textFlows?.claim({
+      groupId: actor.groupId,
+      actorUserId: actor.userId,
+      kind: 'ATTENDANCE',
+      reference: attendanceFlowReference('VIEW', snapshot.id),
+    });
+    return this.render(snapshot);
   }
 
   public render(snapshot: AttendanceSnapshot): AttendancePreview {
@@ -179,7 +191,7 @@ export class AttendanceHandlers {
         groupId: actor.groupId,
         actorUserId: actor.userId,
         kind: 'ATTENDANCE',
-        reference: snapshot.id,
+        reference: attendanceFlowReference('MANUAL', snapshot.id),
       });
       return {
         ...this.render(snapshot),
@@ -231,6 +243,20 @@ export class AttendanceHandlers {
       manualParticipants,
       finalize: callback.action === 'confirm',
     });
+    if (callback.action === 'confirm') {
+      await this.textFlows?.release({
+        groupId: actor.groupId,
+        actorUserId: actor.userId,
+        kind: 'ATTENDANCE',
+      });
+    } else {
+      await this.textFlows?.claim({
+        groupId: actor.groupId,
+        actorUserId: actor.userId,
+        kind: 'ATTENDANCE',
+        reference: attendanceFlowReference('VIEW', result.id),
+      });
+    }
     return this.render(result);
   }
 
@@ -242,12 +268,19 @@ export class AttendanceHandlers {
     const owned = await this.textFlows?.current(input.telegramUserId);
     if (this.textFlows !== undefined && owned?.kind !== 'ATTENDANCE')
       return null;
-    const callback =
+    const ownedReference =
       owned?.kind === 'ATTENDANCE' && owned.reference !== null
+        ? parseAttendanceFlowReference(owned.reference)
+        : null;
+    if (owned?.kind === 'ATTENDANCE' && ownedReference?.phase !== 'MANUAL') {
+      return null;
+    }
+    const callback =
+      owned?.kind === 'ATTENDANCE' && ownedReference !== null
         ? {
             action: 'add' as const,
             groupId: owned.groupId,
-            snapshotId: asAttendanceSnapshotId(owned.reference),
+            snapshotId: ownedReference.snapshotId,
           }
         : input.token === undefined
           ? null
@@ -273,9 +306,11 @@ export class AttendanceHandlers {
     }
     const displayName = input.displayName.trim();
     if (displayName.length === 0 || [...displayName].length > 80) {
-      throw new Error(
-        'Participant name must contain between 1 and 80 characters',
-      );
+      const preview = this.render(snapshot);
+      return {
+        ...preview,
+        text: `Имя должно содержать от 1 до 80 символов.\n\n${preview.text}`,
+      };
     }
     const result = await this.attendance.execute({
       groupId: actor.groupId,
@@ -356,6 +391,35 @@ type AttendanceCallback =
       snapshotId: AttendanceSnapshotId;
       candidateIndex: number;
     };
+
+type AttendanceFlowPhase = 'VIEW' | 'MANUAL';
+
+const attendanceFlowReference = (
+  phase: AttendanceFlowPhase,
+  snapshotId: AttendanceSnapshotId,
+): string => `${phase}:${snapshotId}`;
+
+const parseAttendanceFlowReference = (
+  reference: string,
+): { phase: AttendanceFlowPhase; snapshotId: AttendanceSnapshotId } | null => {
+  const match =
+    /^(VIEW|MANUAL):([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.exec(
+      reference,
+    );
+  if (match !== null) {
+    return {
+      phase: match[1]!.toUpperCase() as AttendanceFlowPhase,
+      snapshotId: asAttendanceSnapshotId(match[2]!),
+    };
+  }
+  if (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(reference)) {
+    return {
+      phase: 'MANUAL',
+      snapshotId: asAttendanceSnapshotId(reference),
+    };
+  }
+  return null;
+};
 
 export const attendanceCallback = (
   action: AttendanceCallback['action'],
