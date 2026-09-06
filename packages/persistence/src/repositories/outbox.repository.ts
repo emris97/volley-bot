@@ -6,11 +6,19 @@ interface ClaimedRow extends Record<string, unknown> {
   id: string;
   event_type: string;
   payload: Record<string, unknown>;
-  occurred_at: Date;
+  occurred_at: Date | string;
   group_id: string;
   aggregate_type: string;
   aggregate_id: string;
 }
+
+const hydrateTimestamp = (value: Date | string): Date => {
+  const timestamp = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(timestamp.getTime())) {
+    throw new Error('Invalid outbox timestamp');
+  }
+  return timestamp;
+};
 
 export class OutboxRepository {
   public constructor(private readonly database: Database) {}
@@ -57,7 +65,7 @@ export class OutboxRepository {
       id: row.id,
       type: row.event_type,
       payload: row.payload,
-      occurredAt: row.occurred_at,
+      occurredAt: hydrateTimestamp(row.occurred_at),
       groupId: row.group_id,
       aggregateType: row.aggregate_type,
       aggregateId: row.aggregate_id,
@@ -235,7 +243,7 @@ export class OutboxRepository {
       id: row.id,
       type: row.event_type,
       payload: row.payload,
-      occurredAt: row.occurred_at,
+      occurredAt: hydrateTimestamp(row.occurred_at),
       groupId: row.group_id,
       aggregateType: row.aggregate_type,
       aggregateId: row.aggregate_id,

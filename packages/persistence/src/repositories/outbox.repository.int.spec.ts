@@ -61,6 +61,18 @@ describe('OutboxRepository', () => {
     expect(new Set(claimedIds).size).toBe(4);
   });
 
+  it('hydrates claimed event timestamps as Date instances', async () => {
+    await insertEvents(pool, 1);
+
+    const [claimed] = await repository.claimBatch(
+      1,
+      new Date('2026-09-01T12:01:00.000Z'),
+      new Date('2026-09-01T12:00:00.000Z'),
+    );
+
+    expect(claimed?.occurredAt).toBeInstanceOf(Date);
+  });
+
   it('releases failed events for retry and records a bounded error', async () => {
     await insertEvents(pool, 1);
     const [claimed] = await repository.claimBatch(
@@ -126,6 +138,24 @@ describe('OutboxRepository', () => {
         }),
       ]),
     );
+  });
+
+  it('hydrates recovered event timestamps as Date instances', async () => {
+    const groupId = randomUUID();
+    await pool.query(
+      'INSERT INTO groups (id, telegram_chat_id, title) VALUES ($1, $2, $3)',
+      [groupId, '-1001000000003', 'Recovery timestamp group'],
+    );
+    await insertGameEvent(pool, groupId, 'GAME_UPDATED', {
+      materialFields: ['startsAt'],
+    });
+
+    const recovered = await repository.listRecoveryBatch(100);
+
+    expect(recovered).not.toHaveLength(0);
+    expect(
+      recovered.every(({ occurredAt }) => occurredAt instanceof Date),
+    ).toBe(true);
   });
 });
 
