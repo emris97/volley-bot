@@ -42,4 +42,10 @@ export interface GameCreationDraft {
   publishedGameId?: GameId;
 }
 
+export interface GameCreationDraftExpectedView {
+  draftId: string;
+  step: GameCreationDraftStep;
+  viewRevision: number;
+}
+
 export type GameCreationDraftMutationResult = 'SAVED' | 'STALE';

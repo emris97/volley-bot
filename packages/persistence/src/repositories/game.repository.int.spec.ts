@@ -14,7 +14,10 @@ import {
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDatabase } from '../client.js';
 import { applyTestMigrations } from '../migrations/migration-test-helper.js';
-import { GameCreationDraftRepository } from './game-creation-draft.repository.js';
+import {
+  GameCreationDraftRepository,
+  serializeGameCreationDraftData,
+} from './game-creation-draft.repository.js';
 import { GameRepository } from './game.repository.js';
 import { TemplateRepository } from './template.repository.js';
 
@@ -143,6 +146,8 @@ describe('GameRepository', () => {
       groupId,
       actorUserId,
       draftId,
+      expectedStep: 'PREVIEW' as const,
+      expectedViewRevision: 0,
       now: new Date('2026-09-05T15:00:00.000Z'),
     };
     const build = () => ({
@@ -214,6 +219,8 @@ describe('GameRepository', () => {
       groupId,
       actorUserId,
       draftId,
+      expectedStep: 'PREVIEW' as const,
+      expectedViewRevision: 0,
       now: new Date('2026-09-05T15:00:00.000Z'),
     };
     const build = () => ({
@@ -279,6 +286,240 @@ describe('GameRepository', () => {
     }
   });
 
+  it('rejects publication when a cancel mutation wins while the publisher waits for the draft lock', async () => {
+    const groupId = await insertGroup(pool, '-1006', 'Cancel race');
+    const actorUserId = await insertUser(pool, '1006');
+    const database = createDatabase(pool);
+    const drafts = new GameCreationDraftRepository(database);
+    const games = new GameRepository(database);
+    const draftId = '018f6ba062d27bd18f1312e0c8424611';
+    const originalDraft = {
+      version: 1 as const,
+      draftId,
+      groupId,
+      actorUserId,
+      step: 'PREVIEW' as const,
+      viewRevision: 1,
+      cancelPending: false,
+      snapshot,
+      startsAtIso: '2026-09-12T16:00:00.000Z',
+      previewed: true,
+    };
+    await seedDraft(drafts, originalDraft);
+    const input = {
+      groupId,
+      actorUserId,
+      draftId,
+      expectedStep: 'PREVIEW' as const,
+      expectedViewRevision: 1,
+      now: new Date('2026-09-05T15:00:00.000Z'),
+    };
+    const build = () => ({
+      ...createGameFromTemplate(
+        snapshot,
+        new Date('2026-09-12T16:00:00.000Z'),
+        'Europe/Astrakhan',
+      ),
+      groupId,
+      sourceTemplateId: null,
+      state: 'SCHEDULED' as const,
+    });
+    const blocker = await pool.connect();
+    let transactionOpen = false;
+    let publication: ReturnType<typeof games.publishDraft> | undefined;
+
+    try {
+      await blocker.query('BEGIN');
+      transactionOpen = true;
+      await blocker.query(
+        'SELECT 1 FROM game_creation_drafts WHERE group_id = $1 AND actor_user_id = $2 FOR UPDATE',
+        [groupId, actorUserId],
+      );
+      publication = games.publishDraft(input, build);
+      await waitForBlockedQuery(pool, 'from "game_creation_drafts"');
+      await blocker.query(
+        'UPDATE game_creation_drafts SET data = $3 WHERE group_id = $1 AND actor_user_id = $2',
+        [
+          groupId,
+          actorUserId,
+          serializeGameCreationDraftData({
+            ...originalDraft,
+            viewRevision: 2,
+            cancelPending: true,
+          }),
+        ],
+      );
+      await blocker.query('COMMIT');
+      transactionOpen = false;
+
+      await expect(publication).rejects.toThrow(/stale/i);
+      await expect(pool.query('SELECT id FROM games')).resolves.toMatchObject({
+        rowCount: 0,
+      });
+    } finally {
+      if (transactionOpen) await blocker.query('ROLLBACK');
+      await publication?.catch(() => undefined);
+      blocker.release();
+    }
+  });
+
+  it('reports a deleted draft race as stale without creating a game', async () => {
+    const groupId = await insertGroup(pool, '-1007', 'Delete race');
+    const actorUserId = await insertUser(pool, '1007');
+    const database = createDatabase(pool);
+    const drafts = new GameCreationDraftRepository(database);
+    const games = new GameRepository(database);
+    const draftId = '018f6ba062d27bd18f1312e0c8424611';
+    const originalDraft = {
+      version: 1 as const,
+      draftId,
+      groupId,
+      actorUserId,
+      step: 'PREVIEW' as const,
+      viewRevision: 1,
+      cancelPending: false,
+      snapshot,
+      startsAtIso: '2026-09-12T16:00:00.000Z',
+      previewed: true,
+    };
+    await seedDraft(drafts, originalDraft);
+    const input = {
+      groupId,
+      actorUserId,
+      draftId,
+      expectedStep: 'PREVIEW' as const,
+      expectedViewRevision: 1,
+      now: new Date('2026-09-05T15:00:00.000Z'),
+    };
+    const blocker = await pool.connect();
+    let transactionOpen = false;
+    let publication: ReturnType<typeof games.publishDraft> | undefined;
+
+    try {
+      await blocker.query('BEGIN');
+      transactionOpen = true;
+      await blocker.query(
+        'SELECT 1 FROM game_creation_drafts WHERE group_id = $1 AND actor_user_id = $2 FOR UPDATE',
+        [groupId, actorUserId],
+      );
+      publication = games.publishDraft(input, () => ({
+        ...createGameFromTemplate(
+          snapshot,
+          new Date('2026-09-12T16:00:00.000Z'),
+          'Europe/Astrakhan',
+        ),
+        groupId,
+        sourceTemplateId: null,
+        state: 'SCHEDULED' as const,
+      }));
+      await waitForBlockedQuery(pool, 'from "game_creation_drafts"');
+      await blocker.query(
+        'DELETE FROM game_creation_drafts WHERE group_id = $1 AND actor_user_id = $2',
+        [groupId, actorUserId],
+      );
+      await blocker.query('COMMIT');
+      transactionOpen = false;
+
+      await expect(publication).rejects.toThrow(/stale/i);
+      await expect(pool.query('SELECT id FROM games')).resolves.toMatchObject({
+        rowCount: 0,
+      });
+    } finally {
+      if (transactionOpen) await blocker.query('ROLLBACK');
+      await publication?.catch(() => undefined);
+      blocker.release();
+    }
+  });
+
+  it('does not let a restart waiting behind publication overwrite the published draft', async () => {
+    const groupId = await insertGroup(pool, '-1008', 'Restart race');
+    const actorUserId = await insertUser(pool, '1008');
+    const database = createDatabase(pool);
+    const drafts = new GameCreationDraftRepository(database);
+    const games = new GameRepository(database);
+    const draftId = '018f6ba062d27bd18f1312e0c8424611';
+    const originalDraft = {
+      version: 1 as const,
+      draftId,
+      groupId,
+      actorUserId,
+      step: 'PREVIEW' as const,
+      viewRevision: 1,
+      cancelPending: false,
+      snapshot,
+      startsAtIso: '2026-09-12T16:00:00.000Z',
+      previewed: true,
+    };
+    await seedDraft(drafts, originalDraft);
+    const input = {
+      groupId,
+      actorUserId,
+      draftId,
+      expectedStep: 'PREVIEW' as const,
+      expectedViewRevision: 1,
+      now: new Date('2026-09-05T15:00:00.000Z'),
+    };
+    const build = () => ({
+      ...createGameFromTemplate(
+        snapshot,
+        new Date('2026-09-12T16:00:00.000Z'),
+        'Europe/Astrakhan',
+      ),
+      groupId,
+      sourceTemplateId: null,
+      state: 'SCHEDULED' as const,
+    });
+    const replacement = {
+      version: 1 as const,
+      draftId: 'ffffffffffffffffffffffffffffffff',
+      groupId,
+      actorUserId,
+      step: 'TEMPLATE' as const,
+      viewRevision: 0,
+      cancelPending: false,
+      previewed: false,
+    };
+    const blocker = await pool.connect();
+    let lockHeld = false;
+    let publication: ReturnType<typeof games.publishDraft> | undefined;
+
+    await installGameInsertBlocker(pool);
+    try {
+      await blocker.query('SELECT pg_advisory_lock($1)', [610_006]);
+      lockHeld = true;
+      publication = games.publishDraft(input, build);
+      await waitForBlockedQuery(pool, 'insert into "games"');
+
+      const restart = drafts.replaceForNewFlow(replacement, {
+        draftId,
+        step: 'PREVIEW',
+        viewRevision: 1,
+      });
+      await waitForBlockedQuery(pool, 'update "game_creation_drafts"');
+
+      await blocker.query('SELECT pg_advisory_unlock($1)', [610_006]);
+      lockHeld = false;
+      const [published, restartResult] = await Promise.all([
+        publication,
+        restart,
+      ]);
+
+      expect(restartResult).toBe('STALE');
+      await expect(drafts.load(groupId, actorUserId)).resolves.toMatchObject({
+        draftId,
+        step: 'PUBLISHED',
+        publishedGameId: published.game.id,
+      });
+    } finally {
+      if (lockHeld) {
+        await blocker.query('SELECT pg_advisory_unlock($1)', [610_006]);
+      }
+      await publication?.catch(() => undefined);
+      blocker.release();
+      await removeGameInsertBlocker(pool);
+    }
+  });
+
   it('rejects a stale draft id without committing publication state', async () => {
     const groupId = await insertGroup(pool, '-1004', 'Stale');
     const actorUserId = await insertUser(pool, '1004');
@@ -303,6 +544,8 @@ describe('GameRepository', () => {
           groupId,
           actorUserId,
           draftId: 'ffffffffffffffffffffffffffffffff',
+          expectedStep: 'PREVIEW',
+          expectedViewRevision: 0,
           now: new Date('2026-09-05T15:00:00.000Z'),
         },
         () => ({

@@ -37,8 +37,27 @@ it('copies settings, invalidates previews, and keeps a published draft repeatabl
   const gameId = asGameId('40000000-0000-4000-8000-000000000001');
   const repository = {
     load: async () => structuredClone(stored),
-    replaceForNewFlow: async (draft: GameCreationDraft) => {
+    replaceForNewFlow: async (
+      draft: GameCreationDraft,
+      expected?: {
+        draftId: string;
+        step: GameCreationDraft['step'];
+        viewRevision: number;
+      } | null,
+    ) => {
+      if (
+        (expected === null && stored !== null) ||
+        (expected !== null &&
+          expected !== undefined &&
+          (stored === null ||
+            stored.draftId !== expected.draftId ||
+            stored.step !== expected.step ||
+            (stored.viewRevision ?? 0) !== expected.viewRevision))
+      ) {
+        return 'STALE' as const;
+      }
       stored = structuredClone(draft);
+      return 'SAVED' as const;
     },
     compareAndSet: async (draft: GameCreationDraft) => {
       if (
@@ -140,7 +159,13 @@ it('copies settings, invalidates previews, and keeps a published draft repeatabl
   expect(first).toMatchObject({ game: { id: gameId }, created: true });
   expect(second).toMatchObject({ game: { id: gameId }, created: false });
   expect(commands).toHaveLength(2);
-  expect(commands[0]).toEqual({ ...input, draftId: firstDraftId, now });
+  expect(commands[0]).toEqual({
+    ...input,
+    draftId: firstDraftId,
+    expectedStep: 'PREVIEW',
+    expectedViewRevision: 5,
+    now,
+  });
   expect(commands[1]).toEqual(commands[0]);
   expect(stored).toMatchObject({
     draftId: firstDraftId,
@@ -178,6 +203,7 @@ it('rejects a typed stale mutation without replacing the published draft', async
     load: async () => structuredClone(staleDraft),
     replaceForNewFlow: async (draft: GameCreationDraft) => {
       authoritative = structuredClone(draft);
+      return 'SAVED' as const;
     },
     compareAndSet: async () => 'STALE' as const,
     clear: async () => undefined,

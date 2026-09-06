@@ -16,6 +16,8 @@ export interface PublishGameCommand {
   groupId: GroupId;
   actorUserId: UserId;
   draftId: string;
+  expectedStep: GameCreationDraft['step'];
+  expectedViewRevision: number;
   now: Date;
 }
 
@@ -51,7 +53,10 @@ const buildGame = (
   if (
     draft.groupId !== command.groupId ||
     draft.actorUserId !== command.actorUserId ||
-    draft.draftId !== command.draftId
+    draft.draftId !== command.draftId ||
+    draft.step !== command.expectedStep ||
+    (draft.viewRevision ?? 0) !== command.expectedViewRevision ||
+    draft.cancelPending === true
   ) {
     throw new Error('Game creation draft is stale');
   }

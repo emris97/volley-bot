@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import {
   OrganizerGroupSelectionRequiredError,
+  TemplateInputError,
+  validateTemplateSnapshot,
   type GameCreationDraft,
   type GameCreationDraftEditField,
+  type GameCreationDraftExpectedView,
   type GameCreationDraftMutationResult,
   type OrganizerContext,
   type OrganizerGroupCandidate,
@@ -19,7 +22,7 @@ import {
   type TelegramId,
   type UserId,
 } from '@volley/domain';
-import type { Bot, Context } from 'grammy';
+import { GrammyError, type Bot, type Context } from 'grammy';
 import { toTelegramId } from '../group-onboarding.handlers.js';
 import { renderGamePreview } from '../messages/game-preview.renderer.js';
 import {
@@ -63,7 +66,10 @@ export interface GameCreationDraftRepository {
     groupId: GroupId,
     actorUserId: UserId,
   ): Promise<GameCreationDraft | null>;
-  replaceForNewFlow(draft: GameCreationDraft): Promise<void>;
+  replaceForNewFlow(
+    draft: GameCreationDraft,
+    expected?: GameCreationDraftExpectedView | null,
+  ): Promise<GameCreationDraftMutationResult>;
   compareAndSet(
     draft: GameCreationDraft,
   ): Promise<GameCreationDraftMutationResult>;
@@ -204,11 +210,18 @@ export class GameCreationHandlers {
         ? this.beginFor(actor)
         : this.renderCurrent(actor, draft, staleControlText);
     }
-    await this.startDirect(actorInput(actor));
-    return this.renderCurrent(
-      actor,
-      await this.requiredDraft(actorInput(actor)),
-    );
+    try {
+      await this.startDirect(
+        actorInput(actor),
+        draft === null ? null : expectedView(draft),
+      );
+      return this.renderCurrent(
+        actor,
+        await this.requiredDraft(actorInput(actor)),
+      );
+    } catch (error) {
+      return this.renderMutationError(actor, error);
+    }
   }
 
   public async selectTemplate(
@@ -454,14 +467,18 @@ export class GameCreationHandlers {
         : this.renderCurrent(actor, draft, staleControlText);
     }
     try {
-      await this.publishDirect(actorInput(actor));
+      await this.publishDirect(actorInput(actor), {
+        draftId: control!.draftId,
+        step: control!.step,
+        viewRevision: control!.viewRevision,
+      });
       const published = await this.requiredDraft(actorInput(actor));
       return renderGamePublished(published);
     } catch (error) {
       if (isExpectedPublicationError(error)) {
         const current = await this.drafts.load(actor.groupId, actor.userId);
         return current === null
-          ? this.beginFor(actor)
+          ? this.beginFor(actor, publicationErrorText(error))
           : this.renderCurrent(actor, current, publicationErrorText(error));
       }
       throw error;
@@ -595,16 +612,29 @@ export class GameCreationHandlers {
     }
   }
 
-  private async startDirect(input: ActorInput): Promise<void> {
-    await this.drafts.replaceForNewFlow({
-      version: 1,
-      draftId: randomUUID().replaceAll('-', ''),
-      ...input,
-      viewRevision: 0,
-      step: 'TEMPLATE',
-      cancelPending: false,
-      previewed: false,
-    });
+  private async startDirect(
+    input: ActorInput,
+    expected?: GameCreationDraftExpectedView | null,
+  ): Promise<void> {
+    const currentExpected =
+      expected === undefined
+        ? expectedViewOrNull(
+            await this.drafts.load(input.groupId, input.actorUserId),
+          )
+        : expected;
+    const result = await this.drafts.replaceForNewFlow(
+      {
+        version: 1,
+        draftId: randomUUID().replaceAll('-', ''),
+        ...input,
+        viewRevision: 0,
+        step: 'TEMPLATE',
+        cancelPending: false,
+        previewed: false,
+      },
+      currentExpected,
+    );
+    if (result === 'STALE') throw new GameCreationDraftStaleError();
   }
 
   private async selectTemplateDirect(
@@ -656,10 +686,23 @@ export class GameCreationHandlers {
     return previewed;
   }
 
-  private async publishDirect(input: ActorInput): Promise<{
+  private async publishDirect(
+    input: ActorInput,
+    expected?: GameCreationDraftExpectedView,
+  ): Promise<{
     game: Game;
     created: boolean;
   }> {
+    if (expected !== undefined) {
+      return this.publishGame.execute({
+        groupId: input.groupId,
+        actorUserId: input.actorUserId,
+        draftId: expected.draftId,
+        expectedStep: expected.step,
+        expectedViewRevision: expected.viewRevision,
+        now: this.clock(),
+      });
+    }
     const draft = await this.completeDraft(input);
     if (!draft.previewed) {
       throw new Error('Game preview is required before publish');
@@ -668,6 +711,8 @@ export class GameCreationHandlers {
       groupId: draft.groupId,
       actorUserId: draft.actorUserId,
       draftId: draft.draftId,
+      expectedStep: draft.step === 'PUBLISHED' ? 'PREVIEW' : draft.step,
+      expectedViewRevision: draft.viewRevision ?? 0,
       now: this.clock(),
     });
   }
@@ -680,11 +725,19 @@ export class GameCreationHandlers {
       : renderGameDraftResume(draft);
   }
 
-  private async beginFor(actor: OrganizerContext): Promise<OrganizerView> {
-    await this.startDirect(actorInput(actor));
+  private async beginFor(
+    actor: OrganizerContext,
+    notice?: string,
+  ): Promise<OrganizerView> {
+    try {
+      await this.startDirect(actorInput(actor), null);
+    } catch (error) {
+      if (!(error instanceof GameCreationDraftStaleError)) throw error;
+    }
     return this.renderCurrent(
       actor,
       await this.requiredDraft(actorInput(actor)),
+      notice,
     );
   }
 
@@ -719,7 +772,7 @@ export class GameCreationHandlers {
           );
     if (draft.step === 'PREVIEW')
       return renderGamePreviewView(draft, actor.timeZone, this.clock(), notice);
-    return renderGamePublished(draft);
+    return renderGamePublished(draft, notice);
   }
 
   private async currentForUser(
@@ -901,10 +954,14 @@ export class GameCreationHandlers {
           timeZone: actor.timeZone,
         }).toISOString();
       }
+      const snapshot = validateTemplateSnapshot({
+        ...draft.snapshot!,
+        ...changes,
+      });
       const updated = nextGameDraftView({
         ...draft,
         step: 'CUSTOMIZE',
-        snapshot: { ...draft.snapshot!, ...changes },
+        snapshot,
         startsAtIso,
         editingField: undefined,
         cancelPending: false,
@@ -920,6 +977,13 @@ export class GameCreationHandlers {
           localTimeErrorText,
         );
       }
+      if (error instanceof TemplateInputError) {
+        return renderGameFieldEditor(
+          draft,
+          draft.editingField as SettingsEditorField,
+          templateValidationErrorText(error),
+        );
+      }
       return this.renderMutationError(actor, error);
     }
   }
@@ -931,7 +995,7 @@ export class GameCreationHandlers {
     if (!(error instanceof GameCreationDraftStaleError)) throw error;
     const current = await this.drafts.load(actor.groupId, actor.userId);
     return current === null
-      ? this.beginFor(actor)
+      ? this.beginFor(actor, staleControlText)
       : this.renderCurrent(actor, current, staleControlText);
   }
 
@@ -1040,6 +1104,19 @@ const actorInput = (actor: OrganizerContext): ActorInput => ({
   actorUserId: actor.userId,
   timeZone: actor.timeZone,
 });
+
+const expectedView = (
+  draft: GameCreationDraft,
+): GameCreationDraftExpectedView => ({
+  draftId: draft.draftId,
+  step: draft.step,
+  viewRevision: draft.viewRevision ?? 0,
+});
+
+const expectedViewOrNull = (
+  draft: GameCreationDraft | null,
+): GameCreationDraftExpectedView | null =>
+  draft === null ? null : expectedView(draft);
 
 const parseCallback = (
   data: string,
@@ -1300,10 +1377,13 @@ const isOrganizerSelectionError = (error: unknown): boolean =>
 
 const isExpectedPublicationError = (error: unknown): error is Error =>
   error instanceof Error &&
-  (/Game (?:start|registration closing time) must be in the future/i.test(
-    error.message,
-  ) ||
-    /preview|required|incomplete|stale/i.test(error.message));
+  (error instanceof TemplateInputError ||
+    error.name === 'TemplateInputError' ||
+    error.name === 'AuthorizationDeniedError' ||
+    /Game (?:start|registration closing time) must be in the future/i.test(
+      error.message,
+    ) ||
+    /preview|required|incomplete|stale|draft not found/i.test(error.message));
 
 const publicationErrorText = (error: Error): string =>
   error.name === 'AuthorizationDeniedError'
@@ -1312,9 +1392,16 @@ const publicationErrorText = (error: Error): string =>
       ? 'Закрытие регистрации уже прошло. Измените дату или настройки игры.'
       : /start must be in the future/i.test(error.message)
         ? 'Дата и время игры должны быть в будущем.'
-        : /stale/i.test(error.message)
+        : /stale|draft not found/i.test(error.message)
           ? staleControlText
           : 'Проверьте все поля и снова откройте предпросмотр.';
+
+const templateValidationErrorText = (error: TemplateInputError): string =>
+  error.code === 'CLOSING'
+    ? correctionText('CLOSING_ORDER')
+    : error.code === 'CONFIRMATION'
+      ? correctionText('CONFIRMATION_ORDER')
+      : correctionText(`${error.code}_RANGE`);
 
 const definedOverrides = (
   overrides: Partial<GameTemplateSnapshot>,
@@ -1334,7 +1421,18 @@ const editView = async (
   context: Context,
   view: OrganizerView,
 ): Promise<void> => {
-  await context.editMessageText(view.text, viewOptions(view));
+  try {
+    await context.editMessageText(view.text, viewOptions(view));
+  } catch (error) {
+    if (
+      error instanceof GrammyError &&
+      error.error_code === 400 &&
+      /^Bad Request: message is not modified(?::|$)/i.test(error.description)
+    ) {
+      return;
+    }
+    throw error;
+  }
 };
 
 const viewOptions = (view: OrganizerView) => ({

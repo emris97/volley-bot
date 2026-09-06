@@ -254,6 +254,59 @@ it('does not clear a draft that publication has already retained', async () => {
   });
 });
 
+it('replaces an exact current published view for an explicit new flow', async () => {
+  const { groupId, actorUserId } = await identities('-3008', '308');
+  const repository = new GameCreationDraftRepository(createDatabase(pool));
+  const publishedDraftId = '018f6ba062d27bd18f1312e0c8424611';
+  await insertData(groupId, actorUserId, {
+    version: 1,
+    draftId: publishedDraftId,
+    step: 'PUBLISHED',
+    viewRevision: 4,
+    cancelPending: false,
+    snapshot: {
+      name: 'Friday volleyball',
+      venue: 'Arena',
+      address: null,
+      startsAtLocalTime: '20:00',
+      durationMinutes: 120,
+      capacity: 12,
+      registrationOpensMinutesBefore: 10_080,
+      registrationClosesMinutesBefore: 60,
+      tentativePromptMinutesBefore: 1_440,
+      tentativeResponseMinutes: 60,
+      reminderMinutesBefore: 120,
+      memberPriorityEnabled: true,
+      defaultTotalCostMinor: null,
+      currency: 'RUB',
+      roundingMode: 'EXACT',
+    },
+    startsAtIso: '2026-09-12T16:00:00.000Z',
+    previewed: true,
+    publishedGameId: '40000000-0000-4000-8000-000000000001',
+  });
+  const replacement: GameCreationDraft = {
+    version: 1,
+    draftId: 'ffffffffffffffffffffffffffffffff',
+    groupId,
+    actorUserId,
+    step: 'TEMPLATE',
+    viewRevision: 0,
+    cancelPending: false,
+    previewed: false,
+  };
+  await expect(
+    repository.replaceForNewFlow(replacement, {
+      draftId: publishedDraftId,
+      step: 'PUBLISHED',
+      viewRevision: 4,
+    }),
+  ).resolves.toBe('SAVED');
+  await expect(repository.load(groupId, actorUserId)).resolves.toEqual(
+    replacement,
+  );
+});
+
 const identities = async (telegramChatId: string, telegramUserId: string) => {
   const group = await pool.query<{ id: string }>(
     'INSERT INTO groups (telegram_chat_id, title) VALUES ($1, $2) RETURNING id',

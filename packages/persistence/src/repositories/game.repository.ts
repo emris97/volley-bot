@@ -114,6 +114,8 @@ export class GameRepository implements GamePublicationRepository {
       groupId: GroupId;
       actorUserId: UserId;
       draftId: string;
+      expectedStep: GameCreationDraft['step'];
+      expectedViewRevision: number;
       now: Date;
     },
     build: (draft: GameCreationDraft) => Game,
@@ -131,14 +133,20 @@ export class GameRepository implements GamePublicationRepository {
         .for('update')
         .limit(1);
       if (draftRow === undefined) {
-        throw new Error('Game creation draft not found');
+        throw new Error('Game creation draft is stale');
       }
       const draft = parseGameCreationDraftData(
         draftRow.data,
         asGroupId(draftRow.groupId),
         input.actorUserId,
       );
-      if (draft.draftId !== input.draftId) {
+      if (
+        draft.draftId !== input.draftId ||
+        (draft.step !== input.expectedStep &&
+          !(draft.step === 'PUBLISHED' && input.expectedStep === 'PREVIEW')) ||
+        (draft.viewRevision ?? 0) !== input.expectedViewRevision ||
+        draft.cancelPending === true
+      ) {
         throw new Error('Game creation draft is stale');
       }
       if (

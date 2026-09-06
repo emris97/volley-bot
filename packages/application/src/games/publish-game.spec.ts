@@ -61,6 +61,8 @@ class InMemoryPublicationRepository implements GamePublicationRepository {
       groupId: typeof groupId;
       actorUserId: typeof actorUserId;
       draftId: string;
+      expectedStep: GameCreationDraft['step'];
+      expectedViewRevision: number;
       now: Date;
     },
     build: (draft: GameCreationDraft) => Game,
@@ -68,7 +70,13 @@ class InMemoryPublicationRepository implements GamePublicationRepository {
     if (
       input.groupId !== this.draft.groupId ||
       input.actorUserId !== this.draft.actorUserId ||
-      input.draftId !== this.draft.draftId
+      input.draftId !== this.draft.draftId ||
+      (input.expectedStep !== this.draft.step &&
+        !(
+          this.draft.step === 'PUBLISHED' && input.expectedStep === 'PREVIEW'
+        )) ||
+      input.expectedViewRevision !== (this.draft.viewRevision ?? 0) ||
+      this.draft.cancelPending === true
     ) {
       throw new Error('Game creation draft is stale');
     }
@@ -97,10 +105,18 @@ const useCase = (draft = previewedDraft()) => {
   return { publish, repository };
 };
 
-const command = (overrides: { draftId?: string; now?: Date } = {}) => ({
+const command = (
+  overrides: {
+    draftId?: string;
+    expectedStep?: GameCreationDraft['step'];
+    now?: Date;
+  } = {},
+) => ({
   groupId,
   actorUserId,
   draftId: overrides.draftId ?? draftId,
+  expectedStep: overrides.expectedStep ?? ('PREVIEW' as const),
+  expectedViewRevision: 0,
   now: overrides.now ?? now,
 });
 
@@ -110,7 +126,9 @@ describe('PublishGame', () => {
       previewedDraft({ step: 'CUSTOMIZE', previewed: false }),
     );
 
-    await expect(publish.execute(command())).rejects.toThrow(/preview/i);
+    await expect(
+      publish.execute(command({ expectedStep: 'CUSTOMIZE' })),
+    ).rejects.toThrow(/preview/i);
   });
 
   it('rejects a stale draft id', async () => {
@@ -119,6 +137,16 @@ describe('PublishGame', () => {
     await expect(
       publish.execute(command({ draftId: 'ffffffffffffffffffffffffffffffff' })),
     ).rejects.toThrow(/stale/i);
+  });
+
+  it('rejects a changed or cancel-pending rendered view', async () => {
+    const changed = useCase(previewedDraft({ viewRevision: 1 }));
+    const cancelling = useCase(previewedDraft({ cancelPending: true }));
+
+    await expect(changed.publish.execute(command())).rejects.toThrow(/stale/i);
+    await expect(cancelling.publish.execute(command())).rejects.toThrow(
+      /stale/i,
+    );
   });
 
   it('rejects a start at or before publication time', async () => {

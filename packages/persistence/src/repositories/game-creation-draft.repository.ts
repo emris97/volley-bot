@@ -1,5 +1,6 @@
 import type {
   GameCreationDraft,
+  GameCreationDraftExpectedView,
   GameCreationDraftMutationResult,
   GameCreationDraftStep,
 } from '@volley/application';
@@ -44,7 +45,10 @@ export class GameCreationDraftRepository {
         );
   }
 
-  public async replaceForNewFlow(draft: GameCreationDraft): Promise<void> {
+  public async replaceForNewFlow(
+    draft: GameCreationDraft,
+    expected: GameCreationDraftExpectedView | null = null,
+  ): Promise<GameCreationDraftMutationResult> {
     if (
       draft.step !== 'TEMPLATE' ||
       draft.previewed ||
@@ -58,17 +62,32 @@ export class GameCreationDraftRepository {
       throw new Error('New game creation draft must start at template choice');
     }
     const data = serializeGameCreationDraftData(draft);
-    await this.database
-      .insert(gameCreationDrafts)
-      .values({
-        groupId: draft.groupId,
-        actorUserId: draft.actorUserId,
-        data,
-      })
-      .onConflictDoUpdate({
-        target: [gameCreationDrafts.groupId, gameCreationDrafts.actorUserId],
-        set: { data, updatedAt: new Date() },
-      });
+    if (expected === null) {
+      const [inserted] = await this.database
+        .insert(gameCreationDrafts)
+        .values({
+          groupId: draft.groupId,
+          actorUserId: draft.actorUserId,
+          data,
+        })
+        .onConflictDoNothing()
+        .returning({ groupId: gameCreationDrafts.groupId });
+      return inserted === undefined ? 'STALE' : 'SAVED';
+    }
+    const [updated] = await this.database
+      .update(gameCreationDrafts)
+      .set({ data, updatedAt: new Date() })
+      .where(
+        and(
+          eq(gameCreationDrafts.groupId, draft.groupId),
+          eq(gameCreationDrafts.actorUserId, draft.actorUserId),
+          sql`${gameCreationDrafts.data} ->> 'draftId' = ${expected.draftId}`,
+          sql`${gameCreationDrafts.data} ->> 'step' = ${expected.step}`,
+          sql`coalesce(${gameCreationDrafts.data} ->> 'viewRevision', '0') = ${expected.viewRevision.toString()}`,
+        ),
+      )
+      .returning({ groupId: gameCreationDrafts.groupId });
+    return updated === undefined ? 'STALE' : 'SAVED';
   }
 
   public async compareAndSet(

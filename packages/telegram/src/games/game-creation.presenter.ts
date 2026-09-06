@@ -271,8 +271,14 @@ export const renderGameCancelled = (): OrganizerView => ({
 
 export const renderGamePublished = (
   draft?: GameCreationDraft,
+  notice?: string,
 ): OrganizerView => ({
-  text: '✅ Игра опубликована\nКарточка появится в группе. Если закрепление недоступно, предупреждение будет показано в управлении игрой.',
+  text: [
+    notice,
+    '✅ Игра опубликована\nКарточка появится в группе. Если закрепление недоступно, предупреждение будет показано в управлении игрой.',
+  ]
+    .filter(Boolean)
+    .join('\n\n'),
   parseMode: 'HTML',
   keyboard:
     draft === undefined

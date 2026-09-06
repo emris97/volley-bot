@@ -71,6 +71,8 @@ export interface GamePublicationRepository {
       groupId: GroupId;
       actorUserId: UserId;
       draftId: string;
+      expectedStep: GameCreationDraft['step'];
+      expectedViewRevision: number;
       now: Date;
     },
     build: (draft: GameCreationDraft) => Game,

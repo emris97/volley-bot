@@ -5,7 +5,7 @@ import type {
   OrganizerContext,
   OrganizerGroupCandidate,
 } from '@volley/application';
-import { PublishGame } from '@volley/application';
+import { PublishGame, TemplateInputError } from '@volley/application';
 import {
   asGameId,
   asGameTemplateId,
@@ -272,6 +272,79 @@ describe('private game creation bot flow', () => {
     });
   });
 
+  it('renders a stale-control response when cancellation wins the publish race', async () => {
+    organizer = new MemoryOrganizer([firstGroupId]);
+    harness = createHarness(organizer, drafts, templates, publisher);
+    await harness.command('/newgame');
+    await harness.click('Среда вечером');
+    await harness.text('10.09.2026');
+    await harness.click('Предпросмотр');
+    publisher.beforeExecute = async () => {
+      const current = await drafts.load(firstGroupId, actorUserId);
+      await drafts.compareAndSet({
+        ...current!,
+        viewRevision: (current!.viewRevision ?? 0) + 1,
+        cancelPending: true,
+      });
+    };
+
+    await expect(harness.click('Опубликовать')).resolves.toBeUndefined();
+
+    expect(harness.lastMessage()).toContain('кнопка устарела');
+    expect(await drafts.load(firstGroupId, actorUserId)).toMatchObject({
+      step: 'PREVIEW',
+      cancelPending: true,
+    });
+  });
+
+  it('renders a stale-control response when deletion wins the publish race', async () => {
+    organizer = new MemoryOrganizer([firstGroupId]);
+    harness = createHarness(organizer, drafts, templates, publisher);
+    await harness.command('/newgame');
+    await harness.click('Среда вечером');
+    await harness.text('10.09.2026');
+    await harness.click('Предпросмотр');
+    publisher.beforeExecute = async () => {
+      await drafts.clear(firstGroupId);
+    };
+
+    await expect(harness.click('Опубликовать')).resolves.toBeUndefined();
+
+    expect(harness.lastMessage()).toContain('кнопка устарела');
+    expect(await drafts.load(firstGroupId, actorUserId)).toMatchObject({
+      step: 'TEMPLATE',
+    });
+  });
+
+  it('keeps a concurrently published draft when restart loses its exact-view race', async () => {
+    organizer = new MemoryOrganizer([firstGroupId]);
+    harness = createHarness(organizer, drafts, templates, publisher);
+    await harness.command('/newgame');
+    await harness.click('Среда вечером');
+    await harness.text('10.09.2026');
+    await harness.click('Предпросмотр');
+    await harness.command('/newgame');
+    const restartData = harness.dataFor('Начать заново');
+    drafts.beforeReplace = async (expected) => {
+      drafts.publish({
+        groupId: firstGroupId,
+        actorUserId,
+        draftId: expected!.draftId,
+        expectedStep: expected!.step,
+        expectedViewRevision: expected!.viewRevision,
+        now: new Date('2026-09-05T12:00:00.000Z'),
+      });
+    };
+
+    await expect(harness.callback(restartData)).resolves.toBeUndefined();
+
+    expect(harness.lastMessage()).toContain('кнопка устарела');
+    expect(await drafts.load(firstGroupId, actorUserId)).toMatchObject({
+      step: 'PUBLISHED',
+      publishedGameId: '40000000-0000-4000-8000-000000000001',
+    });
+  });
+
   it('renders an authorization loss in Russian without escaping the webhook', async () => {
     organizer = new MemoryOrganizer([firstGroupId]);
     harness = createHarness(organizer, drafts, templates, publisher);
@@ -287,10 +360,88 @@ describe('private game creation bot flow', () => {
 
     expect(harness.lastMessage()).toContain('нет прав администратора');
   });
+
+  it('keeps the timing editor open when the complete resulting snapshot is invalid', async () => {
+    organizer = new MemoryOrganizer([firstGroupId]);
+    harness = createHarness(organizer, drafts, templates, publisher);
+    await harness.command('/newgame');
+    await harness.click('Среда вечером');
+    await harness.text('10.09.2026');
+
+    await harness.click('Открытие регистрации');
+    await harness.text('30');
+    expect(harness.lastMessage()).toContain(
+      'Закрытие не может быть раньше открытия регистрации.',
+    );
+    expect(await drafts.load(firstGroupId, actorUserId)).toMatchObject({
+      editingField: 'OPENING',
+      snapshot: { registrationOpensMinutesBefore: 1_440 },
+    });
+
+    await harness.text('1440');
+    await harness.click('Запрос подтверждения');
+    await harness.text('30');
+    expect(harness.lastMessage()).toContain(
+      'Время на ответ не может превышать срок запроса.',
+    );
+    expect(await drafts.load(firstGroupId, actorUserId)).toMatchObject({
+      editingField: 'CONFIRMATION_PROMPT',
+      snapshot: { tentativePromptMinutesBefore: 720 },
+    });
+  });
+
+  it('renders typed template validation failures in Russian during publication', async () => {
+    organizer = new MemoryOrganizer([firstGroupId]);
+    harness = createHarness(organizer, drafts, templates, publisher);
+    await harness.command('/newgame');
+    await harness.click('Среда вечером');
+    await harness.text('10.09.2026');
+    await harness.click('Предпросмотр');
+    publisher.nextError = new TemplateInputError('CLOSING');
+
+    await expect(harness.click('Опубликовать')).resolves.toBeUndefined();
+
+    expect(harness.lastMessage()).toContain(
+      'Проверьте все поля и снова откройте предпросмотр.',
+    );
+  });
+
+  it('suppresses only Telegram message-not-modified failures on replay', async () => {
+    organizer = new MemoryOrganizer([firstGroupId]);
+    harness = createHarness(organizer, drafts, templates, publisher);
+    await harness.command('/newgame');
+    await harness.click('Среда вечером');
+    await harness.text('10.09.2026');
+    await harness.click('Предпросмотр');
+    const publishData = harness.dataFor('Опубликовать');
+    await harness.callback(publishData);
+    const acknowledgements = harness.acknowledgementCount();
+    harness.failNextEdit(
+      400,
+      'Bad Request: message is not modified: specified new message content and reply markup are exactly the same',
+    );
+
+    await expect(harness.callback(publishData)).resolves.toBeUndefined();
+
+    expect(harness.acknowledgementCount()).toBe(acknowledgements + 1);
+
+    harness.failNextEdit(500, 'Internal Server Error');
+    await expect(harness.callback(publishData)).rejects.toThrow();
+  });
 });
 
 class MemoryDrafts implements GameCreationDraftRepository {
   private drafts = new Map<string, GameCreationDraft>();
+  beforeReplace?: (
+    expected:
+      | {
+          draftId: string;
+          step: GameCreationDraft['step'];
+          viewRevision: number;
+        }
+      | null
+      | undefined,
+  ) => Promise<void>;
 
   async load(
     groupId: GroupId,
@@ -301,8 +452,33 @@ class MemoryDrafts implements GameCreationDraftRepository {
     return draft === undefined ? null : structuredClone(draft);
   }
 
-  async replaceForNewFlow(draft: GameCreationDraft): Promise<void> {
+  async replaceForNewFlow(
+    draft: GameCreationDraft,
+    expected?: {
+      draftId: string;
+      step: GameCreationDraft['step'];
+      viewRevision: number;
+    } | null,
+  ) {
+    if (this.beforeReplace !== undefined) {
+      const beforeReplace = this.beforeReplace;
+      this.beforeReplace = undefined;
+      await beforeReplace(expected);
+    }
+    const current = this.drafts.get(draft.groupId);
+    if (
+      (expected === null && current !== undefined) ||
+      (expected !== null &&
+        expected !== undefined &&
+        (current === undefined ||
+          current.draftId !== expected.draftId ||
+          current.step !== expected.step ||
+          (current.viewRevision ?? 0) !== expected.viewRevision))
+    ) {
+      return 'STALE' as const;
+    }
     this.drafts.set(draft.groupId, structuredClone(draft));
+    return 'SAVED' as const;
   }
 
   async compareAndSet(draft: GameCreationDraft) {
@@ -310,7 +486,9 @@ class MemoryDrafts implements GameCreationDraftRepository {
     if (
       current === undefined ||
       current.draftId !== draft.draftId ||
-      current.step === 'PUBLISHED'
+      current.step === 'PUBLISHED' ||
+      (draft.viewRevision !== undefined &&
+        (current.viewRevision ?? 0) !== draft.viewRevision - 1)
     ) {
       return 'STALE' as const;
     }
@@ -323,12 +501,24 @@ class MemoryDrafts implements GameCreationDraftRepository {
   }
 
   publish(command: PublishGameCommand): GameCreationDraft {
-    const current = this.drafts.get(command.groupId)!;
-    if (current.draftId !== command.draftId) throw new Error('stale');
+    const current = this.drafts.get(command.groupId);
+    if (
+      current === undefined ||
+      current.draftId !== command.draftId ||
+      (current.step !== command.expectedStep &&
+        !(
+          current.step === 'PUBLISHED' && command.expectedStep === 'PREVIEW'
+        )) ||
+      (current.viewRevision ?? 0) !== command.expectedViewRevision ||
+      current.cancelPending === true
+    ) {
+      throw new Error('stale');
+    }
     if (current.step !== 'PUBLISHED') {
       this.drafts.set(command.groupId, {
         ...current,
         step: 'PUBLISHED',
+        cancelPending: false,
         publishedGameId: asGameId('40000000-0000-4000-8000-000000000001'),
       });
     }
@@ -338,10 +528,16 @@ class MemoryDrafts implements GameCreationDraftRepository {
 
 class MemoryPublisher {
   nextError?: Error;
+  beforeExecute?: (command: PublishGameCommand) => Promise<void>;
 
   constructor(private readonly drafts: MemoryDrafts) {}
 
   async execute(command: PublishGameCommand) {
+    if (this.beforeExecute !== undefined) {
+      const beforeExecute = this.beforeExecute;
+      this.beforeExecute = undefined;
+      await beforeExecute(command);
+    }
     if (this.nextError !== undefined) {
       const error = this.nextError;
       this.nextError = undefined;
@@ -487,8 +683,19 @@ const createHarness = (
   }> = [];
   let updateId = 1;
   let fallback = 0;
+  let acknowledgements = 0;
+  let nextEditFailure: { errorCode: number; description: string } | undefined;
   bot.api.config.use(async (_previous, method, payload) => {
     if (method === 'sendMessage' || method === 'editMessageText') {
+      if (method === 'editMessageText' && nextEditFailure !== undefined) {
+        const failure = nextEditFailure;
+        nextEditFailure = undefined;
+        return {
+          ok: false,
+          error_code: failure.errorCode,
+          description: failure.description,
+        } as never;
+      }
       const candidate = payload as {
         text: string;
         reply_markup?: {
@@ -502,6 +709,7 @@ const createHarness = (
       return { ok: true, result: {} } as never;
     }
     if (method === 'answerCallbackQuery') {
+      acknowledgements += 1;
       return { ok: true, result: true } as never;
     }
     return { ok: true, result: {} } as never;
@@ -578,5 +786,9 @@ const createHarness = (
     lastMessage: () => messages.at(-1)?.text ?? '',
     visibleText: () => messages.map((message) => message.text).join('\n'),
     fallbackCount: () => fallback,
+    acknowledgementCount: () => acknowledgements,
+    failNextEdit: (errorCode: number, description: string) => {
+      nextEditFailure = { errorCode, description };
+    },
   };
 };
