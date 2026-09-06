@@ -740,10 +740,13 @@ export class MvpAcceptanceSystem {
     gameId: GameId,
     actorUserId: UserId,
   ): Promise<Game> {
+    const current = await this.games.findById(groupId, gameId);
+    if (current === null) throw new Error('Game not found');
     return this.changeGameState.execute({
       groupId,
       gameId,
       actorUserId,
+      expectedRevision: current.revision,
       targetState: 'OPEN',
     });
   }
@@ -1101,12 +1104,14 @@ export class MvpAcceptanceSystem {
       groupId: group.id,
       gameId: game.id!,
       actorUserId: group.ownerUserId,
+      expectedRevision: game.revision,
       targetState: 'CLOSED',
     });
     game = await this.changeGameState.execute({
       groupId: group.id,
       gameId: game.id!,
       actorUserId: group.ownerUserId,
+      expectedRevision: game.revision,
       targetState: 'COMPLETED',
     });
     return { groupId: group.id, organizerUserId: group.ownerUserId, game };

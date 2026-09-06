@@ -1,5 +1,8 @@
 import type {
+  DraftGameRepository,
   GameCreationDraft,
+  GameListBucket,
+  GameListRepository,
   GamePublicationRepository,
 } from '@volley/application';
 import {
@@ -12,13 +15,14 @@ import {
   type GroupId,
   type UserId,
 } from '@volley/domain';
-import { and, asc, eq, gt, inArray, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { Database } from '../client.js';
 import {
   auditEvents,
   gameCreationDrafts,
   games,
   outboxEvents,
+  registrations,
   scheduledJobs,
 } from '../schema/index.js';
 import {
@@ -80,7 +84,9 @@ const insertValues = (game: Game) => ({
   canonicalTelegramMessageId: game.canonicalTelegramMessageId,
 });
 
-export class GameRepository implements GamePublicationRepository {
+export class GameRepository
+  implements GamePublicationRepository, GameListRepository, DraftGameRepository
+{
   public constructor(private readonly database: Database) {}
 
   public async insert(game: Game, actorUserId?: UserId): Promise<Game> {
@@ -230,6 +236,131 @@ export class GameRepository implements GamePublicationRepository {
     return row === undefined ? null : toGame(row);
   }
 
+  public async list(
+    groupId: GroupId,
+    options: {
+      bucket: GameListBucket;
+      limit: 8;
+      cursor?: GameId | null;
+    },
+  ): Promise<{ items: readonly Game[]; nextCursor: GameId | null }> {
+    if (options.limit !== 8) throw new Error('Game lists contain eight items');
+    const ascending = options.bucket === 'UPCOMING';
+    const states: readonly GameState[] =
+      options.bucket === 'UPCOMING'
+        ? ['DRAFT', 'SCHEDULED', 'OPEN', 'CLOSED']
+        : options.bucket === 'HISTORY'
+          ? ['COMPLETED', 'CANCELLED']
+          : ['CANCELLED'];
+    const cursor =
+      options.cursor == null
+        ? undefined
+        : ascending
+          ? sql`(
+              ${games.startsAt} > (
+                SELECT starts_at FROM games
+                WHERE id = ${options.cursor} AND group_id = ${groupId}
+              ) OR (
+                ${games.startsAt} = (
+                  SELECT starts_at FROM games
+                  WHERE id = ${options.cursor} AND group_id = ${groupId}
+                ) AND ${games.id} > ${options.cursor}
+              )
+            )`
+          : sql`(
+              ${games.startsAt} < (
+                SELECT starts_at FROM games
+                WHERE id = ${options.cursor} AND group_id = ${groupId}
+              ) OR (
+                ${games.startsAt} = (
+                  SELECT starts_at FROM games
+                  WHERE id = ${options.cursor} AND group_id = ${groupId}
+                ) AND ${games.id} < ${options.cursor}
+              )
+            )`;
+    const rows = await this.database
+      .select()
+      .from(games)
+      .where(
+        and(
+          eq(games.groupId, groupId),
+          inArray(games.state, states),
+          ...(cursor === undefined ? [] : [cursor]),
+        ),
+      )
+      .orderBy(
+        ascending ? asc(games.startsAt) : desc(games.startsAt),
+        ascending ? asc(games.id) : desc(games.id),
+      )
+      .limit(options.limit + 1);
+    const hasNextPage = rows.length > options.limit;
+    const items = rows.slice(0, options.limit).map(toGame);
+    return {
+      items,
+      nextCursor: hasNextPage ? (items.at(-1)?.id ?? null) : null,
+    };
+  }
+
+  public async deleteDraft(input: {
+    groupId: GroupId;
+    gameId: GameId;
+    actorUserId: UserId;
+    expectedRevision: number;
+  }): Promise<'DELETED' | 'NOT_FOUND' | 'STALE' | 'NOT_DELETABLE'> {
+    return this.database.transaction(async (transaction) => {
+      const [game] = await transaction
+        .select({
+          state: games.state,
+          revision: games.revision,
+          canonicalTelegramMessageId: games.canonicalTelegramMessageId,
+        })
+        .from(games)
+        .where(
+          and(eq(games.groupId, input.groupId), eq(games.id, input.gameId)),
+        )
+        .for('update')
+        .limit(1);
+      if (game === undefined) return 'NOT_FOUND';
+      if (game.revision !== input.expectedRevision) return 'STALE';
+      if (game.state !== 'DRAFT' || game.canonicalTelegramMessageId !== null) {
+        return 'NOT_DELETABLE';
+      }
+      const [registration] = await transaction
+        .select({ id: registrations.id })
+        .from(registrations)
+        .where(
+          and(
+            eq(registrations.groupId, input.groupId),
+            eq(registrations.gameId, input.gameId),
+          ),
+        )
+        .limit(1);
+      if (registration !== undefined) return 'NOT_DELETABLE';
+      const [deleted] = await transaction
+        .delete(games)
+        .where(
+          and(
+            eq(games.groupId, input.groupId),
+            eq(games.id, input.gameId),
+            eq(games.state, 'DRAFT'),
+            eq(games.revision, input.expectedRevision),
+            isNull(games.canonicalTelegramMessageId),
+          ),
+        )
+        .returning({ id: games.id });
+      if (deleted === undefined) return 'STALE';
+      await transaction.insert(auditEvents).values({
+        groupId: input.groupId,
+        actorUserId: input.actorUserId,
+        eventType: 'GAME_DRAFT_DELETED',
+        entityType: 'GAME',
+        entityId: input.gameId,
+        payload: { revision: input.expectedRevision },
+      });
+      return 'DELETED';
+    });
+  }
+
   public async listForReconciliation(
     limit: number,
     afterId?: GameId,
@@ -278,7 +409,11 @@ export class GameRepository implements GamePublicationRepository {
       ): Promise<Game> => {
         const [updated] = await transaction
           .update(games)
-          .set({ state, updatedAt: new Date() })
+          .set({
+            state,
+            revision: sql`${games.revision} + 1`,
+            updatedAt: new Date(),
+          })
           .where(and(eq(games.groupId, groupId), eq(games.id, gameId)))
           .returning();
         if (updated === undefined) throw new Error('Game not found');

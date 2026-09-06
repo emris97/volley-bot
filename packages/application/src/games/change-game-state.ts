@@ -7,11 +7,13 @@ import {
   type UserId,
 } from '@volley/domain';
 import type { GameAuthorization, GameRepository } from './ports.js';
+import { GameRevisionConflictError } from './game-edit-policy.js';
 
 export interface ChangeGameStateCommand {
   groupId: GroupId;
   gameId: GameId;
   actorUserId: UserId;
+  expectedRevision: number;
   targetState: GameState;
 }
 
@@ -30,6 +32,10 @@ export class ChangeGameState {
       command.groupId,
       command.gameId,
       async (game, changes) => {
+        if (game.state === command.targetState) return game;
+        if (game.revision !== command.expectedRevision) {
+          throw new GameRevisionConflictError();
+        }
         const next = transitionGame(game.state, command.targetState);
         return changes.updateState(next, command.actorUserId);
       },

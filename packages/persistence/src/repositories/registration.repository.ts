@@ -1,9 +1,11 @@
 import {
   asGameId,
+  asGameTemplateId,
   asRegistrationId,
   asGroupId,
   asUserId,
   placeConfirmedRegistrations,
+  type Game,
   type GameId,
   type GroupId,
   type RegistrationCandidate,
@@ -12,7 +14,17 @@ import {
   type TelegramId,
   type UserId,
 } from '@volley/domain';
-import { and, eq, ne } from 'drizzle-orm';
+import {
+  assertGameEditAllowed,
+  changedMaterialFields,
+  GameRevisionConflictError,
+  normalizeGameChanges,
+  scheduleAffectingFields,
+  validateGameTiming,
+  type GameUpdateChanges,
+  type MaterialGameField,
+} from '@volley/application';
+import { and, eq, ne, sql } from 'drizzle-orm';
 import type { Database } from '../client.js';
 import {
   auditEvents,
@@ -142,6 +154,7 @@ export class RegistrationRepository {
         game.capacity,
         input.confirmedAt,
         [registration.id],
+        game.memberPriorityEnabled,
       );
       const state = placement.roster.some((item) => item.id === registration.id)
         ? 'ROSTERED'
@@ -313,7 +326,11 @@ export class RegistrationRepository {
         return resultFor(
           existing.id,
           existing.state,
-          await activeCandidates(transaction, input),
+          await activeCandidates(
+            transaction,
+            input,
+            game.memberPriorityEnabled,
+          ),
         );
       }
 
@@ -334,7 +351,11 @@ export class RegistrationRepository {
       if (created === undefined)
         throw new Error('Registration insert returned no row');
 
-      const active = await activeCandidates(transaction, input);
+      const active = await activeCandidates(
+        transaction,
+        input,
+        game.memberPriorityEnabled,
+      );
       const placement = placeConfirmedRegistrations({
         capacity: game.capacity,
         registrations: active,
@@ -403,7 +424,11 @@ export class RegistrationRepository {
         return resultFor(
           byKey.id,
           byKey.state,
-          await activeCandidates(transaction, input),
+          await activeCandidates(
+            transaction,
+            input,
+            game.memberPriorityEnabled,
+          ),
         );
       }
 
@@ -430,6 +455,7 @@ export class RegistrationRepository {
         game.capacity,
         now,
         [created.id],
+        game.memberPriorityEnabled,
       );
       const state = placement.roster.some((item) => item.id === created.id)
         ? 'ROSTERED'
@@ -497,7 +523,11 @@ export class RegistrationRepository {
         return resultFor(
           registration.id,
           registration.state,
-          await activeCandidates(transaction, input),
+          await activeCandidates(
+            transaction,
+            input,
+            game.memberPriorityEnabled,
+          ),
         );
       }
       if (registration.state === 'CANCELLED') {
@@ -513,7 +543,14 @@ export class RegistrationRepository {
           updatedAt: now,
         })
         .where(eq(registrations.id, input.registrationId));
-      await recalculatePlacement(transaction, input, game.capacity, now);
+      await recalculatePlacement(
+        transaction,
+        input,
+        game.capacity,
+        now,
+        [],
+        game.memberPriorityEnabled,
+      );
       await recordChange(transaction, {
         groupId: input.groupId,
         gameId: input.gameId,
@@ -555,6 +592,8 @@ export class RegistrationRepository {
         input,
         game.capacity,
         now,
+        [],
+        game.memberPriorityEnabled,
       );
       const state = placement.roster.some((item) => item.id === updated.id)
         ? 'ROSTERED'
@@ -587,11 +626,12 @@ export class RegistrationRepository {
     gameId: GameId;
     actorUserId: UserId;
     expectedRevision: number;
-    changes: { capacity?: number };
+    changes: GameUpdateChanges;
   }): Promise<{
-    scheduleRevision: number;
+    game: Game;
     rosterCount: number;
     waitlistCount: number;
+    materialFields: readonly MaterialGameField[];
   }> {
     return this.database.transaction(async (transaction) => {
       const [game] = await transaction
@@ -603,43 +643,103 @@ export class RegistrationRepository {
         .for('update')
         .limit(1);
       if (game === undefined) throw new Error('Game not found');
-      if (game.scheduleRevision !== input.expectedRevision) {
-        throw new Error('Stale game revision');
+      if (game.revision !== input.expectedRevision) {
+        throw new GameRevisionConflictError();
       }
-      const scheduleRevision = game.scheduleRevision + 1;
-      const capacity = input.changes.capacity ?? game.capacity;
       const now = new Date();
-      await transaction
+      const normalizedChanges = normalizeGameChanges(input.changes, now);
+      const [registrationCountRow] = await transaction
+        .select({ count: sql<number>`count(*)::integer` })
+        .from(registrations)
+        .where(
+          and(
+            eq(registrations.groupId, input.groupId),
+            eq(registrations.gameId, input.gameId),
+          ),
+        );
+      assertGameEditAllowed(
+        {
+          state: game.state,
+          registrationCount: registrationCountRow?.count ?? 0,
+        },
+        normalizedChanges,
+      );
+      const before = toGame(game);
+      const next = { ...before, ...normalizedChanges };
+      validateGameTiming(next);
+      const changedFields = (
+        Object.keys(normalizedChanges) as Array<keyof GameUpdateChanges>
+      ).filter((field) => valuesDiffer(before[field], next[field]));
+      const scheduleChanged = changedFields.some((field) =>
+        scheduleAffectingFields.includes(field),
+      );
+      const scheduleRevision =
+        game.scheduleRevision + (scheduleChanged ? 1 : 0);
+      const revision = game.revision + 1;
+      const [updated] = await transaction
         .update(games)
-        .set({ capacity, scheduleRevision, updatedAt: now })
+        .set({
+          ...normalizedChanges,
+          revision,
+          scheduleRevision,
+          updatedAt: now,
+        })
         .where(
           and(eq(games.groupId, input.groupId), eq(games.id, input.gameId)),
-        );
-      const placement = await recalculatePlacement(
-        transaction,
-        input,
-        capacity,
-        now,
+        )
+        .returning();
+      if (updated === undefined) throw new Error('Game not found');
+      const placementChanged = changedFields.some(
+        (field) => field === 'capacity' || field === 'memberPriorityEnabled',
       );
+      const active = placementChanged
+        ? await recalculatePlacement(
+            transaction,
+            input,
+            next.capacity,
+            now,
+            [],
+            next.memberPriorityEnabled,
+          )
+        : await activeCandidates(
+            transaction,
+            input,
+            next.memberPriorityEnabled,
+          );
+      const rosterCount = Array.isArray(active)
+        ? active.filter((item) => item.state === 'ROSTERED').length
+        : active.roster.length;
+      const waitlistCount = Array.isArray(active)
+        ? active.filter((item) => item.state === 'WAITLISTED').length
+        : active.waitlist.length;
+      const materialFields = changedMaterialFields(before, toGame(updated));
+      const payload = updateEventPayload({
+        before,
+        after: toGame(updated),
+        revision,
+        scheduleRevision,
+        materialFields,
+      });
       await transaction.insert(auditEvents).values({
         groupId: input.groupId,
         actorUserId: input.actorUserId,
         eventType: 'GAME_UPDATED',
         entityType: 'GAME',
         entityId: input.gameId,
-        payload: { capacity, scheduleRevision },
+        payload,
       });
       await transaction.insert(outboxEvents).values({
         groupId: input.groupId,
         eventType: 'GAME_UPDATED',
         aggregateType: 'GAME',
         aggregateId: input.gameId,
-        payload: { capacity, scheduleRevision },
+        payload,
       });
       return {
-        scheduleRevision,
-        rosterCount: placement.roster.length,
-        waitlistCount: placement.waitlist.length,
+        game: toGame(updated),
+        rosterCount,
+        waitlistCount,
+        materialFields,
       };
     });
   }
@@ -650,6 +750,7 @@ type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
 const activeCandidates = async (
   transaction: Transaction,
   input: Pick<RegisterParticipantInput, 'groupId' | 'gameId'>,
+  memberPriorityEnabled = true,
 ): Promise<RegistrationCandidate[]> => {
   const rows = await transaction
     .select()
@@ -667,7 +768,7 @@ const activeCandidates = async (
     kind: row.kind,
     state: row.state,
     manualRank: row.manualRank,
-    membershipPriority: row.membershipPriority,
+    membershipPriority: memberPriorityEnabled ? row.membershipPriority : 0,
     confirmedAt: row.confirmedAt,
   }));
 };
@@ -712,8 +813,13 @@ const recalculatePlacement = async (
   capacity: number,
   now: Date,
   promotionExclusions: readonly string[] = [],
+  memberPriorityEnabled = true,
 ) => {
-  const active = await activeCandidates(transaction, input);
+  const active = await activeCandidates(
+    transaction,
+    input,
+    memberPriorityEnabled,
+  );
   const placement = placeConfirmedRegistrations({
     capacity,
     registrations: active,
@@ -796,3 +902,61 @@ const resultFor = (
       : {}),
   };
 };
+
+const toGame = (row: typeof games.$inferSelect): Game => ({
+  id: asGameId(row.id),
+  groupId: asGroupId(row.groupId),
+  sourceTemplateId:
+    row.sourceTemplateId === null
+      ? null
+      : asGameTemplateId(row.sourceTemplateId),
+  name: row.name,
+  venue: row.venue,
+  address: row.address,
+  startsAt: row.startsAt,
+  durationMinutes: row.durationMinutes,
+  capacity: row.capacity,
+  timeZone: row.timeZone,
+  registrationOpensAt: row.registrationOpensAt,
+  registrationClosesAt: row.registrationClosesAt,
+  tentativePromptAt: row.tentativePromptAt,
+  tentativeResponseDeadline: row.tentativeResponseDeadline,
+  reminderAt: row.reminderAt,
+  memberPriorityEnabled: row.memberPriorityEnabled,
+  totalCostMinor: row.totalCostMinor,
+  currency: 'RUB',
+  roundingMode: row.roundingMode,
+  state: row.state,
+  revision: row.revision,
+  scheduleRevision: row.scheduleRevision,
+  canonicalTelegramMessageId: row.canonicalTelegramMessageId,
+});
+
+const valuesDiffer = (before: unknown, after: unknown): boolean =>
+  before instanceof Date && after instanceof Date
+    ? before.getTime() !== after.getTime()
+    : before !== after;
+
+const updateEventPayload = (input: {
+  before: Game;
+  after: Game;
+  revision: number;
+  scheduleRevision: number;
+  materialFields: readonly MaterialGameField[];
+}): Record<string, unknown> => ({
+  revision: input.revision,
+  scheduleRevision: input.scheduleRevision,
+  materialFields: input.materialFields,
+  ...(input.materialFields.includes('startsAt')
+    ? {
+        startsAtBefore: input.before.startsAt.toISOString(),
+        startsAtAfter: input.after.startsAt.toISOString(),
+      }
+    : {}),
+  ...(input.materialFields.includes('venue')
+    ? { venueBefore: input.before.venue, venueAfter: input.after.venue }
+    : {}),
+  ...(input.materialFields.includes('address')
+    ? { addressBefore: input.before.address, addressAfter: input.after.address }
+    : {}),
+});

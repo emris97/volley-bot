@@ -120,6 +120,7 @@ describe('GameRepository', () => {
       async (_locked, changes) => changes.updateState('OPEN'),
     );
     expect(opened.state).toBe('OPEN');
+    expect(opened.revision).toBe(1);
   });
 
   it('publishes one game and one audit/outbox state under concurrent retries', async () => {

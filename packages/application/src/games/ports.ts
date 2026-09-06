@@ -10,6 +10,10 @@ import type {
 } from '@volley/domain';
 import type { OrganizerAuthorization } from '../auth/authorization.service.js';
 import type { GameCreationDraft } from './game-creation-draft.js';
+import type {
+  GameUpdateChanges,
+  MaterialGameField,
+} from './game-edit-policy.js';
 
 export type GameAuthorization = OrganizerAuthorization;
 
@@ -89,10 +93,23 @@ export interface GameUpdateRepository {
     gameId: GameId;
     actorUserId: UserId;
     expectedRevision: number;
-    changes: { capacity?: number };
+    changes: GameUpdateChanges;
   }): Promise<{
-    scheduleRevision: number;
+    game: Game;
     rosterCount: number;
     waitlistCount: number;
+    materialFields: readonly MaterialGameField[];
   }>;
+}
+
+export type DeleteDraftResult =
+  'DELETED' | 'NOT_FOUND' | 'STALE' | 'NOT_DELETABLE';
+
+export interface DraftGameRepository {
+  deleteDraft(input: {
+    groupId: GroupId;
+    gameId: GameId;
+    actorUserId: UserId;
+    expectedRevision: number;
+  }): Promise<DeleteDraftResult>;
 }

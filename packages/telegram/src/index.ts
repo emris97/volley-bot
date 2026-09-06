@@ -16,6 +16,7 @@ export * from './templates/template-wizard.handlers.js';
 export * from './games/game-creation.handlers.js';
 export * from './games/game-creation.model.js';
 export * from './games/game-creation.presenter.js';
+export * from './games/game-list.presenter.js';
 export * from './games/game-management.handlers.js';
 export * from './games/management-entry.handlers.js';
 export * from './messages/game-preview.renderer.js';
