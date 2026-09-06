@@ -142,6 +142,15 @@ describe('group onboarding grammY adapter', () => {
     );
   });
 
+  it('passes idle guest text to handlers registered later in the runtime', async () => {
+    const harness = createBotHarness({ includeDownstreamText: true });
+
+    await harness.updates.handleUpdate(textUpdate(8, 'обычный текст'));
+
+    expect(harness.guestHandlers.handleName).toHaveBeenCalledOnce();
+    expect(harness.downstreamText).toHaveBeenCalledOnce();
+  });
+
   it('answers an unsupported start purpose when no private flow owns it', async () => {
     const harness = createBotHarness({
       onboardingHandled: false,
@@ -167,6 +176,7 @@ const createBotHarness = (options?: {
   onboardingHandled?: boolean;
   includeGuestHandlers?: boolean;
   includeBareStart?: boolean;
+  includeDownstreamText?: boolean;
 }) => {
   const calls: Array<{ method: string; payload: Record<string, unknown> }> = [];
   const handlers = {
@@ -208,14 +218,30 @@ const createBotHarness = (options?: {
       : (guestHandlers as never),
     options?.includeBareStart === true ? (bareStart as never) : undefined,
   );
+  const downstreamText = vi.fn();
+  if (options?.includeDownstreamText === true) {
+    bot.on('message:text', downstreamText);
+  }
   return {
     calls,
     handlers,
     guestHandlers,
     bareStart,
+    downstreamText,
     updates: createLazyTelegramUpdateHandler(bot),
   };
 };
+
+const textUpdate = (updateId: number, text: string): Update => ({
+  update_id: updateId,
+  message: {
+    message_id: updateId,
+    date: 1_788_134_400,
+    chat: { id: 42, type: 'private', first_name: 'Admin' },
+    from: { id: 42, is_bot: false, first_name: 'Admin' },
+    text,
+  },
+});
 
 const startUpdate = (updateId: number, token: string): Update => ({
   update_id: updateId,

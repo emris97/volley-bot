@@ -5,6 +5,8 @@ export * from './group-onboarding.handlers.js';
 export * from './group-onboarding.model.js';
 export * from './group-onboarding.presenter.js';
 export * from './organizer/command-menu.js';
+export * from './organizer/group-settings.handlers.js';
+export * from './organizer/help.presenter.js';
 export * from './organizer/main-menu.handlers.js';
 export * from './organizer/main-menu.presenter.js';
 export * from './organizer/input.parsers.js';

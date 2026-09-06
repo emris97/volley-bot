@@ -100,7 +100,7 @@ export const renderWizardView = (
       text: [
         '<b>Проверьте настройки</b>',
         '',
-        ...summaryLines(toSettings(progress)),
+        ...configuredGroupSummaryLines(toSettings(progress)),
       ].join('\n'),
       parseMode: 'HTML',
       keyboard: [
@@ -132,9 +132,11 @@ export const renderWizardView = (
 export const renderConfiguredSummary = (
   settings: ConfiguredGroupSettings,
 ): OnboardingView => ({
-  text: ['<b>Группа уже настроена</b>', '', ...summaryLines(settings)].join(
-    '\n',
-  ),
+  text: [
+    '<b>Группа уже настроена</b>',
+    '',
+    ...configuredGroupSummaryLines(settings),
+  ].join('\n'),
   parseMode: 'HTML',
   keyboard: [],
 });
@@ -170,7 +172,9 @@ const toSettings = (progress: WizardProgress): ConfiguredGroupSettings => {
   };
 };
 
-const summaryLines = (settings: ConfiguredGroupSettings): string[] => [
+export const configuredGroupSummaryLines = (
+  settings: ConfiguredGroupSettings,
+): string[] => [
   `Часовой пояс: ${timeZoneLabel(settings.timeZone)}`,
   `Приоритет регистрации: ${settings.memberPriorityEnabled ? 'участники группы выше гостей' : 'в порядке записи'}`,
   `Запрос подтверждения: ${beforeLabel(settings.tentativePromptMinutesBefore)}`,

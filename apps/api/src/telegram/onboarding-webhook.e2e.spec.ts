@@ -22,10 +22,12 @@ describe('onboarding webhook HTTP behavior', () => {
   let app: NestFastifyApplication;
   let calls: Array<{ method: string; payload: Record<string, unknown> }>;
   let handlers: ReturnType<typeof handlerStubs>;
+  let bareStart: ReturnType<typeof bareStartStub>;
 
   beforeEach(async () => {
     calls = [];
     handlers = handlerStubs();
+    bareStart = bareStartStub();
     const bot = createTelegramBot(
       '123456:abcdefghijklmnopqrstuvwxyz',
       botInfo as never,
@@ -45,7 +47,12 @@ describe('onboarding webhook HTTP behavior', () => {
         },
       } as never;
     });
-    registerGroupOnboardingHandlers(bot, handlers as never);
+    registerGroupOnboardingHandlers(
+      bot,
+      handlers as never,
+      undefined,
+      bareStart as never,
+    );
 
     const module = await Test.createTestingModule({
       controllers: [WebhookController],
@@ -73,6 +80,7 @@ describe('onboarding webhook HTTP behavior', () => {
     const valid = await post(startUpdate(2, 'valid-token'));
 
     expect([bare.statusCode, valid.statusCode]).toEqual([200, 200]);
+    expect(bareStart.openHome).toHaveBeenCalledWith('42');
     expect(handlers.handleStart).toHaveBeenCalledTimes(1);
   });
 
@@ -127,6 +135,14 @@ const handlerStubs = () => ({
   handleMyChatMember: vi.fn().mockResolvedValue(undefined),
   handleStart: vi.fn().mockResolvedValue(true),
   handleCallback: vi.fn().mockResolvedValue({}),
+});
+
+const bareStartStub = () => ({
+  openHome: vi.fn().mockResolvedValue({
+    text: 'organizer:home',
+    parseMode: 'HTML',
+    keyboard: [],
+  }),
 });
 
 const startUpdate = (updateId: number, token: string): TelegramUpdate => ({

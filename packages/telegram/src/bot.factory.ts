@@ -94,15 +94,18 @@ export const registerGroupOnboardingHandlers = (
     }
   });
   if (guestHandlers !== undefined) {
-    bot.on('message:text', async (context) => {
-      if (context.from === undefined || context.message.text.startsWith('/'))
+    bot.on('message:text', async (context, next) => {
+      if (context.from === undefined || context.message.text.startsWith('/')) {
+        await next();
         return;
+      }
       const handled = await guestHandlers.handleName({
         telegramUserId: toTelegramId(context.from.id),
         text: context.message.text,
         updateId: context.update.update_id,
       });
       if (handled) await context.reply('guest:registered');
+      else await next();
     });
   }
   bot.callbackQuery(/^cfg:/, async (context) => {
