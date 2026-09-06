@@ -37,8 +37,19 @@ it('copies settings, invalidates previews, and keeps a published draft repeatabl
   const gameId = asGameId('40000000-0000-4000-8000-000000000001');
   const repository = {
     load: async () => structuredClone(stored),
-    save: async (draft: GameCreationDraft) => {
+    replaceForNewFlow: async (draft: GameCreationDraft) => {
       stored = structuredClone(draft);
+    },
+    compareAndSet: async (draft: GameCreationDraft) => {
+      if (
+        stored === null ||
+        stored.draftId !== draft.draftId ||
+        stored.publishedGameId !== undefined
+      ) {
+        return 'STALE' as const;
+      }
+      stored = structuredClone(draft);
+      return 'SAVED' as const;
     },
     clear: async () => {
       stored = null;
@@ -144,4 +155,49 @@ it('copies settings, invalidates previews, and keeps a published draft repeatabl
     previewed: false,
   });
   expect(stored!.draftId).not.toBe(firstDraftId);
+});
+
+it('rejects a typed stale mutation without replacing the published draft', async () => {
+  const gameId = asGameId('40000000-0000-4000-8000-000000000002');
+  const staleDraft: GameCreationDraft = {
+    version: 1,
+    draftId: '018f6ba062d27bd18f1312e0c8424611',
+    groupId: asGroupId('10000000-0000-4000-8000-000000000002'),
+    actorUserId: asUserId('20000000-0000-4000-8000-000000000002'),
+    step: 'PREVIEW',
+    snapshot: settings,
+    startsAtIso: '2026-09-12T16:00:00.000Z',
+    previewed: true,
+  };
+  let authoritative: GameCreationDraft = {
+    ...staleDraft,
+    step: 'PUBLISHED',
+    publishedGameId: gameId,
+  };
+  const repository = {
+    load: async () => structuredClone(staleDraft),
+    replaceForNewFlow: async (draft: GameCreationDraft) => {
+      authoritative = structuredClone(draft);
+    },
+    compareAndSet: async () => 'STALE' as const,
+    clear: async () => undefined,
+  };
+  const handlers = new GameCreationHandlers(repository, {
+    execute: async () => {
+      throw new Error('unused');
+    },
+  });
+
+  await expect(
+    handlers.customize({
+      groupId: staleDraft.groupId,
+      actorUserId: staleDraft.actorUserId,
+      overrides: { capacity: 99 },
+    }),
+  ).rejects.toThrow(/stale/i);
+  expect(authoritative).toMatchObject({
+    step: 'PUBLISHED',
+    snapshot: { capacity: 12 },
+    publishedGameId: gameId,
+  });
 });

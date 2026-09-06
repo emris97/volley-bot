@@ -21,3 +21,5 @@ export interface GameCreationDraft {
   previewed: boolean;
   publishedGameId?: GameId;
 }
+
+export type GameCreationDraftMutationResult = 'SAVED' | 'STALE';

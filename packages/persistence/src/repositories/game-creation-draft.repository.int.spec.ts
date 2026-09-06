@@ -72,7 +72,15 @@ it('round-trips a strict versioned draft and its copied bigint snapshot', async 
     previewed: true,
   };
 
-  await repository.save(draft);
+  await repository.replaceForNewFlow({
+    version: 1,
+    draftId: draft.draftId,
+    groupId,
+    actorUserId,
+    step: 'TEMPLATE',
+    previewed: false,
+  });
+  await expect(repository.compareAndSet(draft)).resolves.toBe('SAVED');
 
   const restarted = new GameCreationDraftRepository(createDatabase(pool));
   await expect(restarted.load(groupId, actorUserId)).resolves.toEqual(draft);

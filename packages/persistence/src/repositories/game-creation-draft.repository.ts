@@ -1,5 +1,6 @@
 import type {
   GameCreationDraft,
+  GameCreationDraftMutationResult,
   GameCreationDraftStep,
 } from '@volley/application';
 import {
@@ -11,7 +12,7 @@ import {
   type GroupId,
   type UserId,
 } from '@volley/domain';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { Database } from '../client.js';
 import { gameCreationDrafts } from '../schema/index.js';
 
@@ -43,7 +44,17 @@ export class GameCreationDraftRepository {
         );
   }
 
-  public async save(draft: GameCreationDraft): Promise<void> {
+  public async replaceForNewFlow(draft: GameCreationDraft): Promise<void> {
+    if (
+      draft.step !== 'TEMPLATE' ||
+      draft.previewed ||
+      draft.templateId !== undefined ||
+      draft.snapshot !== undefined ||
+      draft.startsAtIso !== undefined ||
+      draft.publishedGameId !== undefined
+    ) {
+      throw new Error('New game creation draft must start at template choice');
+    }
     const data = serializeGameCreationDraftData(draft);
     await this.database
       .insert(gameCreationDrafts)
@@ -56,6 +67,31 @@ export class GameCreationDraftRepository {
         target: [gameCreationDrafts.groupId, gameCreationDrafts.actorUserId],
         set: { data, updatedAt: new Date() },
       });
+  }
+
+  public async compareAndSet(
+    draft: GameCreationDraft,
+  ): Promise<GameCreationDraftMutationResult> {
+    if (draft.step === 'PUBLISHED' || draft.publishedGameId !== undefined) {
+      throw new Error('Published drafts can only be written by publication');
+    }
+    const [updated] = await this.database
+      .update(gameCreationDrafts)
+      .set({
+        data: serializeGameCreationDraftData(draft),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(gameCreationDrafts.groupId, draft.groupId),
+          eq(gameCreationDrafts.actorUserId, draft.actorUserId),
+          sql`${gameCreationDrafts.data} ->> 'draftId' = ${draft.draftId}`,
+          sql`${gameCreationDrafts.data} ->> 'step' <> 'PUBLISHED'`,
+          sql`${gameCreationDrafts.data} ->> 'publishedGameId' is null`,
+        ),
+      )
+      .returning({ groupId: gameCreationDrafts.groupId });
+    return updated === undefined ? 'STALE' : 'SAVED';
   }
 
   public async clear(groupId: GroupId, actorUserId: UserId): Promise<void> {

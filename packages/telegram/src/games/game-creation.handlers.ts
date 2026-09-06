@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type {
   GameCreationDraft,
+  GameCreationDraftMutationResult,
   PublishGameCommand,
 } from '@volley/application';
 import type {
@@ -17,8 +18,18 @@ export interface GameCreationDraftRepository {
     groupId: GroupId,
     actorUserId: UserId,
   ): Promise<GameCreationDraft | null>;
-  save(draft: GameCreationDraft): Promise<void>;
+  replaceForNewFlow(draft: GameCreationDraft): Promise<void>;
+  compareAndSet(
+    draft: GameCreationDraft,
+  ): Promise<GameCreationDraftMutationResult>;
   clear(groupId: GroupId, actorUserId: UserId): Promise<void>;
+}
+
+export class GameCreationDraftStaleError extends Error {
+  public constructor() {
+    super('Game creation draft is stale');
+    this.name = 'GameCreationDraftStaleError';
+  }
 }
 
 interface GamePublisher {
@@ -38,7 +49,7 @@ export class GameCreationHandlers {
   ) {}
 
   public async start(input: ActorInput): Promise<void> {
-    await this.drafts.save({
+    await this.drafts.replaceForNewFlow({
       version: 1,
       draftId: randomUUID().replaceAll('-', ''),
       ...input,
@@ -54,7 +65,7 @@ export class GameCreationHandlers {
     },
   ): Promise<void> {
     const draft = await this.requiredMutableDraft(input);
-    await this.drafts.save({
+    await this.saveMutation({
       ...draft,
       step: 'DATE',
       templateId: input.templateId,
@@ -67,7 +78,7 @@ export class GameCreationHandlers {
     input: ActorInput & { settings: GameTemplateSnapshot },
   ): Promise<void> {
     const draft = await this.requiredMutableDraft(input);
-    await this.drafts.save({
+    await this.saveMutation({
       ...draft,
       step: 'DATE',
       templateId: undefined,
@@ -80,7 +91,7 @@ export class GameCreationHandlers {
     input: ActorInput & { startsAt: Date },
   ): Promise<void> {
     const draft = await this.requiredMutableDraft(input);
-    await this.drafts.save({
+    await this.saveMutation({
       ...draft,
       step: 'CUSTOMIZE',
       startsAtIso: input.startsAt.toISOString(),
@@ -95,7 +106,7 @@ export class GameCreationHandlers {
     if (draft.snapshot === undefined) {
       throw new Error('Game creation draft is incomplete');
     }
-    await this.drafts.save({
+    await this.saveMutation({
       ...draft,
       step: 'CUSTOMIZE',
       snapshot: { ...draft.snapshot, ...definedOverrides(input.overrides) },
@@ -110,7 +121,7 @@ export class GameCreationHandlers {
       step: 'PREVIEW',
       previewed: true,
     };
-    await this.drafts.save(previewed);
+    await this.saveMutation(previewed);
     return renderGamePreview({
       source: previewed.templateId ?? 'scratch',
       startsAtIso: previewed.startsAtIso!,
@@ -166,6 +177,12 @@ export class GameCreationHandlers {
       throw new Error('Game creation draft is incomplete');
     }
     return draft;
+  }
+
+  private async saveMutation(draft: GameCreationDraft): Promise<void> {
+    if ((await this.drafts.compareAndSet(draft)) === 'STALE') {
+      throw new GameCreationDraftStaleError();
+    }
   }
 }
 

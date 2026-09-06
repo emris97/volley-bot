@@ -5,7 +5,7 @@ import {
   createGameFromTemplate,
   type GameTemplateSnapshot,
 } from '@volley/domain';
-import { Pool } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 import {
   GenericContainer,
   type StartedTestContainer,
@@ -127,7 +127,7 @@ describe('GameRepository', () => {
     const games = new GameRepository(database);
     const draftId = '018f6ba062d27bd18f1312e0c8424611';
     const templateId = asGameTemplateId('30000000-0000-4000-8000-000000000001');
-    await drafts.save({
+    const draft = {
       version: 1,
       draftId,
       groupId,
@@ -137,7 +137,8 @@ describe('GameRepository', () => {
       snapshot,
       startsAtIso: '2026-09-12T16:00:00.000Z',
       previewed: true,
-    });
+    } as const;
+    await seedDraft(drafts, draft);
     const input = {
       groupId,
       actorUserId,
@@ -191,13 +192,100 @@ describe('GameRepository', () => {
     });
   });
 
+  it('refuses a stale mutation waiting behind publication and keeps retries idempotent', async () => {
+    const groupId = await insertGroup(pool, '-1005', 'Mutation race');
+    const actorUserId = await insertUser(pool, '1005');
+    const database = createDatabase(pool);
+    const drafts = new GameCreationDraftRepository(database);
+    const games = new GameRepository(database);
+    const draftId = '018f6ba062d27bd18f1312e0c8424611';
+    const originalDraft = {
+      version: 1 as const,
+      draftId,
+      groupId,
+      actorUserId,
+      step: 'PREVIEW' as const,
+      snapshot,
+      startsAtIso: '2026-09-12T16:00:00.000Z',
+      previewed: true,
+    };
+    await seedDraft(drafts, originalDraft);
+    const input = {
+      groupId,
+      actorUserId,
+      draftId,
+      now: new Date('2026-09-05T15:00:00.000Z'),
+    };
+    const build = () => ({
+      ...createGameFromTemplate(
+        snapshot,
+        new Date('2026-09-12T16:00:00.000Z'),
+        'Europe/Astrakhan',
+      ),
+      groupId,
+      sourceTemplateId: null,
+      state: 'SCHEDULED' as const,
+    });
+    const blocker = await pool.connect();
+    let lockHeld = false;
+    let publication: ReturnType<typeof games.publishDraft> | undefined;
+
+    await installGameInsertBlocker(pool);
+    try {
+      await blocker.query('SELECT pg_advisory_lock($1)', [610_006]);
+      lockHeld = true;
+      publication = games.publishDraft(input, build);
+      await waitForBlockedQuery(pool, 'insert into "games"');
+
+      const staleMutation = drafts.compareAndSet({
+        ...originalDraft,
+        step: 'CUSTOMIZE',
+        snapshot: { ...snapshot, capacity: 99 },
+        previewed: false,
+      });
+      await waitForBlockedQuery(pool, 'update "game_creation_drafts"');
+
+      await blocker.query('SELECT pg_advisory_unlock($1)', [610_006]);
+      lockHeld = false;
+      const [published, mutationResult] = await Promise.all([
+        publication,
+        staleMutation,
+      ]);
+      const repeated = await games.publishDraft(input, build);
+
+      expect(mutationResult).toBe('STALE');
+      expect(repeated).toMatchObject({
+        game: { id: published.game.id },
+        created: false,
+      });
+      await expect(drafts.load(groupId, actorUserId)).resolves.toMatchObject({
+        step: 'PUBLISHED',
+        snapshot: { capacity: 12 },
+        publishedGameId: published.game.id,
+      });
+      await expect(
+        pool.query<{ count: string }>(
+          'SELECT count(*) FROM games WHERE group_id = $1',
+          [groupId],
+        ),
+      ).resolves.toMatchObject({ rows: [{ count: '1' }] });
+    } finally {
+      if (lockHeld) {
+        await blocker.query('SELECT pg_advisory_unlock($1)', [610_006]);
+      }
+      await publication?.catch(() => undefined);
+      blocker.release();
+      await removeGameInsertBlocker(pool);
+    }
+  });
+
   it('rejects a stale draft id without committing publication state', async () => {
     const groupId = await insertGroup(pool, '-1004', 'Stale');
     const actorUserId = await insertUser(pool, '1004');
     const database = createDatabase(pool);
     const drafts = new GameCreationDraftRepository(database);
     const games = new GameRepository(database);
-    await drafts.save({
+    const draft = {
       version: 1,
       draftId: '018f6ba062d27bd18f1312e0c8424611',
       groupId,
@@ -206,7 +294,8 @@ describe('GameRepository', () => {
       snapshot,
       startsAtIso: '2026-09-12T16:00:00.000Z',
       previewed: true,
-    });
+    } as const;
+    await seedDraft(drafts, draft);
 
     await expect(
       games.publishDraft(
@@ -252,4 +341,65 @@ const insertUser = async (pool: Pool, telegramUserId: string) => {
     [telegramUserId],
   );
   return asUserId(result.rows[0]!.id);
+};
+
+const seedDraft = async (
+  repository: GameCreationDraftRepository,
+  draft: Parameters<GameCreationDraftRepository['compareAndSet']>[0],
+): Promise<void> => {
+  await repository.replaceForNewFlow({
+    version: 1,
+    draftId: draft.draftId,
+    groupId: draft.groupId,
+    actorUserId: draft.actorUserId,
+    step: 'TEMPLATE',
+    previewed: false,
+  });
+  const result = await repository.compareAndSet(draft);
+  if (result !== 'SAVED') throw new Error('Failed to seed game draft');
+};
+
+const installGameInsertBlocker = async (pool: Pool): Promise<void> => {
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION test_block_game_insert()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(610006);
+      RETURN NEW;
+    END;
+    $$;
+    CREATE TRIGGER test_block_game_insert
+    BEFORE INSERT ON games
+    FOR EACH ROW EXECUTE FUNCTION test_block_game_insert();
+  `);
+};
+
+const removeGameInsertBlocker = async (pool: Pool): Promise<void> => {
+  await pool.query(`
+    DROP TRIGGER IF EXISTS test_block_game_insert ON games;
+    DROP FUNCTION IF EXISTS test_block_game_insert();
+  `);
+};
+
+const waitForBlockedQuery = async (
+  client: Pool | PoolClient,
+  queryFragment: string,
+): Promise<void> => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await client.query<{ blocked: boolean }>(
+      `SELECT EXISTS (
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE pid <> pg_backend_pid()
+          AND wait_event_type = 'Lock'
+          AND query ILIKE $1
+      ) AS blocked`,
+      [`%${queryFragment}%`],
+    );
+    if (result.rows[0]?.blocked === true) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for blocked query: ${queryFragment}`);
 };
