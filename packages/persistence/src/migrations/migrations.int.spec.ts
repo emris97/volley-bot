@@ -58,6 +58,7 @@ describe('foundation migration', () => {
       'guest_registration_drafts',
       'notification_deliveries',
       'organizer_preferences',
+      'organizer_text_flows',
       'outbox_events',
       'payment_drafts',
       'payment_input_sessions',

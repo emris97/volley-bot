@@ -51,7 +51,7 @@ describe('LiveOrganizerGameActorResolver', () => {
     });
   });
 
-  it('refreshes a revoked administrator as left and denies the mutation', async () => {
+  it('refreshes a revoked administrator as an active member and denies the mutation', async () => {
     const telegram = {
       getChatMember: vi.fn().mockResolvedValue({ status: 'member' as const }),
     };
@@ -68,9 +68,35 @@ describe('LiveOrganizerGameActorResolver', () => {
       groupId,
       telegramUserId,
       role: 'MEMBER',
-      status: 'LEFT',
+      status: 'ACTIVE',
     });
   });
+
+  it.each(['left', 'kicked'] as const)(
+    'persists Telegram %s as LEFT while denying organizer access',
+    async (status) => {
+      const directory = {
+        resolveGameGroup: vi
+          .fn()
+          .mockResolvedValue({ groupId, telegramChatId }),
+        refreshMembership: vi.fn().mockResolvedValue(userId),
+      };
+      const resolver = new LiveOrganizerGameActorResolver(
+        { getChatMember: vi.fn().mockResolvedValue({ status }) },
+        directory,
+      );
+
+      await expect(
+        resolver.resolve(gameId, telegramUserId),
+      ).rejects.toBeInstanceOf(AuthorizationDeniedError);
+      expect(directory.refreshMembership).toHaveBeenCalledWith({
+        groupId,
+        telegramUserId,
+        role: 'MEMBER',
+        status: 'LEFT',
+      });
+    },
+  );
 
   it('freshly authorizes each attendance and payment mutation entry', async () => {
     const telegram = {

@@ -9,6 +9,7 @@ import {
   type GameCreationDraftMutationResult,
   type OrganizerContext,
   type OrganizerGroupCandidate,
+  type OrganizerTextFlowCoordinator,
   type PublishGameCommand,
 } from '@volley/application';
 import {
@@ -22,7 +23,7 @@ import {
   type TelegramId,
   type UserId,
 } from '@volley/domain';
-import { GrammyError, type Bot, type Context } from 'grammy';
+import type { Bot, Context } from 'grammy';
 import { toTelegramId } from '../group-onboarding.handlers.js';
 import { renderGamePreview } from '../messages/game-preview.renderer.js';
 import {
@@ -30,6 +31,7 @@ import {
   localDateTimeToInstant,
 } from '../organizer/local-date-time.js';
 import type { OrganizerView } from '../organizer/main-menu.presenter.js';
+import { safelyEditTelegramMessage } from '../organizer/safe-message-edit.js';
 import type { SettingsEditorField } from '../organizer/settings-editor.model.js';
 import {
   parseInteger,
@@ -126,6 +128,7 @@ export interface GameCreationHandlerOptions {
   templates: GameCreationTemplates;
   publishGame: GamePublisher;
   clock?: () => Date;
+  textFlows?: OrganizerTextFlowCoordinator;
 }
 
 type ActorInput = {
@@ -140,6 +143,7 @@ export class GameCreationHandlers {
   private readonly templates?: GameCreationTemplates;
   private readonly publishGame: GamePublisher;
   private readonly clock: () => Date;
+  private readonly textFlows?: OrganizerTextFlowCoordinator;
 
   public constructor(options: GameCreationHandlerOptions);
   public constructor(
@@ -158,6 +162,7 @@ export class GameCreationHandlers {
       this.templates = optionsOrDrafts.templates;
       this.publishGame = optionsOrDrafts.publishGame;
       this.clock = optionsOrDrafts.clock ?? (() => new Date());
+      this.textFlows = optionsOrDrafts.textFlows;
       return;
     }
     this.drafts = optionsOrDrafts;
@@ -177,7 +182,39 @@ export class GameCreationHandlers {
       input,
       groups[0]!.groupId,
     );
-    return this.openFor(actor);
+    const view = await this.openFor(actor);
+    await this.claimCurrent(actor);
+    return view;
+  }
+
+  public async startFromTemplate(
+    telegramUserId: TelegramId,
+    templateId: GameTemplateId,
+  ): Promise<OrganizerView> {
+    const actor = await this.requiredOrganizer().require(telegramUserId);
+    const template = await this.requiredTemplates().findById(
+      actor.groupId,
+      templateId,
+    );
+    if (template === null || template.archivedAt !== null) {
+      const view = await this.openFor(actor);
+      return { ...view, text: `Шаблон больше недоступен.\n\n${view.text}` };
+    }
+    const current = await this.drafts.load(actor.groupId, actor.userId);
+    await this.startDirect(
+      actorInput(actor),
+      current === null ? null : expectedView(current),
+    );
+    await this.selectTemplateDirect({
+      ...actorInput(actor),
+      templateId: template.id,
+      snapshot: snapshotOf(template),
+    });
+    await this.claimCurrent(actor);
+    return this.renderCurrent(
+      actor,
+      await this.requiredDraft(actorInput(actor)),
+    );
   }
 
   public async continue(
@@ -193,6 +230,7 @@ export class GameCreationHandlers {
     ) {
       return this.renderCurrent(actor, draft, staleControlText);
     }
+    await this.claim(actor, draft);
     return this.renderCurrent(actor, draft);
   }
 
@@ -216,6 +254,7 @@ export class GameCreationHandlers {
         actorInput(actor),
         draft === null ? null : expectedView(draft),
       );
+      await this.claimCurrent(actor);
       return this.renderCurrent(
         actor,
         await this.requiredDraft(actorInput(actor)),
@@ -275,10 +314,9 @@ export class GameCreationHandlers {
         templateId: template.id,
         snapshot: snapshotOf(template),
       });
-      return this.renderCurrent(
-        actor,
-        await this.requiredDraft(actorInput(actor)),
-      );
+      const updated = await this.requiredDraft(actorInput(actor));
+      await this.claim(actor, updated);
+      return this.renderCurrent(actor, updated);
     } catch (error) {
       return this.renderMutationError(actor, error);
     }
@@ -377,6 +415,7 @@ export class GameCreationHandlers {
         previewed: false,
       });
       await this.saveMutation(updated);
+      await this.claim(actor, updated);
       return renderGameFieldEditor(updated, field);
     } catch (error) {
       return this.renderMutationError(actor, error);
@@ -473,6 +512,7 @@ export class GameCreationHandlers {
         step: control!.step,
         viewRevision: control!.viewRevision,
       });
+      await this.release(actor);
       const published = await this.requiredDraft(actorInput(actor));
       return renderGamePublished(published);
     } catch (error) {
@@ -525,6 +565,7 @@ export class GameCreationHandlers {
     }
     const draft = await this.drafts.load(actor.groupId, actor.userId);
     if (draft === null || draft.cancelPending === true) return false;
+    if (!(await this.owns(telegramUserId, actor, draft))) return false;
     if (draft.step === 'DATE') return this.setDate(telegramUserId, text);
     if (draft.step !== 'CUSTOMIZE' || draft.editingField === undefined)
       return false;
@@ -735,6 +776,7 @@ export class GameCreationHandlers {
     } catch (error) {
       if (!(error instanceof GameCreationDraftStaleError)) throw error;
     }
+    await this.claimCurrent(actor);
     return this.renderCurrent(
       actor,
       await this.requiredDraft(actorInput(actor)),
@@ -866,6 +908,7 @@ export class GameCreationHandlers {
         ? renderGameCancelled()
         : this.renderCurrent(actor, current, staleControlText);
     }
+    await this.release(actor);
     return renderGameCancelled();
   }
 
@@ -934,6 +977,7 @@ export class GameCreationHandlers {
     try {
       const updated = nextGameDraftView(draft);
       await this.saveMutation(updated);
+      await this.release(actor);
       return renderGameDraftSaved(updated);
     } catch (error) {
       return this.renderMutationError(actor, error);
@@ -1050,6 +1094,45 @@ export class GameCreationHandlers {
     if ((await this.drafts.compareAndSet(draft)) === 'STALE') {
       throw new GameCreationDraftStaleError();
     }
+  }
+
+  private async claimCurrent(actor: OrganizerContext): Promise<void> {
+    await this.claim(actor, await this.requiredDraft(actorInput(actor)));
+  }
+
+  private async claim(
+    actor: OrganizerContext,
+    draft: GameCreationDraft,
+  ): Promise<void> {
+    await this.textFlows?.claim({
+      groupId: actor.groupId,
+      actorUserId: actor.userId,
+      kind: 'GAME_CREATION',
+      reference: draft.draftId,
+    });
+  }
+
+  private async release(actor: OrganizerContext): Promise<void> {
+    await this.textFlows?.release({
+      groupId: actor.groupId,
+      actorUserId: actor.userId,
+      kind: 'GAME_CREATION',
+    });
+  }
+
+  private async owns(
+    telegramUserId: TelegramId,
+    actor: OrganizerContext,
+    draft: GameCreationDraft,
+  ): Promise<boolean> {
+    if (this.textFlows === undefined) return true;
+    const flow = await this.textFlows.current(telegramUserId);
+    return (
+      flow?.kind === 'GAME_CREATION' &&
+      flow.groupId === actor.groupId &&
+      flow.actorUserId === actor.userId &&
+      flow.reference === draft.draftId
+    );
   }
 }
 
@@ -1423,18 +1506,9 @@ const editView = async (
   context: Context,
   view: OrganizerView,
 ): Promise<void> => {
-  try {
-    await context.editMessageText(view.text, viewOptions(view));
-  } catch (error) {
-    if (
-      error instanceof GrammyError &&
-      error.error_code === 400 &&
-      /^Bad Request: message is not modified(?::|$)/i.test(error.description)
-    ) {
-      return;
-    }
-    throw error;
-  }
+  await safelyEditTelegramMessage(() =>
+    context.editMessageText(view.text, viewOptions(view)),
+  );
 };
 
 const viewOptions = (view: OrganizerView) => ({

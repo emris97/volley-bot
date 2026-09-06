@@ -8,6 +8,7 @@ export {
   OrganizerDirectoryRepository,
   type StoredOrganizerGroup,
 } from './repositories/organizer-directory.repository.js';
+export { OrganizerTextFlowRepository } from './repositories/organizer-text-flow.repository.js';
 export { GameRepository } from './repositories/game.repository.js';
 export { AttendanceRepository } from './repositories/attendance.repository.js';
 export {

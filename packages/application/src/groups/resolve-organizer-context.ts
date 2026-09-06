@@ -67,16 +67,33 @@ export class OrganizerGroupSelectionRequiredError extends Error {
   }
 }
 
-const administrativeRole = (
+export const telegramMembership = (
   status: TelegramMemberStatus,
-): 'OWNER' | 'ADMIN' | null =>
-  status === 'creator' ? 'OWNER' : status === 'administrator' ? 'ADMIN' : null;
+): {
+  role: 'OWNER' | 'ADMIN' | 'MEMBER';
+  status: 'ACTIVE' | 'LEFT';
+  administrative: boolean;
+} => {
+  if (status === 'creator') {
+    return { role: 'OWNER', status: 'ACTIVE', administrative: true };
+  }
+  if (status === 'administrator') {
+    return { role: 'ADMIN', status: 'ACTIVE', administrative: true };
+  }
+  return {
+    role: 'MEMBER',
+    status: status === 'left' || status === 'kicked' ? 'LEFT' : 'ACTIVE',
+    administrative: false,
+  };
+};
 
 const isAvailable = (
   group: StoredOrganizerGroup,
-  role: 'OWNER' | 'ADMIN' | null,
+  role: GroupRole | null,
 ): role is 'OWNER' | 'ADMIN' =>
-  role !== null && group.enabled && group.onboardingState === 'CONFIGURED';
+  (role === 'OWNER' || role === 'ADMIN') &&
+  group.enabled &&
+  group.onboardingState === 'CONFIGURED';
 
 export class ResolveOrganizerContext {
   public constructor(
@@ -123,13 +140,14 @@ export class ResolveOrganizerContext {
       group.telegramChatId,
       telegramUserId,
     );
-    const role = administrativeRole(member.status);
+    const membership = telegramMembership(member.status);
     await this.directory.refreshMembership({
       groupId,
       telegramUserId,
-      role: role ?? 'MEMBER',
-      status: role === null ? 'LEFT' : 'ACTIVE',
+      role: membership.role,
+      status: membership.status,
     });
+    const role = membership.administrative ? membership.role : null;
     if (!isAvailable(group, role)) {
       throw new OrganizerGroupSelectionRequiredError();
     }
@@ -154,13 +172,14 @@ export class ResolveOrganizerContext {
           group.telegramChatId,
           telegramUserId,
         );
-        const role = administrativeRole(member.status);
+        const membership = telegramMembership(member.status);
         await this.directory.refreshMembership({
           groupId: group.groupId,
           telegramUserId,
-          role: role ?? 'MEMBER',
-          status: role === null ? 'LEFT' : 'ACTIVE',
+          role: membership.role,
+          status: membership.status,
         });
+        const role = membership.administrative ? membership.role : null;
         if (!isAvailable(group, role)) return null;
 
         return {

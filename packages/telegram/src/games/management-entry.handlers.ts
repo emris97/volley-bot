@@ -11,6 +11,7 @@ import {
   type GamePage,
   type ListGamesCommand,
   type OrganizerAuthorization,
+  type OrganizerTextFlowCoordinator,
   type SaveGameEditSessionChangesInput,
   type StartGameEditSessionInput,
   type TelegramGateway,
@@ -33,6 +34,7 @@ import {
 import { CallbackCodec } from '../callbacks/callback-codec.js';
 import { toTelegramId } from '../group-onboarding.handlers.js';
 import type { OrganizerView } from '../organizer/main-menu.presenter.js';
+import { safelyEditTelegramMessage } from '../organizer/safe-message-edit.js';
 import {
   LocalDateTimeResolutionError,
   localDateTimeToInstant,
@@ -142,6 +144,7 @@ export class ManagementEntryHandlers {
     private readonly authorization: OrganizerAuthorization,
     private readonly telegram?: Pick<TelegramGateway, 'getChatMember'>,
     private readonly actions?: ManagementActions,
+    private readonly textFlows?: OrganizerTextFlowCoordinator,
   ) {}
 
   public async open(input: {
@@ -253,6 +256,12 @@ export class ManagementEntryHandlers {
         gameId: context.gameId,
         expectedGameRevision: callback.revision,
         selectedField: editAction.field,
+      });
+      await this.textFlows?.claim({
+        groupId: context.groupId,
+        actorUserId: context.userId,
+        kind: 'GAME_EDIT',
+        reference: context.gameId,
       });
       return {
         kind: 'VIEW',
@@ -393,6 +402,9 @@ export class ManagementEntryHandlers {
     text: string,
   ): Promise<OrganizerView | false> {
     if (text.startsWith('/')) return false;
+    const flow = await this.textFlows?.current(telegramUserId);
+    if (this.textFlows !== undefined && flow?.kind !== 'GAME_EDIT')
+      return false;
     const scope = await this.directory.resolveLatestEditScope(telegramUserId);
     if (scope === null) return false;
     const session = await this.directory.loadEditSession(
@@ -400,6 +412,15 @@ export class ManagementEntryHandlers {
       scope.actorUserId,
     );
     if (session === null) return false;
+    if (
+      flow !== undefined &&
+      (flow === null ||
+        flow.groupId !== session.groupId ||
+        flow.actorUserId !== session.actorUserId ||
+        flow.reference !== session.gameId)
+    ) {
+      return false;
+    }
     const context = await this.resolveAuthorized(
       session.gameId,
       telegramUserId,
@@ -493,12 +514,20 @@ export class ManagementEntryHandlers {
   }
 
   private async clearSession(session: GameEditSession): Promise<boolean> {
-    return this.directory.clearEditSession({
+    const cleared = await this.directory.clearEditSession({
       groupId: session.groupId,
       actorUserId: session.actorUserId,
       gameId: session.gameId,
       expectedInteractionRevision: session.interactionRevision,
     });
+    if (cleared) {
+      await this.textFlows?.release({
+        groupId: session.groupId,
+        actorUserId: session.actorUserId,
+        kind: 'GAME_EDIT',
+      });
+    }
+    return cleared;
   }
 
   private async resolveAuthorized(
@@ -603,7 +632,9 @@ export const registerManagementEntryHandlers = (
         return;
       }
       if (privateChat) {
-        await context.editMessageText(menu.text, viewOptions(menu));
+        await safelyEditTelegramMessage(() =>
+          context.editMessageText(menu.text, viewOptions(menu)),
+        );
       } else {
         try {
           await context.api.sendMessage(
@@ -647,7 +678,9 @@ export const registerManagementEntryHandlers = (
           return;
         }
         if (privateChat) {
-          await context.editMessageText(menu.text, viewOptions(menu));
+          await safelyEditTelegramMessage(() =>
+            context.editMessageText(menu.text, viewOptions(menu)),
+          );
         } else {
           try {
             await context.api.sendMessage(
@@ -680,18 +713,16 @@ export const registerManagementEntryHandlers = (
         privateChat: true,
       });
       if (result.kind === 'VIEW') {
-        await context.editMessageText(
-          result.view.text,
-          viewOptions(result.view),
+        await safelyEditTelegramMessage(() =>
+          context.editMessageText(result.view.text, viewOptions(result.view)),
         );
       } else if (result.kind === 'ATTENDANCE') {
         const preview = await attendance.start({
           telegramUserId: toTelegramId(context.callbackQuery.from.id),
           gameId: result.gameId,
         });
-        await context.editMessageText(
-          preview.text,
-          attendanceReplyMarkup(preview),
+        await safelyEditTelegramMessage(() =>
+          context.editMessageText(preview.text, attendanceReplyMarkup(preview)),
         );
       } else {
         const view = await payments.start({
@@ -699,7 +730,9 @@ export const registerManagementEntryHandlers = (
           gameId: result.gameId,
           privateChat: true,
         });
-        await context.editMessageText(view.text);
+        await safelyEditTelegramMessage(() =>
+          context.editMessageText(view.text),
+        );
       }
       await context.answerCallbackQuery({ text: 'Готово.' });
     } catch (error) {
@@ -730,9 +763,8 @@ export const registerManagementEntryHandlers = (
           telegramUserId,
           gameId: action.gameId,
         });
-        await context.editMessageText(
-          preview.text,
-          attendanceReplyMarkup(preview),
+        await safelyEditTelegramMessage(() =>
+          context.editMessageText(preview.text, attendanceReplyMarkup(preview)),
         );
       } else {
         const view = await payments.start({
@@ -740,7 +772,9 @@ export const registerManagementEntryHandlers = (
           gameId: action.gameId,
           privateChat: true,
         });
-        await context.editMessageText(view.text);
+        await safelyEditTelegramMessage(() =>
+          context.editMessageText(view.text),
+        );
       }
       await context.answerCallbackQuery({ text: 'Открыто.' });
     } catch (error) {
@@ -896,7 +930,12 @@ const deletedDraftView = (): OrganizerView => ({
   keyboard: [[{ text: 'К играм', callbackData: 'om:v1:games:upcoming' }]],
 });
 
-const editableStates = new Set<GameState>(['DRAFT', 'SCHEDULED', 'OPEN']);
+const editableStates = new Set<GameState>([
+  'DRAFT',
+  'SCHEDULED',
+  'OPEN',
+  'CLOSED',
+]);
 
 const supportedGameEditFields = new Set<GameEditField>([
   'name',

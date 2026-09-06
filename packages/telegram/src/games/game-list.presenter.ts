@@ -454,6 +454,7 @@ const actionsByState: Record<
     { text: 'Отменить игру', action: 'cancel' },
   ],
   CLOSED: [
+    { text: 'Изменить', action: 'edit' },
     { text: 'Открыть регистрацию снова', action: 'reopen' },
     { text: 'Завершить игру', action: 'complete' },
     { text: 'Отменить игру', action: 'cancel' },

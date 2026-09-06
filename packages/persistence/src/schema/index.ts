@@ -17,6 +17,7 @@ export {
 } from './payments.js';
 export { notificationDeliveries } from './notification-deliveries.js';
 export { organizerPreferences } from './organizer-preferences.js';
+export { organizerTextFlows } from './organizer-text-flows.js';
 export { registrations } from './registrations.js';
 export { scheduledJobs } from './scheduled-jobs.js';
 export { templateWizardDrafts } from './template-wizard-drafts.js';

@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { OrganizerGroupSelectionRequiredError } from '@volley/application';
 import { asGroupId, asTelegramId } from '@volley/domain';
-import { OrganizerMenuHandlers } from './main-menu.handlers.js';
+import { Bot } from 'grammy';
+import type { UserFromGetMe } from 'grammy/types';
+import {
+  OrganizerMenuHandlers,
+  registerOrganizerMenuHandlers,
+} from './main-menu.handlers.js';
 
 const telegramUserId = asTelegramId('42');
 const groupId = asGroupId('018f6ba0-62d2-7bd1-8f13-12e0c8424611');
@@ -138,7 +143,68 @@ describe('OrganizerMenuHandlers', () => {
     expect(context.select).toHaveBeenCalledOnce();
     expect(context.select).toHaveBeenCalledWith(telegramUserId, groupId);
   });
+
+  it('acknowledges a replay when Telegram says the organizer view is unchanged', async () => {
+    const bot = new Bot('123456:abcdefghijklmnopqrstuvwxyz', { botInfo });
+    const methods: string[] = [];
+    bot.api.config.use(async (_previous, method) => {
+      methods.push(method);
+      if (method === 'editMessageText') {
+        return {
+          ok: false,
+          error_code: 400,
+          description: 'Bad Request: message is not modified',
+        } as never;
+      }
+      return { ok: true, result: true } as never;
+    });
+    registerOrganizerMenuHandlers(
+      bot,
+      new OrganizerMenuHandlers(
+        {
+          list: vi.fn().mockResolvedValue([organizerGroup()]),
+          select: vi.fn(),
+        },
+        sections(),
+      ),
+    );
+
+    await expect(
+      bot.handleUpdate({
+        update_id: 1,
+        callback_query: {
+          id: 'menu-replay',
+          chat_instance: 'menu',
+          from: { id: 42, is_bot: false, first_name: 'Ada' },
+          data: 'om:v1:home',
+          message: {
+            message_id: 1,
+            date: 1,
+            chat: { id: 42, type: 'private', first_name: 'Ada' },
+            text: 'menu',
+          },
+        },
+      }),
+    ).resolves.toBeUndefined();
+    expect(methods).toContain('answerCallbackQuery');
+  });
 });
+
+const botInfo: UserFromGetMe = {
+  id: 999,
+  is_bot: true,
+  first_name: 'Volley',
+  username: 'volley_test_bot',
+  can_join_groups: true,
+  can_read_all_group_messages: false,
+  supports_inline_queries: false,
+  can_connect_to_business: false,
+  has_main_web_app: false,
+  has_topics_enabled: false,
+  allows_users_to_create_topics: false,
+  can_manage_bots: false,
+  supports_join_request_queries: false,
+};
 
 const sections = () => ({
   openGames: vi.fn().mockResolvedValue({

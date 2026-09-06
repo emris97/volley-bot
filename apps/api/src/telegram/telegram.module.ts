@@ -36,6 +36,7 @@ import {
   GuestRegistrationDraftRepository,
   ManagementRepository,
   OrganizerDirectoryRepository,
+  OrganizerTextFlowRepository,
   PaymentRepository,
   RegistrationRepository,
   TemplateRepository,
@@ -155,6 +156,7 @@ export const registerProductionTelegramHandlers = (
         const guestDrafts = new GuestRegistrationDraftRepository(database);
         const payments = new PaymentRepository(database);
         const management = new ManagementRepository(database);
+        const textFlows = new OrganizerTextFlowRepository(database);
 
         const authorization = new AuthorizationService({
           findMembership: (groupId, userId) =>
@@ -216,11 +218,13 @@ export const registerProductionTelegramHandlers = (
           new SendPaymentReminders(authorization, payments),
           payments,
           authorization,
+          textFlows,
         );
         const attendanceHandlers = new AttendanceHandlers(
           liveOrganizerGameActor,
           new ConfirmAttendance(authorization, attendance),
           attendance,
+          textFlows,
         );
 
         const listTemplates = new ListTemplates(templateRepository);
@@ -254,12 +258,6 @@ export const registerProductionTelegramHandlers = (
           setArchived: (input: Parameters<SetTemplateArchived['execute']>[0]) =>
             setTemplateArchived.execute(input),
         };
-        const templateHandlers = new TemplateWizardHandlers(
-          organizerContext,
-          templateDrafts,
-          templateServices,
-        );
-
         const publishGame = new PublishGame(authorization, groups, games);
         const gameCreation = new GameCreationHandlers({
           organizerContext,
@@ -270,7 +268,16 @@ export const registerProductionTelegramHandlers = (
               templateRepository.findById(groupId, templateId),
           },
           publishGame,
+          textFlows,
         });
+        const templateHandlers = new TemplateWizardHandlers(
+          organizerContext,
+          templateDrafts,
+          templateServices,
+          (telegramUserId, templateId) =>
+            gameCreation.startFromTemplate(telegramUserId, templateId),
+          textFlows,
+        );
         const gameManagement = new GameManagementHandlers(
           new ChangeGameState(authorization, games),
           new UpdateGame(authorization, registrations),
@@ -297,6 +304,7 @@ export const registerProductionTelegramHandlers = (
           authorization,
           telegram,
           gameManagement,
+          textFlows,
         );
         const registrationHandlers = new RegistrationHandlers(
           new CallbackCodec(),

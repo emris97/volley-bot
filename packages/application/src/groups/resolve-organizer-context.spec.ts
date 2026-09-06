@@ -145,9 +145,47 @@ describe('ResolveOrganizerContext', () => {
       groupId: firstGroupId,
       telegramUserId,
       role: 'MEMBER',
-      status: 'LEFT',
+      status: 'ACTIVE',
     });
   });
+
+  it.each(['member', 'restricted'] as const)(
+    'keeps a Telegram %s as an active non-admin member',
+    async (status) => {
+      const directory = directoryWith([storedGroup()]);
+      const service = new ResolveOrganizerContext(
+        { getChatMember: vi.fn().mockResolvedValue({ status }) },
+        directory,
+      );
+
+      await expect(service.list(telegramUserId)).resolves.toEqual([]);
+      expect(directory.refreshMembership).toHaveBeenCalledWith({
+        groupId: firstGroupId,
+        telegramUserId,
+        role: 'MEMBER',
+        status: 'ACTIVE',
+      });
+    },
+  );
+
+  it.each(['left', 'kicked'] as const)(
+    'records Telegram %s as a departed member',
+    async (status) => {
+      const directory = directoryWith([storedGroup()]);
+      const service = new ResolveOrganizerContext(
+        { getChatMember: vi.fn().mockResolvedValue({ status }) },
+        directory,
+      );
+
+      await expect(service.list(telegramUserId)).resolves.toEqual([]);
+      expect(directory.refreshMembership).toHaveBeenCalledWith({
+        groupId: firstGroupId,
+        telegramUserId,
+        role: 'MEMBER',
+        status: 'LEFT',
+      });
+    },
+  );
 
   it('maps a Telegram creator to OWNER when selecting a group', async () => {
     const directory = directoryWith([storedGroup()]);

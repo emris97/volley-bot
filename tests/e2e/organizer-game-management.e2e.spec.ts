@@ -53,7 +53,12 @@ describe('organizer game management through Telegram', () => {
     expect(system.callbackAnswerTexts()).toEqual(
       expect.arrayContaining(['Посещаемость обновлена.', 'Расчёт обновлён.']),
     );
-    expect(system.visibleMessages().join('\n')).not.toMatch(UUID_PATTERN);
+    const visible = system.visibleMessages().join('\n');
+    expect(visible).not.toMatch(UUID_PATTERN);
+    expect(visible).not.toMatch(/attendance:|\b(?:PAID|UNPAID|WAIVED)\b/u);
+    expect(system.latestPrivateMessage(adminTelegramId).text).not.toMatch(
+      /\bRUB\b|\d+\.\d{2}/u,
+    );
     expect(
       system.generatedCallbacks().every((value) => value.length < 64),
     ).toBe(true);
@@ -101,13 +106,17 @@ describe('organizer game management through Telegram', () => {
 
   it('resumes persisted drafts after API recreation and excludes archived templates', async () => {
     const adminTelegramId = '880021';
-    await system.createConfiguredGroup(adminTelegramId);
+    const group = await system.createConfiguredGroup(adminTelegramId);
     await system.sendPrivateCommand(adminTelegramId, '/templates');
     await system.pressPrivateButton(adminTelegramId, 'Создать шаблон');
     await system.sendPrivateText(adminTelegramId, 'Возобновляемый шаблон');
 
     expect(await system.recreateTelegramApi()).toBe(true);
     await system.sendPrivateCommand(adminTelegramId, '/templates');
+    expect(system.latestPrivateMessage(adminTelegramId).buttons).toEqual(
+      expect.arrayContaining(['Продолжить', 'Начать заново']),
+    );
+    await system.pressPrivateButton(adminTelegramId, 'Продолжить');
     expect(system.latestPrivateMessage(adminTelegramId).text).toContain(
       '<b>Место</b>',
     );
@@ -116,13 +125,67 @@ describe('organizer game management through Telegram', () => {
       venue: 'Зал после рестарта',
       capacity: 6,
     });
-    await system.archiveTemplateThroughTelegram(
-      adminTelegramId,
-      'Возобновляемый шаблон',
+    await system.sendPrivateCommand(adminTelegramId, '/templates');
+    await system.pressPrivateButton(adminTelegramId, 'Возобновляемый шаблон');
+    const archive = system.latestPrivateButton(adminTelegramId, 'В архив');
+    expect(archive).toMatch(/\.0$/);
+    await system.pressCallback(adminTelegramId, archive);
+    expect(
+      await system.templateIsArchived(group.id, 'Возобновляемый шаблон'),
+    ).toBe(false);
+    expect(system.latestPrivateMessage(adminTelegramId).buttons).toContain(
+      'Да, архивировать',
     );
+    await system.pressPrivateButton(adminTelegramId, 'Да, архивировать');
+    expect(
+      await system.templateIsArchived(group.id, 'Возобновляемый шаблон'),
+    ).toBe(true);
     await system.sendPrivateCommand(adminTelegramId, '/newgame');
     expect(system.latestPrivateMessage(adminTelegramId).text).not.toContain(
       'Возобновляемый шаблон',
+    );
+  });
+
+  it('switches persisted text ownership both ways without deleting either draft', async () => {
+    const adminTelegramId = '880022';
+    await system.createConfiguredGroup(adminTelegramId);
+    await system.createTemplateThroughTelegram(adminTelegramId, {
+      name: 'Основа игры',
+      venue: 'Основной зал',
+      capacity: 8,
+    });
+
+    await system.sendPrivateCommand(adminTelegramId, '/templates');
+    await system.pressPrivateButton(adminTelegramId, 'Создать шаблон');
+    await system.sendPrivateText(adminTelegramId, 'Сохранённый черновик');
+    expect(system.latestPrivateMessage(adminTelegramId).text).toContain(
+      '<b>Место</b>',
+    );
+
+    await system.sendPrivateCommand(adminTelegramId, '/newgame');
+    await system.pressPrivateButton(adminTelegramId, 'Основа игры');
+    expect(system.latestPrivateMessage(adminTelegramId).text).toContain(
+      '<b>Дата игры</b>',
+    );
+
+    await system.sendPrivateCommand(adminTelegramId, '/templates');
+    await system.pressPrivateButton(adminTelegramId, 'Продолжить');
+    expect(await system.recreateTelegramApi()).toBe(true);
+    await system.sendPrivateText(adminTelegramId, 'Зал после переключения');
+    expect(system.latestPrivateMessage(adminTelegramId).text).toContain(
+      '<b>Адрес</b>',
+    );
+
+    await system.sendPrivateCommand(adminTelegramId, '/newgame');
+    await system.pressPrivateButton(adminTelegramId, 'Продолжить');
+    await system.sendPrivateText(adminTelegramId, '10.09.2026');
+    expect(system.latestPrivateMessage(adminTelegramId).text).toContain(
+      'Настройки игры',
+    );
+
+    await system.sendPrivateCommand(adminTelegramId, '/templates');
+    expect(system.latestPrivateMessage(adminTelegramId).buttons).toEqual(
+      expect.arrayContaining(['Продолжить', 'Начать заново']),
     );
   });
 

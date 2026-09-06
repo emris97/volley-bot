@@ -2,6 +2,7 @@ import type {
   ChangeChargeStatus,
   FinalizeSettlement,
   PaymentAuthorization,
+  OrganizerTextFlowCoordinator,
   PaymentTelegramRepository,
   PreviewSettlement,
   PreviewSettlementResult,
@@ -62,6 +63,7 @@ export class PaymentHandlers {
     >,
     private readonly state: PaymentTelegramRepository,
     private readonly authorization: PaymentAuthorization,
+    private readonly textFlows?: OrganizerTextFlowCoordinator,
   ) {}
 
   public async start(input: PrivatePaymentInput): Promise<PaymentView> {
@@ -73,8 +75,14 @@ export class PaymentHandlers {
       gameId: actor.gameId,
       actorUserId: actor.userId,
     });
+    await this.textFlows?.claim({
+      groupId: actor.groupId,
+      actorUserId: actor.userId,
+      kind: 'PAYMENT',
+      reference: actor.gameId,
+    });
     return {
-      text: 'Введите общую сумму в рублях, например 2800.00',
+      text: 'Введите общую сумму в рублях, например 2 800,00.',
       buttons: [],
     };
   }
@@ -85,6 +93,8 @@ export class PaymentHandlers {
     text: string;
   }): Promise<PaymentView | null> {
     requirePrivateChat(input.privateChat);
+    const owned = await this.textFlows?.current(input.telegramUserId);
+    if (this.textFlows !== undefined && owned?.kind !== 'PAYMENT') return null;
     const session = await this.state.findInputByTelegramUserId(
       input.telegramUserId,
     );
@@ -99,6 +109,15 @@ export class PaymentHandlers {
     ) {
       throw new Error('Payment input identity mismatch');
     }
+    if (
+      owned !== undefined &&
+      (owned === null ||
+        owned.groupId !== session.groupId ||
+        owned.actorUserId !== session.actorUserId ||
+        owned.reference !== session.gameId)
+    ) {
+      return null;
+    }
     const view = await this.preview({
       telegramUserId: input.telegramUserId,
       gameId: session.gameId,
@@ -109,6 +128,11 @@ export class PaymentHandlers {
       roundingMode: session.roundingMode,
     });
     await this.state.clearInput(session.groupId, session.actorUserId);
+    await this.textFlows?.release({
+      groupId: session.groupId,
+      actorUserId: session.actorUserId,
+      kind: 'PAYMENT',
+    });
     return view;
   }
 
@@ -276,8 +300,16 @@ const toSettlementCommand = (
 const formatMinor = (amountMinor: bigint): string => {
   const whole = amountMinor / 100n;
   const fraction = (amountMinor % 100n).toString().padStart(2, '0');
-  return `${whole}.${fraction}`;
+  const grouped = whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  return `${grouped},${fraction}`;
 };
+
+const paymentStatusText = (status: SettlementChargeRecord['status']): string =>
+  status === 'PAID'
+    ? 'оплачено'
+    : status === 'UNPAID'
+      ? 'не оплачено'
+      : 'оплата не требуется';
 
 const renderPreview = (
   preview: PreviewSettlementResult,
@@ -287,12 +319,11 @@ const renderPreview = (
   text: [
     `Предпросмотр: ${preview.participantCount} участников`,
     ...preview.charges.map(
-      (charge) =>
-        `${charge.displayName}: ${formatMinor(charge.amountMinor)} RUB`,
+      (charge) => `${charge.displayName}: ${formatMinor(charge.amountMinor)} ₽`,
     ),
-    `К оплате: ${formatMinor(preview.totalMinor)} RUB`,
-    `Будет собрано: ${formatMinor(preview.collectedMinor)} RUB`,
-    `Излишек: ${formatMinor(preview.surplusMinor)} RUB`,
+    `К оплате: ${formatMinor(preview.totalMinor)} ₽`,
+    `Будет собрано: ${formatMinor(preview.collectedMinor)} ₽`,
+    `Излишек: ${formatMinor(preview.surplusMinor)} ₽`,
   ].join('\n'),
   buttons: [
     {
@@ -310,7 +341,7 @@ const renderSettlement = (
     `Расчёт #${settlement.revision}`,
     ...settlement.charges.map(
       (charge) =>
-        `${charge.displayName}: ${formatMinor(charge.amountMinor)} RUB — ${charge.status}`,
+        `${charge.displayName}: ${formatMinor(charge.amountMinor)} ₽ — ${paymentStatusText(charge.status)}`,
     ),
   ].join('\n'),
   buttons: settlement.charges.flatMap((charge) => [

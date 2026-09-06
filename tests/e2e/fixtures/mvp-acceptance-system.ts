@@ -58,6 +58,7 @@ import {
   ManagementRepository,
   NotificationRepository,
   OrganizerDirectoryRepository,
+  OrganizerTextFlowRepository,
   OutboxRepository,
   PaymentRepository,
   PaymentReminderRepository,
@@ -610,6 +611,7 @@ export class MvpAcceptanceSystem {
       this.telegramGateway,
       management,
     );
+    const textFlows = new OrganizerTextFlowRepository(this.database);
     const paymentHandlers = new PaymentHandlers(
       liveOrganizerGameActor,
       new PreviewSettlement(this.authorization, this.payments),
@@ -618,13 +620,26 @@ export class MvpAcceptanceSystem {
       new SendPaymentReminders(this.authorization, this.payments),
       this.payments,
       this.authorization,
+      textFlows,
     );
     const attendanceHandlers = new AttendanceHandlers(
       liveOrganizerGameActor,
       new ConfirmAttendance(this.authorization, this.attendance),
       this.attendance,
+      textFlows,
     );
     const listTemplates = new ListTemplates(this.templates);
+    const gameCreation = new GameCreationHandlers({
+      organizerContext,
+      drafts: new GameCreationDraftRepository(this.database),
+      templates: {
+        list: (input) => listTemplates.execute(input),
+        findById: (groupId, templateId) =>
+          this.templates.findById(groupId, templateId),
+      },
+      publishGame: new PublishGame(this.authorization, this.groups, this.games),
+      textFlows,
+    });
     const templateWizard = new TemplateWizardHandlers(
       organizerContext,
       new TemplateWizardDraftRepository(this.database),
@@ -645,17 +660,10 @@ export class MvpAcceptanceSystem {
             input,
           ),
       },
+      (telegramUserId, templateId) =>
+        gameCreation.startFromTemplate(telegramUserId, templateId),
+      textFlows,
     );
-    const gameCreation = new GameCreationHandlers({
-      organizerContext,
-      drafts: new GameCreationDraftRepository(this.database),
-      templates: {
-        list: (input) => listTemplates.execute(input),
-        findById: (groupId, templateId) =>
-          this.templates.findById(groupId, templateId),
-      },
-      publishGame: new PublishGame(this.authorization, this.groups, this.games),
-    });
     const gameManagement = new GameManagementHandlers(
       new ChangeGameState(this.authorization, this.games),
       new UpdateGame(this.authorization, this.registrations),
@@ -689,6 +697,7 @@ export class MvpAcceptanceSystem {
         this.authorization,
         this.telegramGateway,
         gameManagement,
+        textFlows,
       ),
       onboarding: onboardingHandlers,
       guests: this.guestFlowHandlers,
@@ -1094,6 +1103,7 @@ export class MvpAcceptanceSystem {
     await this.sendPrivateCommand(telegramUserId, '/templates');
     await this.pressPrivateButton(telegramUserId, templateName);
     await this.pressPrivateButton(telegramUserId, 'В архив');
+    await this.pressPrivateButton(telegramUserId, 'Да, архивировать');
   }
 
   public async gameCount(groupId: GroupId): Promise<number> {
@@ -2044,7 +2054,7 @@ export class MvpAcceptanceSystem {
     );
     const preview = this.requiredBotCall(
       'editMessageText',
-      'attendance:preview:',
+      'Посещаемость — черновик',
     );
     await this.webhook.handle(
       WEBHOOK_SECRET,
@@ -2068,7 +2078,7 @@ export class MvpAcceptanceSystem {
     );
     const withManual = this.requiredBotCall(
       'sendMessage',
-      'attendance:preview:',
+      'Посещаемость — черновик',
     );
     await this.webhook.handle(
       WEBHOOK_SECRET,

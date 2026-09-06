@@ -2,6 +2,7 @@ import {
   AuthorizationDeniedError,
   GameRevisionConflictError,
   type GameEditSession,
+  type OrganizerTextFlowCoordinator,
 } from '@volley/application';
 import {
   asGameId,
@@ -350,6 +351,81 @@ describe('ManagementEntryHandlers', () => {
     expect(update).toHaveBeenCalledOnce();
   });
 
+  it('claims edit text ownership and cedes it after another flow is selected', async () => {
+    let current: Awaited<ReturnType<OrganizerTextFlowCoordinator['current']>> =
+      null;
+    const harness = handlersFor({
+      textFlows: {
+        claim: async (input) =>
+          (current = {
+            ...input,
+            reference: input.reference ?? null,
+            updatedAt: new Date(),
+          }),
+        current: async () => current,
+        release: async () => {
+          current = null;
+          return true;
+        },
+      },
+    });
+    await harness.handlers.handleAction({
+      data: gameActionCallback(gameEditFieldAction('venue'), gameId, 4),
+      telegramUserId,
+      privateChat: true,
+    });
+    expect(current).toMatchObject({ kind: 'GAME_EDIT', reference: gameId });
+
+    current = {
+      groupId,
+      actorUserId: userId,
+      kind: 'ATTENDANCE',
+      reference: 'snapshot',
+      updatedAt: new Date(),
+    };
+    await expect(
+      harness.handlers.handleText(telegramUserId, 'Чужой текст'),
+    ).resolves.toBe(false);
+    expect(harness.directory.saveEditSessionChanges).not.toHaveBeenCalled();
+  });
+
+  it('allows a CLOSED game to enter and confirm a policy-approved edit', async () => {
+    const update = vi.fn().mockResolvedValue({
+      game: managedGame({
+        state: 'CLOSED',
+        revision: 5,
+        venue: 'Закрытый зал',
+      }),
+      rosterCount: 2,
+      waitlistCount: 1,
+      materialFields: ['venue'],
+    });
+    const harness = handlersFor({
+      game: managedGame({ state: 'CLOSED', revision: 4 }),
+      actions: { update },
+    });
+
+    await expect(
+      harness.handlers.handleAction({
+        data: gameActionCallback(gameEditFieldAction('venue'), gameId, 4),
+        telegramUserId,
+        privateChat: true,
+      }),
+    ).resolves.toMatchObject({
+      view: { text: expect.stringContaining('Отправьте название площадки') },
+    });
+    await harness.handlers.handleText(telegramUserId, 'Закрытый зал');
+    await harness.handlers.handleAction({
+      data: gameActionCallback('edit-confirm-1', gameId, 4),
+      telegramUserId,
+      privateChat: true,
+    });
+
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ changes: { venue: 'Закрытый зал' } }),
+    );
+  });
+
   it('rejects stale field and interaction controls without updating the game', async () => {
     const update = vi.fn();
     const harness = handlersFor({ actions: { update } });
@@ -540,6 +616,22 @@ describe('management Telegram adapter', () => {
     );
   });
 
+  it('acknowledges a management retry when Telegram says the message is unchanged', async () => {
+    const harness = botHarness(handlersFor().handlers, {
+      errorCode: 400,
+      description: 'Bad Request: message is not modified',
+    });
+
+    await expect(
+      harness.handle(
+        callbackUpdate(gameActionCallback('view', gameId, 4), true),
+      ),
+    ).resolves.toBeUndefined();
+    expect(
+      harness.apiCalls.some(({ method }) => method === 'answerCallbackQuery'),
+    ).toBe(true);
+  });
+
   it('renders stale/tampered callback errors in Russian without webhook failure', async () => {
     const harness = botHarness(handlersFor().handlers);
 
@@ -653,6 +745,7 @@ const handlersFor = (
     telegramStatus?: 'creator' | 'administrator' | 'member' | 'left';
     actions?: Partial<ManagementActions>;
     summary?: ManagementSummary;
+    textFlows?: OrganizerTextFlowCoordinator;
   } = {},
 ) => {
   const game = options.game ?? managedGame();
@@ -768,6 +861,7 @@ const handlersFor = (
       },
       telegram,
       actions,
+      options.textFlows,
     ),
   };
 };
@@ -799,7 +893,10 @@ const managedGame = (overrides: Partial<Game> = {}): Game => ({
   ...overrides,
 });
 
-const botHarness = (handlers: ManagementEntryHandlers) => {
+const botHarness = (
+  handlers: ManagementEntryHandlers,
+  editFailure?: { errorCode: number; description: string },
+) => {
   const apiCalls: Array<{ method: string; payload: Record<string, unknown> }> =
     [];
   const bot = createTelegramBot('123456:abcdefghijklmnopqrstuvwxyz', {
@@ -819,6 +916,15 @@ const botHarness = (handlers: ManagementEntryHandlers) => {
   });
   bot.api.config.use(async (_previous, method, payload) => {
     apiCalls.push({ method, payload: payload as Record<string, unknown> });
+    if (method === 'editMessageText' && editFailure !== undefined) {
+      const failure = editFailure;
+      editFailure = undefined;
+      return {
+        ok: false,
+        error_code: failure.errorCode,
+        description: failure.description,
+      } as never;
+    }
     return { ok: true, result: true } as never;
   });
   registerManagementEntryHandlers(

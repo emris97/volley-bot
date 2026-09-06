@@ -74,6 +74,12 @@ export const renderTemplateDetails = (
       ? [
           [
             {
+              text: 'Создать игру',
+              callbackData: templateCallback('game', compactUuid(template.id)),
+            },
+          ],
+          [
+            {
               text: 'Изменить',
               callbackData: templateCallback('edit', compactUuid(template.id)),
             },
@@ -105,6 +111,55 @@ export const renderTemplateDetails = (
           ],
           [{ text: 'Назад', callbackData: templateCallback('archived') }],
         ],
+});
+
+export const renderTemplateDraftResume = (
+  draft: TemplateWizardDraft,
+): OrganizerView => {
+  const control = templateDraftControlId(draft);
+  return {
+    text: '<b>Незавершённый шаблон</b>\n\nПродолжить с сохранённого шага или начать заново?',
+    parseMode: 'HTML',
+    keyboard: [
+      [
+        {
+          text: 'Продолжить',
+          callbackData: templateCallback('continue', control),
+        },
+      ],
+      [
+        {
+          text: 'Начать заново',
+          callbackData: templateCallback('restart', control),
+        },
+      ],
+      [{ text: 'Назад', callbackData: 'om:v1:home' }],
+    ],
+  };
+};
+
+export const renderTemplateArchiveConfirmation = (
+  template: GameTemplate,
+): OrganizerView => ({
+  text: `<b>${escapeHtml(template.name)}</b>\n\nАрхивировать шаблон? Созданные ранее игры не изменятся.`,
+  parseMode: 'HTML',
+  keyboard: [
+    [
+      {
+        text: 'Да, архивировать',
+        callbackData: templateCallback(
+          'archive-confirm',
+          `${compactUuid(template.id)}.${template.revision.toString(36)}`,
+        ),
+      },
+    ],
+    [
+      {
+        text: 'Нет',
+        callbackData: templateCallback('open', compactUuid(template.id)),
+      },
+    ],
+  ],
 });
 
 export const renderTemplateWizard = (
@@ -182,8 +237,12 @@ const templateActionsWithOpaque = new Set([
   'open',
   'edit',
   'copy',
+  'game',
   'archive',
+  'archive-confirm',
   'restore',
+  'continue',
+  'restart',
   'back',
   'cancel',
   'resume',

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   OrganizerGroupSelectionRequiredError,
+  type OrganizerTextFlowCoordinator,
   type OrganizerGroupCandidate,
   type OrganizerContext,
 } from '@volley/application';
@@ -31,6 +32,7 @@ import {
   parseUnicodeText,
   type ParseError,
 } from '../organizer/input.parsers.js';
+import { safelyEditTelegramMessage } from '../organizer/safe-message-edit.js';
 import {
   parseTemplateDraftControlId,
   type TemplateWizardDraft,
@@ -40,7 +42,9 @@ import {
   expandUuid,
   isTemplateCallbackShape,
   renderCancelConfirmation,
+  renderTemplateArchiveConfirmation,
   renderTemplateDetails,
+  renderTemplateDraftResume,
   renderTemplateList,
   renderTemplateWizard,
 } from './template-wizard.presenter.js';
@@ -89,6 +93,11 @@ export class TemplateWizardHandlers {
     private readonly organizerContext: TemplateWizardOrganizerContext,
     private readonly drafts: TemplateWizardDraftStore,
     private readonly templates: TemplateWizardServices,
+    private readonly startGame?: (
+      telegramUserId: TelegramId,
+      templateId: GameTemplateId,
+    ) => Promise<OrganizerView>,
+    private readonly textFlows?: OrganizerTextFlowCoordinator,
   ) {}
 
   public async open(telegramUserId: TelegramId): Promise<OrganizerView> {
@@ -105,7 +114,7 @@ export class TemplateWizardHandlers {
     const draft = await this.drafts.load(actor.groupId, actor.userId);
     return draft === null
       ? this.listFor(actor, false)
-      : renderTemplateWizard(draft);
+      : renderTemplateDraftResume(draft);
   }
 
   public async list(
@@ -132,6 +141,7 @@ export class TemplateWizardHandlers {
       previewed: false,
     };
     await this.save(actor, draft);
+    await this.claim(actor, draft);
     return renderTemplateWizard(draft);
   }
 
@@ -160,6 +170,7 @@ export class TemplateWizardHandlers {
       previewed: false,
     };
     await this.save(actor, draft);
+    await this.claim(actor, draft);
     return renderTemplateWizard(draft);
   }
 
@@ -187,6 +198,7 @@ export class TemplateWizardHandlers {
       previewed: false,
     };
     await this.save(actor, draft);
+    await this.claim(actor, draft);
     return renderTemplateWizard(draft);
   }
 
@@ -194,7 +206,16 @@ export class TemplateWizardHandlers {
     telegramUserId: TelegramId,
     data: string,
   ): Promise<OrganizerView> {
-    const actor = await this.organizerContext.require(telegramUserId);
+    let actor: OrganizerContext;
+    try {
+      actor = await this.organizerContext.require(telegramUserId);
+    } catch (error) {
+      if (!isOrganizerSelectionError(error)) throw error;
+      const groups = await this.organizerContext.list(telegramUserId);
+      return groups.length >= 2
+        ? renderOrganizerGroupPicker(groups)
+        : renderOrganizerHome(groups);
+    }
     const callback = parseCallback(data);
     if (callback === null)
       return this.currentOrList(actor, 'Эта кнопка больше не действует.');
@@ -235,11 +256,28 @@ export class TemplateWizardHandlers {
           ? this.startEdit(telegramUserId, templateId)
           : this.startCopy(telegramUserId, templateId);
       }
-      if (callback.action === 'archive' || callback.action === 'restore') {
+      if (callback.action === 'game') {
+        const template = await this.findCallbackTemplate(
+          actor,
+          callback.opaqueId,
+        );
+        return template === null ||
+          template.archivedAt !== null ||
+          this.startGame === undefined
+          ? this.currentOrList(actor, 'Шаблон больше недоступен.')
+          : this.startGame(telegramUserId, template.id);
+      }
+      if (callback.action === 'archive') {
+        return this.confirmArchive(actor, callback.opaqueId);
+      }
+      if (
+        callback.action === 'archive-confirm' ||
+        callback.action === 'restore'
+      ) {
         return await this.setArchived(
           actor,
           callback.opaqueId,
-          callback.action === 'archive',
+          callback.action === 'archive-confirm',
         );
       }
 
@@ -254,6 +292,7 @@ export class TemplateWizardHandlers {
       ) {
         return this.currentOrList(actor, staleControlText);
       }
+      await this.claim(actor, draft);
       if (callback.action === 'back') {
         const updated = nextDraftView({
           ...draft,
@@ -262,6 +301,15 @@ export class TemplateWizardHandlers {
         });
         await this.save(actor, updated);
         return renderTemplateWizard(updated);
+      }
+      if (callback.action === 'continue') {
+        const updated = nextDraftView(draft);
+        await this.save(actor, updated);
+        await this.claim(actor, updated);
+        return renderTemplateWizard(updated);
+      }
+      if (callback.action === 'restart') {
+        return this.startCreate(telegramUserId);
       }
       if (callback.action === 'cancel') {
         const updated = nextDraftView(draft);
@@ -275,6 +323,7 @@ export class TemplateWizardHandlers {
       }
       if (callback.action === 'cancel-confirm') {
         await this.drafts.clear(actor.groupId, actor.userId);
+        await this.release(actor);
         return this.listFor(actor, false, undefined, 'Изменения отменены.');
       }
       if (
@@ -335,6 +384,7 @@ export class TemplateWizardHandlers {
     }
     const draft = await this.drafts.load(actor.groupId, actor.userId);
     if (draft === null) return false;
+    if (!(await this.owns(telegramUserId, actor, draft))) return false;
     const parsed = parseStepText(draft.step, text, draft.snapshot);
     if (parsed === null)
       return renderTemplateWizard(draft, 'Используйте кнопки под сообщением.');
@@ -381,6 +431,7 @@ export class TemplateWizardHandlers {
       await this.templates.create(snapshot, actor);
     }
     await this.drafts.clear(actor.groupId, actor.userId);
+    await this.release(actor);
     return this.listFor(actor, false, undefined, 'Шаблон сохранён.');
   }
 
@@ -405,6 +456,31 @@ export class TemplateWizardHandlers {
       undefined,
       archived ? 'Шаблон перемещён в архив.' : 'Шаблон восстановлен.',
     );
+  }
+
+  private async confirmArchive(
+    actor: OrganizerContext,
+    opaqueId: string | undefined,
+  ): Promise<OrganizerView> {
+    const parsed = parseRevisionToken(opaqueId);
+    if (parsed === null) {
+      return this.currentOrList(actor, 'Эта кнопка больше не действует.');
+    }
+    const template = await this.templates.findById(
+      actor.groupId,
+      parsed.templateId,
+    );
+    if (
+      template === null ||
+      template.archivedAt !== null ||
+      template.revision !== parsed.revision
+    ) {
+      return this.currentOrList(
+        actor,
+        'Шаблон уже был изменён. Откройте актуальную версию.',
+      );
+    }
+    return renderTemplateArchiveConfirmation(template);
   }
 
   private async findCallbackTemplate(
@@ -447,6 +523,45 @@ export class TemplateWizardHandlers {
     draft: TemplateWizardDraft,
   ): Promise<void> {
     return this.drafts.save(actor.groupId, actor.userId, draft);
+  }
+
+  private claim(
+    actor: OrganizerContext,
+    draft: TemplateWizardDraft,
+  ): Promise<unknown> {
+    return (
+      this.textFlows?.claim({
+        groupId: actor.groupId,
+        actorUserId: actor.userId,
+        kind: 'TEMPLATE',
+        reference: draft.draftId,
+      }) ?? Promise.resolve()
+    );
+  }
+
+  private release(actor: OrganizerContext): Promise<unknown> {
+    return (
+      this.textFlows?.release({
+        groupId: actor.groupId,
+        actorUserId: actor.userId,
+        kind: 'TEMPLATE',
+      }) ?? Promise.resolve()
+    );
+  }
+
+  private async owns(
+    telegramUserId: TelegramId,
+    actor: OrganizerContext,
+    draft: TemplateWizardDraft,
+  ): Promise<boolean> {
+    if (this.textFlows === undefined) return true;
+    const flow = await this.textFlows.current(telegramUserId);
+    return (
+      flow?.kind === 'TEMPLATE' &&
+      flow.groupId === actor.groupId &&
+      flow.actorUserId === actor.userId &&
+      flow.reference === draft.draftId
+    );
   }
 }
 
@@ -520,7 +635,9 @@ const staticActions = new Set([
   'open',
   'edit',
   'copy',
+  'game',
   'archive',
+  'archive-confirm',
   'restore',
 ]);
 const staleControlText = 'Эта кнопка устарела. Продолжите с текущего шага.';
@@ -673,9 +790,9 @@ const parseRevisionToken = (
   const revision = Number.parseInt(revisionText ?? '', 36);
   return templateId === null ||
     rest.length > 0 ||
-    !/^[1-9a-z][0-9a-z]*$/.test(revisionText ?? '') ||
+    !/^(?:0|[1-9a-z][0-9a-z]*)$/.test(revisionText ?? '') ||
     !Number.isSafeInteger(revision) ||
-    revision < 1 ||
+    revision < 0 ||
     revision > 2_147_483_647 ||
     revision.toString(36) !== revisionText
     ? null
@@ -744,7 +861,9 @@ const editView = async (
   context: Context,
   view: OrganizerView,
 ): Promise<void> => {
-  await context.editMessageText(view.text, viewOptions(view));
+  await safelyEditTelegramMessage(() =>
+    context.editMessageText(view.text, viewOptions(view)),
+  );
 };
 
 const viewOptions = (view: OrganizerView) => ({

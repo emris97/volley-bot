@@ -167,11 +167,15 @@ export class GameMessageRepository {
 
     const rows = await database
       .select({
+        id: registrations.id,
         state: registrations.state,
         kind: registrations.kind,
         guestDisplayName: registrations.guestDisplayName,
         displayName: users.displayName,
         telegramUserId: users.telegramUserId,
+        manualRank: registrations.manualRank,
+        membershipPriority: registrations.membershipPriority,
+        confirmedAt: registrations.confirmedAt,
         createdAt: registrations.createdAt,
       })
       .from(registrations)
@@ -183,12 +187,14 @@ export class GameMessageRepository {
           ne(registrations.state, 'CANCELLED'),
         ),
       );
-    rows.sort(
-      (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
-    );
     const namesFor = (state: typeof registrations.$inferSelect.state) =>
       rows
         .filter((row) => row.state === state)
+        .toSorted(
+          state === 'ROSTERED' || state === 'WAITLISTED'
+            ? comparePlacementRows
+            : compareTentativeRows,
+        )
         .map((row) =>
           row.kind === 'GUEST'
             ? row.guestDisplayName!
@@ -243,3 +249,43 @@ export class GameMessageRepository {
 }
 
 type QueryDatabase = Database;
+
+type RegistrationMessageRow = {
+  id: string;
+  manualRank: number | null;
+  membershipPriority: number;
+  confirmedAt: Date | null;
+  createdAt: Date;
+};
+
+const comparePlacementRows = (
+  left: RegistrationMessageRow,
+  right: RegistrationMessageRow,
+): number =>
+  compareNullableRank(left.manualRank, right.manualRank) ||
+  right.membershipPriority - left.membershipPriority ||
+  requiredConfirmedAt(left).getTime() - requiredConfirmedAt(right).getTime() ||
+  left.id.localeCompare(right.id);
+
+const compareTentativeRows = (
+  left: RegistrationMessageRow,
+  right: RegistrationMessageRow,
+): number =>
+  left.createdAt.getTime() - right.createdAt.getTime() ||
+  left.id.localeCompare(right.id);
+
+const compareNullableRank = (left: number | null, right: number | null) => {
+  if (left === null && right === null) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return left - right;
+};
+
+const requiredConfirmedAt = (row: RegistrationMessageRow): Date => {
+  if (row.confirmedAt === null) {
+    throw new Error(
+      `Confirmed registration ${row.id} has no confirmation time`,
+    );
+  }
+  return row.confirmedAt;
+};

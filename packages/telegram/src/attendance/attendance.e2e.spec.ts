@@ -1,5 +1,8 @@
-import { expect, it } from 'vitest';
-import type { ConfirmAttendanceCommand } from '@volley/application';
+import { expect, it, vi } from 'vitest';
+import type {
+  ConfirmAttendanceCommand,
+  OrganizerTextFlow,
+} from '@volley/application';
 import {
   asGameId,
   asGroupId,
@@ -238,18 +241,33 @@ it('adds a named manual participant through the registered private Telegram flow
       return snapshot;
     },
   };
+  let activeFlow: OrganizerTextFlow | null = null;
+  const actorUserId = asUserId('018f6ba0-62d2-7bd1-8f13-12e0c8424613');
   const handlers = new AttendanceHandlers(
     {
       resolve: async () => ({
         groupId,
         gameId,
-        userId: asUserId('018f6ba0-62d2-7bd1-8f13-12e0c8424613'),
+        userId: actorUserId,
       }),
     },
     attendance,
     {
       findSnapshot: async (_requestedGroupId, snapshotId) =>
         snapshots.get(snapshotId) ?? null,
+    },
+    {
+      claim: async (input) =>
+        (activeFlow = {
+          ...input,
+          reference: input.reference ?? null,
+          updatedAt: new Date(),
+        }),
+      current: async () => activeFlow,
+      release: async () => {
+        activeFlow = null;
+        return true;
+      },
     },
   );
   const botInfo: UserFromGetMe = {
@@ -302,7 +320,8 @@ it('adds a named manual participant through the registered private Telegram flow
       call.method === 'sendMessage' &&
       String(call.payload.text).includes('Введите имя участника'),
   )!;
-  expect(promptCall.payload.reply_markup).toMatchObject({ force_reply: true });
+  expect(promptCall.payload.text).toBe('Введите имя участника.');
+  expect(promptCall.payload).not.toHaveProperty('reply_markup');
 
   await updates.handleUpdate(
     attendanceNameReplyUpdate(
@@ -316,7 +335,7 @@ it('adds a named manual participant through the registered private Telegram flow
     method: 'sendMessage',
     payload: {
       text: expect.stringMatching(
-        /attendance:preview:2[\s\S]*Roster player[\s\S]*Late player/,
+        /Посещаемость[\s\S]*Roster player[\s\S]*Late player/,
       ),
     },
   });
@@ -332,6 +351,7 @@ it('adds a named manual participant through the registered private Telegram flow
       addedManually: true,
     }),
   );
+  expect(String(updatedPreview.payload.text)).not.toContain('attendance:');
 
   const billableCallback = buttonsFrom(updatedPreview).find(
     (button) => button.text === 'Взнос: да — Late player',
@@ -359,6 +379,34 @@ it('adds a named manual participant through the registered private Telegram flow
       .at(-1)!
       .entries.some((entry) => entry.addedManually),
   ).toBe(false);
+});
+
+it('does not consume private text owned by another persisted flow', async () => {
+  const resolve = vi.fn();
+  const handlers = new AttendanceHandlers(
+    { resolve },
+    { execute: async () => Promise.reject(new Error('unused')) },
+    { findSnapshot: async () => Promise.reject(new Error('unused')) },
+    {
+      claim: async () => Promise.reject(new Error('unused')),
+      current: async () => ({
+        groupId,
+        actorUserId: asUserId('018f6ba0-62d2-7bd1-8f13-12e0c8424613'),
+        kind: 'GAME_EDIT',
+        reference: gameId,
+        updatedAt: new Date(),
+      }),
+      release: async () => false,
+    },
+  );
+
+  await expect(
+    handlers.addManualParticipant({
+      telegramUserId: asTelegramId('42'),
+      displayName: 'Не участник',
+    }),
+  ).resolves.toBeNull();
+  expect(resolve).not.toHaveBeenCalled();
 });
 
 const buttonsFrom = (call: {

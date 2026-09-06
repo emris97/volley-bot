@@ -1,9 +1,10 @@
-import type {
-  DraftGameRepository,
-  GameCreationDraft,
-  GameListBucket,
-  GameListRepository,
-  GamePublicationRepository,
+import {
+  AuthorizationDeniedError,
+  type DraftGameRepository,
+  type GameCreationDraft,
+  type GameListBucket,
+  type GameListRepository,
+  type GamePublicationRepository,
 } from '@volley/application';
 import {
   asGameId,
@@ -21,6 +22,7 @@ import {
   auditEvents,
   gameCreationDrafts,
   games,
+  groupMembers,
   outboxEvents,
   registrations,
   scheduledJobs,
@@ -127,6 +129,21 @@ export class GameRepository
     build: (draft: GameCreationDraft) => Game,
   ): Promise<{ game: Game; created: boolean }> {
     return this.database.transaction(async (transaction) => {
+      const [membership] = await transaction
+        .select({ userId: groupMembers.userId })
+        .from(groupMembers)
+        .where(
+          and(
+            eq(groupMembers.groupId, input.groupId),
+            eq(groupMembers.userId, input.actorUserId),
+            eq(groupMembers.membershipStatus, 'ACTIVE'),
+            inArray(groupMembers.role, ['OWNER', 'ADMIN', 'ORGANIZER']),
+          ),
+        )
+        .for('update')
+        .limit(1);
+      if (membership === undefined) throw new AuthorizationDeniedError();
+
       const [draftRow] = await transaction
         .select()
         .from(gameCreationDrafts)

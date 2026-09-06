@@ -3,6 +3,7 @@ import type {
   AttendanceSnapshotReader,
   ConfirmAttendance,
   ConfirmAttendanceCommand,
+  OrganizerTextFlowCoordinator,
 } from '@volley/application';
 import {
   asAttendanceSnapshotId,
@@ -34,7 +35,7 @@ export interface AttendancePreview {
   text: string;
   snapshot: AttendanceSnapshot;
   buttons: readonly { text: string; callbackData: string }[];
-  manualParticipantPrompt?: { text: string; token: string };
+  manualParticipantPrompt?: { text: string };
 }
 
 export class AttendanceHandlers {
@@ -42,6 +43,7 @@ export class AttendanceHandlers {
     private readonly actors: AttendanceActorResolver,
     private readonly attendance: Pick<ConfirmAttendance, 'execute'>,
     private readonly snapshots: Pick<AttendanceSnapshotReader, 'findSnapshot'>,
+    private readonly textFlows?: OrganizerTextFlowCoordinator,
   ) {}
 
   public async preview(input: {
@@ -90,8 +92,8 @@ export class AttendanceHandlers {
     return {
       text: [
         snapshot.finalized
-          ? `attendance:confirmed:${snapshot.revision}`
-          : `attendance:preview:${snapshot.revision}`,
+          ? '✅ Посещаемость подтверждена'
+          : 'Посещаемость — черновик',
         ...snapshot.entries.map(
           (entry) =>
             `${entry.billable ? '✓' : '○'} ${entry.displayName} — ${entry.billable ? 'с взносом' : 'без взноса'}`,
@@ -173,11 +175,16 @@ export class AttendanceHandlers {
       throw new Error('Attendance callback identity mismatch');
     }
     if (callback.action === 'add') {
+      await this.textFlows?.claim({
+        groupId: actor.groupId,
+        actorUserId: actor.userId,
+        kind: 'ATTENDANCE',
+        reference: snapshot.id,
+      });
       return {
         ...this.render(snapshot),
         manualParticipantPrompt: {
-          token: input.data,
-          text: `${input.data}\nВведите имя участника`,
+          text: 'Введите имя участника.',
         },
       };
     }
@@ -229,13 +236,24 @@ export class AttendanceHandlers {
 
   public async addManualParticipant(input: {
     telegramUserId: TelegramId;
-    token: string;
+    token?: string;
     displayName: string;
-  }): Promise<AttendancePreview> {
-    const callback = parseAttendanceCallback(input.token);
-    if (callback.action !== 'add') {
+  }): Promise<AttendancePreview | null> {
+    const owned = await this.textFlows?.current(input.telegramUserId);
+    if (this.textFlows !== undefined && owned?.kind !== 'ATTENDANCE')
+      return null;
+    const callback =
+      owned?.kind === 'ATTENDANCE' && owned.reference !== null
+        ? {
+            action: 'add' as const,
+            groupId: owned.groupId,
+            snapshotId: asAttendanceSnapshotId(owned.reference),
+          }
+        : input.token === undefined
+          ? null
+          : parseAttendanceCallback(input.token);
+    if (callback === null || callback.action !== 'add')
       throw new Error('Invalid manual attendance prompt');
-    }
     const snapshot = await this.snapshots.findSnapshot(
       callback.groupId,
       callback.snapshotId,
@@ -247,7 +265,9 @@ export class AttendanceHandlers {
     );
     if (
       actor.groupId !== callback.groupId ||
-      actor.gameId !== snapshot.gameId
+      actor.gameId !== snapshot.gameId ||
+      (owned !== undefined &&
+        (owned === null || owned.actorUserId !== actor.userId))
     ) {
       throw new Error('Attendance callback identity mismatch');
     }
@@ -280,6 +300,11 @@ export class AttendanceHandlers {
         },
       ],
       finalize: false,
+    });
+    await this.textFlows?.release({
+      groupId: actor.groupId,
+      actorUserId: actor.userId,
+      kind: 'ATTENDANCE',
     });
     return this.render(result);
   }
@@ -444,12 +469,10 @@ export const registerAttendanceHandlers = (
     }
   });
   bot.on('message:text', async (context, next) => {
-    const prompt = context.message.reply_to_message?.text?.split('\n')[0];
     if (
       context.chat.type !== 'private' ||
       context.from === undefined ||
-      prompt === undefined ||
-      !prompt.startsWith('at:a:')
+      context.message.text.startsWith('/')
     ) {
       await next();
       return;
@@ -457,9 +480,12 @@ export const registerAttendanceHandlers = (
     try {
       const preview = await handlers.addManualParticipant({
         telegramUserId: toTelegramId(context.from.id),
-        token: prompt,
         displayName: context.message.text,
       });
+      if (preview === null) {
+        await next();
+        return;
+      }
       await context.reply(preview.text, attendanceReplyMarkup(preview));
     } catch (error) {
       if (!isOrganizerAuthorizationDenied(error)) throw error;
@@ -481,9 +507,7 @@ export const registerAttendanceHandlers = (
           attendanceReplyMarkup(preview),
         );
       } else {
-        await context.reply(preview.manualParticipantPrompt.text, {
-          reply_markup: { force_reply: true, selective: true },
-        });
+        await context.reply(preview.manualParticipantPrompt.text);
       }
       await context.answerCallbackQuery({ text: 'Посещаемость обновлена.' });
     } catch (error) {

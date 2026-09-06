@@ -1,5 +1,6 @@
 import {
   AuthorizationDeniedError,
+  telegramMembership,
   type TelegramGateway,
 } from '@volley/application';
 import type { GameId, GroupId, TelegramId, UserId } from '@volley/domain';
@@ -34,19 +35,14 @@ export class LiveOrganizerGameActorResolver {
       location.telegramChatId,
       telegramUserId,
     );
-    const role =
-      member.status === 'creator'
-        ? 'OWNER'
-        : member.status === 'administrator'
-          ? 'ADMIN'
-          : null;
+    const membership = telegramMembership(member.status);
     const userId = await this.directory.refreshMembership({
       groupId: location.groupId,
       telegramUserId,
-      role: role ?? 'MEMBER',
-      status: role === null ? 'LEFT' : 'ACTIVE',
+      role: membership.role,
+      status: membership.status,
     });
-    if (role === null) throw new AuthorizationDeniedError();
+    if (!membership.administrative) throw new AuthorizationDeniedError();
 
     return { groupId: location.groupId, gameId, userId };
   }

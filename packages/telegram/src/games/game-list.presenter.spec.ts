@@ -61,7 +61,12 @@ describe('game management presenter', () => {
     ['OPEN', ['Изменить', 'Закрыть регистрацию', 'Отменить игру']],
     [
       'CLOSED',
-      ['Открыть регистрацию снова', 'Завершить игру', 'Отменить игру'],
+      [
+        'Изменить',
+        'Открыть регистрацию снова',
+        'Завершить игру',
+        'Отменить игру',
+      ],
     ],
     ['COMPLETED', ['Посещаемость', 'Расчёт оплат', 'Итоги']],
     ['CANCELLED', []],
@@ -151,6 +156,19 @@ describe('game management presenter', () => {
       gameActionCallback(gameEditFieldAction('name'), asGameId(uuid), 12),
     );
     expect(view.text).not.toContain(uuid);
+  });
+
+  it('renders the policy-approved identity, place, schedule, capacity and cost fields for CLOSED', () => {
+    const view = renderGameEditFields(managementView('CLOSED'));
+    const labels = view.keyboard.flat().map(({ text }) => text);
+
+    expect(labels).toContain('Название');
+    expect(labels).toContain('Место');
+    expect(labels).toContain('Дата и время начала');
+    expect(labels).toContain('Количество мест');
+    expect(labels).toContain('Общая стоимость');
+    expect(labels).not.toContain('Открытие регистрации');
+    expect(labels).not.toContain('Приоритет участников группы');
   });
 
   it('renders a revisioned input and separate interaction-bound confirmation', () => {

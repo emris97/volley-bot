@@ -1,6 +1,7 @@
 import {
   OrganizerGroupSelectionRequiredError,
   type OrganizerContext,
+  type OrganizerTextFlowCoordinator,
 } from '@volley/application';
 import {
   asGameTemplateId,
@@ -10,10 +11,11 @@ import {
   type GameTemplate,
   type GameTemplateId,
   type GameTemplateSnapshot,
+  type TelegramId,
 } from '@volley/domain';
 import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   TemplateWizardDraft,
   TemplateWizardDraftStore,
@@ -101,6 +103,9 @@ describe('template wizard Telegram flow', () => {
 
     harness = createHarness(drafts, templates);
     await harness.command('/templates');
+    expect(harness.buttons()).toContain('Продолжить');
+    expect(harness.buttons()).toContain('Начать заново');
+    await harness.click('Продолжить');
     expect(harness.lastMessage()).toContain('Адрес');
 
     await harness.text('ул. Мира, 1');
@@ -130,6 +135,76 @@ describe('template wizard Telegram flow', () => {
       defaultTotalCostMinor: 125050n,
     });
     expect(await drafts.load(groupId, actorUserId)).toBeNull();
+  });
+
+  it('cedes free text when another persisted flow takes ownership', async () => {
+    let current: Awaited<ReturnType<OrganizerTextFlowCoordinator['current']>> =
+      null;
+    const flows: OrganizerTextFlowCoordinator = {
+      claim: async (input) =>
+        (current = {
+          ...input,
+          reference: input.reference ?? null,
+          updatedAt: new Date(),
+        }),
+      current: async () => current,
+      release: async () => {
+        current = null;
+        return true;
+      },
+    };
+    harness = createHarness(drafts, templates, undefined, undefined, flows);
+    await harness.command('/templates');
+    await harness.click('Создать шаблон');
+    expect(current).toMatchObject({ kind: 'TEMPLATE' });
+
+    current = {
+      groupId,
+      actorUserId,
+      kind: 'PAYMENT',
+      reference: 'game',
+      updatedAt: new Date(),
+    };
+    await harness.text('Не должен попасть в шаблон');
+
+    expect(harness.fallbackCount()).toBe(1);
+    expect((await drafts.load(groupId, actorUserId))?.step).toBe('NAME');
+  });
+
+  it('starts a game from an active template card', async () => {
+    const template = templates.seed('Пятница', false);
+    const startGame = vi.fn().mockResolvedValue({
+      text: '<b>Дата игры</b>',
+      parseMode: 'HTML' as const,
+      keyboard: [],
+    });
+    harness = createHarness(drafts, templates, undefined, startGame);
+
+    await harness.command('/templates');
+    await harness.click('Пятница');
+    expect(harness.buttons()).toContain('Создать игру');
+    await harness.click('Создать игру');
+
+    expect(startGame).toHaveBeenCalledWith(telegramUserId, template.id);
+    expect(harness.lastMessage()).toContain('Дата игры');
+  });
+
+  it('archives a newly inserted revision-zero template only after confirmation', async () => {
+    templates.seed('Новый шаблон', false, undefined, 0);
+    await harness.command('/templates');
+    await harness.click('Новый шаблон');
+    expect(harness.dataFor('В архив')).toMatch(/\.0$/);
+
+    await harness.click('В архив');
+    expect(harness.lastMessage()).toContain('Архивировать шаблон');
+    expect(templates.active().map((item) => item.name)).toContain(
+      'Новый шаблон',
+    );
+    await harness.click('Да, архивировать');
+
+    expect(templates.active().map((item) => item.name)).not.toContain(
+      'Новый шаблон',
+    );
   });
 
   it('supports back, confirmed cancellation, copy, stale edit, archive and restore', async () => {
@@ -165,8 +240,9 @@ describe('template wizard Telegram flow', () => {
 
     await harness.command('/templates');
     await harness.click('Вторник');
-    const staleArchive = harness.dataFor('В архив');
     await harness.click('В архив');
+    const staleArchive = harness.dataFor('Да, архивировать');
+    await harness.click('Да, архивировать');
     expect(templates.active().some((item) => item.name === 'Вторник')).toBe(
       false,
     );
@@ -328,6 +404,26 @@ describe('template wizard Telegram flow', () => {
     expect(harness.lastMessage()).toContain('Выберите группу');
   });
 
+  it('acknowledges a callback when live selection disappears before dispatch', async () => {
+    harness = createHarness(drafts, templates, {
+      require: async () => {
+        throw new OrganizerGroupSelectionRequiredError();
+      },
+      list: async () => [],
+    });
+
+    await expect(harness.callback('tw:v1:active')).resolves.toBeUndefined();
+    expect(harness.acknowledgementCount()).toBe(1);
+  });
+
+  it('acknowledges a retry when Telegram reports an unchanged template view', async () => {
+    await harness.command('/templates');
+    harness.failNextEdit(400, 'Bad Request: message is not modified');
+
+    await expect(harness.click('Архив')).resolves.toBeUndefined();
+    expect(harness.acknowledgementCount()).toBe(1);
+  });
+
   it('renders an expected Russian view for stale wizard controls', async () => {
     await expect(
       harness.callback(`tw:v1:save:${'0'.repeat(32)}`),
@@ -340,7 +436,8 @@ describe('template wizard Telegram flow', () => {
     const template = templates.seed('Гонка архива', false);
     await harness.command('/templates');
     await harness.click('Гонка архива');
-    const archive = harness.dataFor('В архив');
+    await harness.click('В архив');
+    const archive = harness.dataFor('Да, архивировать');
     const concurrentDraft: TemplateWizardDraft = {
       version: 1,
       mode: 'CREATE',
@@ -440,6 +537,7 @@ class MemoryTemplates implements TemplateWizardServices {
     name: string,
     archived: boolean,
     snapshot?: GameTemplateSnapshot,
+    revision = 1,
   ): GameTemplate {
     const hex = this.serial.toString(16).padStart(12, '0');
     this.serial += 1;
@@ -448,7 +546,7 @@ class MemoryTemplates implements TemplateWizardServices {
       id: asGameTemplateId(`018f6ba0-62d2-7bd1-8f13-${hex}`),
       groupId,
       ...(snapshot ?? defaultSnapshot(name)),
-      revision: 1,
+      revision,
       archivedAt: archived ? now : null,
       createdAt: now,
       updatedAt: now,
@@ -550,6 +648,11 @@ const createHarness = (
   drafts: MemoryDrafts,
   templates: MemoryTemplates,
   organizerContext?: ConstructorParameters<typeof TemplateWizardHandlers>[0],
+  startGame?: (
+    telegramUserId: TelegramId,
+    templateId: GameTemplateId,
+  ) => Promise<{ text: string; parseMode: 'HTML'; keyboard: readonly [] }>,
+  textFlows?: OrganizerTextFlowCoordinator,
 ) => {
   const context: OrganizerContext = {
     groupId,
@@ -573,6 +676,8 @@ const createHarness = (
     },
     drafts,
     templates,
+    startGame,
+    textFlows,
   );
   const bot = new Bot('123456:abcdefghijklmnopqrstuvwxyz', { botInfo });
   const messages: Array<{
@@ -582,8 +687,18 @@ const createHarness = (
   let updateId = 1;
   let fallback = 0;
   let acknowledgements = 0;
+  let nextEditFailure: { errorCode: number; description: string } | undefined;
   bot.api.config.use(async (_previous, method, payload) => {
     if (method === 'sendMessage' || method === 'editMessageText') {
+      if (method === 'editMessageText' && nextEditFailure !== undefined) {
+        const failure = nextEditFailure;
+        nextEditFailure = undefined;
+        return {
+          ok: false,
+          error_code: failure.errorCode,
+          description: failure.description,
+        } as never;
+      }
       const candidate = payload as {
         text: string;
         reply_markup?: {
@@ -646,6 +761,9 @@ const createHarness = (
     },
     fallbackCount: () => fallback,
     acknowledgementCount: () => acknowledgements,
+    failNextEdit: (errorCode: number, description: string) => {
+      nextEditFailure = { errorCode, description };
+    },
   };
 };
 

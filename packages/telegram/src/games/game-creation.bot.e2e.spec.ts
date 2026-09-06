@@ -4,6 +4,7 @@ import type {
   PublishGameCommand,
   OrganizerContext,
   OrganizerGroupCandidate,
+  OrganizerTextFlowCoordinator,
 } from '@volley/application';
 import { PublishGame, TemplateInputError } from '@volley/application';
 import {
@@ -123,6 +124,11 @@ describe('private game creation bot flow', () => {
     await pool.query(
       'INSERT INTO users (id, telegram_user_id) VALUES ($1, 42)',
       [actorUserId],
+    );
+    await pool.query(
+      `INSERT INTO group_members (group_id, user_id, role, membership_status)
+       VALUES ($1, $2, 'ADMIN', 'ACTIVE')`,
+      [firstGroupId, actorUserId],
     );
     const database = createDatabase(pool);
     const postgresDrafts = new PostgresGameCreationDraftRepository(database);
@@ -440,6 +446,38 @@ describe('private game creation bot flow', () => {
     harness.failNextEdit(500, 'Internal Server Error');
     await expect(harness.callback(publishData)).rejects.toThrow();
   });
+
+  it('cedes private text when another persisted flow owns the actor', async () => {
+    let current: Awaited<ReturnType<OrganizerTextFlowCoordinator['current']>> =
+      null;
+    const flows: OrganizerTextFlowCoordinator = {
+      claim: async (input) =>
+        (current = {
+          ...input,
+          reference: input.reference ?? null,
+          updatedAt: new Date(),
+        }),
+      current: async () => current,
+      release: async () => {
+        current = null;
+        return true;
+      },
+    };
+    harness = createHarness(organizer, drafts, templates, publisher, flows);
+    await harness.command('/newgame');
+    await harness.click('Команда 1');
+    expect(current).toMatchObject({ kind: 'GAME_CREATION' });
+    current = {
+      groupId: firstGroupId,
+      actorUserId,
+      kind: 'TEMPLATE',
+      reference: 'template-draft',
+      updatedAt: new Date(),
+    };
+
+    await harness.text('10.09.2026');
+    expect(harness.fallbackCount()).toBe(1);
+  });
 });
 
 class MemoryDrafts implements GameCreationDraftRepository {
@@ -680,6 +718,7 @@ const createHarness = (
   draftRepository: GameCreationDraftRepository,
   templateRepository: GameCreationTemplates,
   publishGame: GameCreationHandlerOptions['publishGame'],
+  textFlows?: OrganizerTextFlowCoordinator,
 ) => {
   const handlers = new GameCreationHandlers({
     organizerContext,
@@ -687,6 +726,7 @@ const createHarness = (
     templates: templateRepository,
     publishGame,
     clock: () => new Date('2026-09-05T12:00:00.000Z'),
+    textFlows,
   });
   const bot = new Bot('123456:abcdefghijklmnopqrstuvwxyz', { botInfo });
   const messages: Array<{

@@ -5,6 +5,7 @@ import {
   createGameFromTemplate,
   type GameTemplateSnapshot,
 } from '@volley/domain';
+import { AuthorizationDeniedError, PublishGame } from '@volley/application';
 import { Pool, type PoolClient } from 'pg';
 import {
   GenericContainer,
@@ -126,6 +127,7 @@ describe('GameRepository', () => {
   it('publishes one game and one audit/outbox state under concurrent retries', async () => {
     const groupId = await insertGroup(pool, '-1003', 'Atomic');
     const actorUserId = await insertUser(pool, '1003');
+    await grantOrganizer(pool, groupId, actorUserId);
     const database = createDatabase(pool);
     const drafts = new GameCreationDraftRepository(database);
     const games = new GameRepository(database);
@@ -201,6 +203,7 @@ describe('GameRepository', () => {
   it('refuses a stale mutation waiting behind publication and keeps retries idempotent', async () => {
     const groupId = await insertGroup(pool, '-1005', 'Mutation race');
     const actorUserId = await insertUser(pool, '1005');
+    await grantOrganizer(pool, groupId, actorUserId);
     const database = createDatabase(pool);
     const drafts = new GameCreationDraftRepository(database);
     const games = new GameRepository(database);
@@ -290,6 +293,7 @@ describe('GameRepository', () => {
   it('rejects publication when a cancel mutation wins while the publisher waits for the draft lock', async () => {
     const groupId = await insertGroup(pool, '-1006', 'Cancel race');
     const actorUserId = await insertUser(pool, '1006');
+    await grantOrganizer(pool, groupId, actorUserId);
     const database = createDatabase(pool);
     const drafts = new GameCreationDraftRepository(database);
     const games = new GameRepository(database);
@@ -367,6 +371,7 @@ describe('GameRepository', () => {
   it('reports a deleted draft race as stale without creating a game', async () => {
     const groupId = await insertGroup(pool, '-1007', 'Delete race');
     const actorUserId = await insertUser(pool, '1007');
+    await grantOrganizer(pool, groupId, actorUserId);
     const database = createDatabase(pool);
     const drafts = new GameCreationDraftRepository(database);
     const games = new GameRepository(database);
@@ -435,6 +440,7 @@ describe('GameRepository', () => {
   it('does not let a restart waiting behind publication overwrite the published draft', async () => {
     const groupId = await insertGroup(pool, '-1008', 'Restart race');
     const actorUserId = await insertUser(pool, '1008');
+    await grantOrganizer(pool, groupId, actorUserId);
     const database = createDatabase(pool);
     const drafts = new GameCreationDraftRepository(database);
     const games = new GameRepository(database);
@@ -524,6 +530,7 @@ describe('GameRepository', () => {
   it('rejects a stale draft id without committing publication state', async () => {
     const groupId = await insertGroup(pool, '-1004', 'Stale');
     const actorUserId = await insertUser(pool, '1004');
+    await grantOrganizer(pool, groupId, actorUserId);
     const database = createDatabase(pool);
     const drafts = new GameCreationDraftRepository(database);
     const games = new GameRepository(database);
@@ -565,6 +572,68 @@ describe('GameRepository', () => {
       rowCount: 0,
     });
   });
+
+  it('rechecks the persisted organizer role inside publication after boundary authorization', async () => {
+    const groupId = await insertGroup(pool, '-1009', 'Revoked');
+    const actorUserId = await insertUser(pool, '1009');
+    await pool.query(
+      `INSERT INTO group_members (group_id, user_id, role, membership_status)
+       VALUES ($1, $2, 'ADMIN', 'ACTIVE')`,
+      [groupId, actorUserId],
+    );
+    const database = createDatabase(pool);
+    const drafts = new GameCreationDraftRepository(database);
+    const games = new GameRepository(database);
+    const draft = {
+      version: 1,
+      draftId: '018f6ba062d27bd18f1312e0c8424699',
+      groupId,
+      actorUserId,
+      step: 'PREVIEW',
+      viewRevision: 1,
+      snapshot,
+      startsAtIso: '2026-09-12T16:00:00.000Z',
+      previewed: true,
+    } as const;
+    await seedDraft(drafts, draft);
+    const publish = new PublishGame(
+      {
+        requireOrganizer: async () => {
+          await pool.query(
+            `UPDATE group_members
+             SET role = 'MEMBER', membership_status = 'ACTIVE'
+             WHERE group_id = $1 AND user_id = $2`,
+            [groupId, actorUserId],
+          );
+        },
+      },
+      { findTimeZone: async () => 'Europe/Astrakhan' },
+      games,
+    );
+
+    await expect(
+      publish.execute({
+        groupId,
+        actorUserId,
+        draftId: draft.draftId,
+        expectedStep: 'PREVIEW',
+        expectedViewRevision: 1,
+        now: new Date('2026-09-05T15:00:00.000Z'),
+      }),
+    ).rejects.toBeInstanceOf(AuthorizationDeniedError);
+    await expect(
+      pool.query(`SELECT id FROM games WHERE group_id = $1`, [groupId]),
+    ).resolves.toMatchObject({ rowCount: 0 });
+    await expect(
+      pool.query(`SELECT id FROM outbox_events WHERE group_id = $1`, [groupId]),
+    ).resolves.toMatchObject({ rowCount: 0 });
+    await expect(
+      pool.query(`SELECT id FROM audit_events WHERE group_id = $1`, [groupId]),
+    ).resolves.toMatchObject({ rowCount: 0 });
+    const storedDraft = await drafts.load(groupId, actorUserId);
+    expect(storedDraft).toMatchObject({ step: 'PREVIEW' });
+    expect(storedDraft).not.toHaveProperty('publishedGameId');
+  });
 });
 
 const insertGroup = async (
@@ -585,6 +654,18 @@ const insertUser = async (pool: Pool, telegramUserId: string) => {
     [telegramUserId],
   );
   return asUserId(result.rows[0]!.id);
+};
+
+const grantOrganizer = async (
+  pool: Pool,
+  groupId: ReturnType<typeof asGroupId>,
+  actorUserId: ReturnType<typeof asUserId>,
+): Promise<void> => {
+  await pool.query(
+    `INSERT INTO group_members (group_id, user_id, role, membership_status)
+     VALUES ($1, $2, 'ADMIN', 'ACTIVE')`,
+    [groupId, actorUserId],
+  );
 };
 
 const seedDraft = async (

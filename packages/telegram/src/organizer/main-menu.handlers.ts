@@ -10,6 +10,7 @@ import {
   renderOrganizerHome,
   type OrganizerView,
 } from './main-menu.presenter.js';
+import { safelyEditTelegramMessage } from './safe-message-edit.js';
 
 type GameListKind = 'UPCOMING' | 'PAST';
 
@@ -125,7 +126,9 @@ export class OrganizerMenuHandlers {
     const groupId = parseGroupSelection(data);
     return groupId === undefined
       ? null
-      : this.selectGroup(telegramUserId, groupId);
+      : this.openOperational(telegramUserId, () =>
+          this.selectGroup(telegramUserId, groupId),
+        );
   }
 }
 
@@ -204,7 +207,9 @@ const editView = async (
   context: Context,
   view: OrganizerView,
 ): Promise<void> => {
-  await context.editMessageText(view.text, viewOptions(view));
+  await safelyEditTelegramMessage(() =>
+    context.editMessageText(view.text, viewOptions(view)),
+  );
 };
 
 const viewOptions = (view: OrganizerView) => ({

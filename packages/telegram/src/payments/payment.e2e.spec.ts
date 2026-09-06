@@ -3,6 +3,7 @@ import type {
   PaymentInputSession,
   Settlement,
   PaymentTelegramRepository,
+  OrganizerTextFlowCoordinator,
 } from '@volley/application';
 import {
   asGameId,
@@ -191,7 +192,8 @@ it('drives restart-safe confirmation, status, and reminder callbacks through fre
   });
   expect(preview.text).toMatch(/2 участник/i);
   expect(preview.text).toMatch(/Late player/);
-  expect(preview.text).toMatch(/2800\.00/);
+  expect(preview.text).toContain('2 800,00 ₽');
+  expect(preview.text).not.toMatch(/RUB|\d+\.\d{2}/);
   const confirmData = preview.buttons.find(
     (button) => button.text === 'Подтвердить',
   )!.callbackData;
@@ -226,6 +228,8 @@ it('drives restart-safe confirmation, status, and reminder callbacks through fre
     updateId: 2,
     data: paidData,
   });
+  expect(afterPaid.text).toContain('оплачено');
+  expect(afterPaid.text).not.toMatch(/RUB|PAID|UNPAID|WAIVED|\d+\.\d{2}/);
   expect(afterPaid.buttons.map((button) => button.text)).toEqual(
     expect.arrayContaining([
       'Оплачено',
@@ -717,6 +721,62 @@ it('passes ordinary group text to later middleware while private payment input r
     method: 'sendMessage',
     payload: { text: expect.stringMatching(/предпросмотр/i) },
   });
+});
+
+it('does not consume private text after another persisted flow takes ownership', async () => {
+  const findInput = vi.fn();
+  let active: Awaited<ReturnType<OrganizerTextFlowCoordinator['current']>> =
+    null;
+  const handlers = new PaymentHandlers(
+    { resolve: async () => ({ groupId, gameId, userId: actorUserId }) },
+    { execute: async () => Promise.reject(new Error('unused')) },
+    { execute: async () => Promise.reject(new Error('unused')) },
+    { execute: async () => Promise.reject(new Error('unused')) },
+    { execute: async () => Promise.reject(new Error('unused')) },
+    {
+      beginInput: async () => ({
+        groupId,
+        gameId,
+        actorUserId,
+        attendanceRevision: 1,
+        currency: 'RUB',
+        roundingMode: 'EXACT',
+        expiresAt: new Date(),
+      }),
+      findInputByTelegramUserId: findInput,
+      clearInput: async () => undefined,
+      saveDraft: async () => Promise.reject(new Error('unused')),
+      findDraft: async () => null,
+      deleteDraft: async () => undefined,
+      findActiveSettlement: async () => null,
+    },
+    { requireOrganizer: async () => undefined },
+    {
+      claim: async (input) =>
+        (active = {
+          ...input,
+          reference: input.reference ?? null,
+          updatedAt: new Date(),
+        }),
+      current: async () => active,
+      release: async () => false,
+    },
+  );
+
+  await handlers.start({ telegramUserId, gameId, privateChat: true });
+  expect(active).toMatchObject({ kind: 'PAYMENT', reference: gameId });
+  active = {
+    groupId,
+    actorUserId,
+    kind: 'TEMPLATE',
+    reference: 'template-draft',
+    updatedAt: new Date(),
+  };
+
+  await expect(
+    handlers.handleText({ telegramUserId, privateChat: true, text: '100,00' }),
+  ).resolves.toBeNull();
+  expect(findInput).not.toHaveBeenCalled();
 });
 
 it('hides reminders for every charge without a linked private recipient', async () => {

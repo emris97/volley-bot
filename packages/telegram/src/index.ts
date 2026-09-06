@@ -9,6 +9,7 @@ export * from './organizer/group-settings.handlers.js';
 export * from './organizer/help.presenter.js';
 export * from './organizer/main-menu.handlers.js';
 export * from './organizer/main-menu.presenter.js';
+export * from './organizer/safe-message-edit.js';
 export * from './organizer/input.parsers.js';
 export * from './organizer/live-organizer-actor.resolver.js';
 export * from './organizer/local-date-time.js';

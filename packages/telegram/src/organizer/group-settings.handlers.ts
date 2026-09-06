@@ -3,13 +3,14 @@ import type {
   OrganizerContext,
 } from '@volley/application';
 import type { GroupId, TelegramId } from '@volley/domain';
-import { GrammyError, type Bot, type Context } from 'grammy';
+import type { Bot, Context } from 'grammy';
 import {
   configuredGroupSummaryLines,
   type ConfiguredGroupSettings,
 } from '../group-onboarding.presenter.js';
 import { toTelegramId } from '../group-onboarding.handlers.js';
 import type { OrganizerView } from './main-menu.presenter.js';
+import { safelyEditTelegramMessage } from './safe-message-edit.js';
 
 interface SettingsOrganizerContext {
   require(telegramUserId: TelegramId): Promise<OrganizerContext>;
@@ -170,11 +171,9 @@ export const registerGroupSettingsHandlers = (
         toTelegramId(context.callbackQuery.from.id),
         context.callbackQuery.data,
       );
-      try {
-        await context.editMessageText(view.text, viewOptions(view));
-      } catch (error) {
-        if (!isMessageNotModified(error)) throw error;
-      }
+      await safelyEditTelegramMessage(() =>
+        context.editMessageText(view.text, viewOptions(view)),
+      );
       await context.answerCallbackQuery();
     } catch (error) {
       if (
@@ -275,11 +274,6 @@ const settingFields: Readonly<
   ro: 'roundingMode',
   pin: 'pinGameMessages',
 };
-
-const isMessageNotModified = (error: unknown): boolean =>
-  error instanceof GrammyError &&
-  error.error_code === 400 &&
-  /^Bad Request: message is not modified(?::|$)/i.test(error.description);
 
 const staleText = 'Эта кнопка устарела. Откройте настройки заново.';
 
