@@ -72,6 +72,19 @@ Add the bot to a Telegram group as an administrator. The bot posts a private-cha
 
 Expected user mistakes such as bare `/start`, expired links, or stale buttons are acknowledged and do not remain in Telegram's retry queue. A repeated HTTP 500 indicates an infrastructure or programming failure and should be investigated in the API container logs.
 
+## Управление играми
+
+1. Откройте личный чат с ботом и отправьте `/start`.
+2. Создайте шаблон через `/templates`.
+3. Создайте игру через `/newgame`, проверьте карточку и опубликуйте её.
+4. Открывайте игру через `/games`; после завершения там появятся посещаемость и оплаты.
+
+Команды управления доступны только в личном чате. Изменять настройки,
+шаблоны и игры могут только текущие администраторы соответствующей Telegram-группы:
+права перепроверяются перед каждой операцией. Регистрация открывается по правилу,
+заданному в шаблоне игры. Автоматическое создание повторяющихся игр в эту версию
+не входит.
+
 ## Retention baseline
 
 Use the following conservative, finite defaults for the first private deployment:

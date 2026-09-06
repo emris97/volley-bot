@@ -155,6 +155,14 @@ it('rejects malformed and unknown compact attendance callbacks', async () => {
       data: 'at:t:bad',
     }),
   ).rejects.toThrow(/invalid attendance callback/i);
+  for (const candidateIndex of ['00', 'A']) {
+    await expect(
+      handlers.handleCallback({
+        telegramUserId: asTelegramId('42'),
+        data: `at:t:${compactUuid(groupId)}:${compactUuid(gameId)}:${candidateIndex}`,
+      }),
+    ).rejects.toThrow(/invalid attendance callback/i);
+  }
   await expect(
     handlers.handleCallback({
       telegramUserId: asTelegramId('42'),

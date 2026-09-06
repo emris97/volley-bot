@@ -88,10 +88,11 @@ export const parseGameDraftControlId = (
     rest.length > 0 ||
     compactDraftId === undefined ||
     step === undefined ||
-    !/^[0-9a-z]+$/.test(revisionCode ?? '') ||
+    !/^(?:0|[1-9a-z][0-9a-z]*)$/.test(revisionCode ?? '') ||
     !Number.isSafeInteger(viewRevision) ||
     viewRevision < 0 ||
-    viewRevision > 2_147_483_647
+    viewRevision > 2_147_483_647 ||
+    viewRevision.toString(36) !== revisionCode
   ) {
     return null;
   }
@@ -132,7 +133,11 @@ export const expandGameCompactUuid = (value: string): string => {
   if (!/^[A-Za-z0-9_-]{22}$/.test(value))
     throw new Error('Invalid compact UUID');
   const hex = Buffer.from(value, 'base64url').toString('hex');
-  if (hex.length !== 32) throw new Error('Invalid compact UUID');
+  if (
+    hex.length !== 32 ||
+    Buffer.from(hex, 'hex').toString('base64url') !== value
+  )
+    throw new Error('Invalid compact UUID');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
 

@@ -3,8 +3,6 @@ import {
   asTelegramId,
   asUserId,
   type GroupId,
-  type TelegramId,
-  type UserId,
 } from '@volley/domain';
 import { describe, expect, it, vi } from 'vitest';
 import {

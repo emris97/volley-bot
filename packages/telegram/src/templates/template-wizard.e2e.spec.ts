@@ -18,6 +18,8 @@ import type {
   TemplateWizardDraft,
   TemplateWizardDraftStore,
 } from './template-wizard.model.js';
+import { parseTemplateDraftControlId } from './template-wizard.model.js';
+import { compactUuid, expandUuid } from './template-wizard.presenter.js';
 import {
   registerTemplateWizardHandlers,
   TemplateWizardHandlers,
@@ -52,6 +54,18 @@ describe('template wizard Telegram flow', () => {
     drafts = new MemoryDrafts();
     templates = new MemoryTemplates();
     harness = createHarness(drafts, templates);
+  });
+
+  it('rejects non-canonical draft revisions and compact template ids', () => {
+    const draftId = '0'.repeat(32);
+    expect(parseTemplateDraftControlId(`${draftId}.n.00`)).toBeNull();
+    expect(parseTemplateDraftControlId(`${draftId}.n.A`)).toBeNull();
+
+    const canonical = compactUuid('018f6ba0-62d2-7bd1-8f13-12e0c8424600');
+    expect(canonical.endsWith('A')).toBe(true);
+    expect(() => expandUuid(`${canonical.slice(0, -1)}B`)).toThrow(
+      'Invalid compact UUID',
+    );
   });
 
   it('persists and resumes creation through preview and save', async () => {
@@ -321,6 +335,20 @@ describe('template wizard Telegram flow', () => {
 
     expect(harness.lastMessage()).toContain('изменён другим администратором');
     expect(await drafts.load(groupId, actorUserId)).toEqual(concurrentDraft);
+  });
+
+  it('rejects an archive revision token with trailing non-base36 junk', async () => {
+    templates.seed('Строгая ревизия', false);
+    await harness.command('/templates');
+    await harness.click('Строгая ревизия');
+    const malformed = `${harness.dataFor('В архив')}!`;
+
+    await harness.callback(malformed);
+
+    expect(templates.active().map((template) => template.name)).toContain(
+      'Строгая ревизия',
+    );
+    expect(harness.lastMessage()).toContain('больше не действует');
   });
 });
 

@@ -369,6 +369,7 @@ export const attendanceCallback = (
 const parseAttendanceCallback = (value: string): AttendanceCallback => {
   const [prefix, action, groupId, snapshotId, candidateIndex, ...rest] =
     value.split(':');
+  const parsedCandidateIndex = Number.parseInt(candidateIndex ?? '', 36);
   if (
     prefix !== 'at' ||
     !['t', 'b', 'r', 'c', 'a'].includes(action ?? '') ||
@@ -376,7 +377,12 @@ const parseAttendanceCallback = (value: string): AttendanceCallback => {
     snapshotId === undefined ||
     rest.length > 0 ||
     (['t', 'b', 'r'].includes(action ?? '') &&
-      (candidateIndex === undefined || !/^[0-9a-z]+$/i.test(candidateIndex))) ||
+      (candidateIndex === undefined ||
+        !/^(?:0|[1-9a-z][0-9a-z]*)$/.test(candidateIndex) ||
+        !Number.isSafeInteger(parsedCandidateIndex) ||
+        parsedCandidateIndex < 0 ||
+        parsedCandidateIndex > 2_147_483_647 ||
+        parsedCandidateIndex.toString(36) !== candidateIndex)) ||
     (!['t', 'b', 'r'].includes(action ?? '') && candidateIndex !== undefined)
   ) {
     throw new Error('Invalid attendance callback');
@@ -389,7 +395,7 @@ const parseAttendanceCallback = (value: string): AttendanceCallback => {
         action === 't' ? 'toggle' : action === 'b' ? 'billable' : 'remove',
       groupId: asGroupId(decodedGroupId),
       snapshotId: asAttendanceSnapshotId(decodedSnapshotId),
-      candidateIndex: Number.parseInt(candidateIndex!, 36),
+      candidateIndex: parsedCandidateIndex,
     };
   }
   return {
@@ -407,7 +413,11 @@ const decodeCompactUuid = (value: string): string => {
     throw new Error('Invalid attendance callback');
   }
   const hex = Buffer.from(value, 'base64url').toString('hex');
-  if (hex.length !== 32) throw new Error('Invalid attendance callback');
+  if (
+    hex.length !== 32 ||
+    Buffer.from(hex, 'hex').toString('base64url') !== value
+  )
+    throw new Error('Invalid attendance callback');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
 

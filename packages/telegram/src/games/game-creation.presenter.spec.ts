@@ -5,6 +5,11 @@ import {
   gameCreationCallback,
   renderGameTemplateChoice,
 } from './game-creation.presenter.js';
+import {
+  compactGameUuid,
+  expandGameCompactUuid,
+  parseGameDraftControlId,
+} from './game-creation.model.js';
 
 const settings: GameTemplateSnapshot = {
   name: 'Среда вечером',
@@ -25,6 +30,16 @@ const settings: GameTemplateSnapshot = {
 };
 
 describe('game creation presenter', () => {
+  it('rejects non-canonical draft revisions and compact ids', () => {
+    const compact = compactGameUuid('40000000-0000-4000-8000-000000000000');
+    expect(parseGameDraftControlId(`${compact}.t.00`)).toBeNull();
+    expect(parseGameDraftControlId(`${compact}.t.A`)).toBeNull();
+    expect(compact.endsWith('A')).toBe(true);
+    expect(() => expandGameCompactUuid(`${compact.slice(0, -1)}B`)).toThrow(
+      'Invalid compact UUID',
+    );
+  });
+
   it('renders every required preview field in the group local time without identifiers', () => {
     const gameId = '40000000-0000-4000-8000-000000000001';
     const scheduled = {

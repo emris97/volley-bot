@@ -78,10 +78,11 @@ export const parseTemplateDraftControlId = (
     draftId === undefined ||
     !/^[0-9a-f]{32}$/i.test(draftId) ||
     step === undefined ||
-    !/^[0-9a-z]+$/.test(revisionCode ?? '') ||
+    !/^(?:0|[1-9a-z][0-9a-z]*)$/.test(revisionCode ?? '') ||
     !Number.isSafeInteger(viewRevision) ||
     viewRevision < 0 ||
-    viewRevision > 2_147_483_647
+    viewRevision > 2_147_483_647 ||
+    viewRevision.toString(36) !== revisionCode
     ? null
     : { draftId, step, viewRevision };
 };

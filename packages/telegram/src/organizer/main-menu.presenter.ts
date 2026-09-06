@@ -16,6 +16,10 @@ export const renderOrganizerHome = (
     return renderNoGroupsHome();
   }
 
+  if (groups.length >= 2 && groups.every((group) => !group.selected)) {
+    return renderOrganizerGroupPicker(groups);
+  }
+
   const selected = groups.find((group) => group.selected) ?? groups.at(0);
   if (selected === undefined) return renderNoGroupsHome();
   return {

@@ -671,8 +671,11 @@ const parseRevisionToken = (
   const revision = Number.parseInt(revisionText ?? '', 36);
   return templateId === null ||
     rest.length > 0 ||
+    !/^[1-9a-z][0-9a-z]*$/.test(revisionText ?? '') ||
     !Number.isSafeInteger(revision) ||
-    revision < 1
+    revision < 1 ||
+    revision > 2_147_483_647 ||
+    revision.toString(36) !== revisionText
     ? null
     : { templateId, revision };
 };
