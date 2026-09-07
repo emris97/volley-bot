@@ -38,6 +38,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   GameCreationHandlers,
   registerGameCreationHandlers,
+  type GameCreationDefaults,
   type GameCreationDraftRepository,
   type GameCreationHandlerOptions,
   type GameCreationOrganizerContext,
@@ -159,6 +160,9 @@ describe('private game creation bot flow', () => {
     await harness.click('Команда 1');
     await harness.click('Среда вечером');
     await harness.text('10.09.2026');
+    await harness.click('Время начала');
+    await harness.click('20');
+    await harness.click('20:15');
     await harness.click('Количество мест');
     await harness.text('24');
     await harness.click('Предпросмотр');
@@ -200,6 +204,68 @@ describe('private game creation bot flow', () => {
         "SELECT id FROM outbox_events WHERE event_type = 'GAME_CREATED'",
       ),
     ).resolves.toMatchObject({ rowCount: 1 });
+  });
+
+  it('creates a minimal game without a template using date and time pickers', async () => {
+    organizer = new MemoryOrganizer([firstGroupId]);
+    harness = createHarness(
+      organizer,
+      drafts,
+      templates,
+      publisher,
+      undefined,
+      {
+        load: async () => ({
+          memberPriorityEnabled: true,
+          tentativePromptMinutesBefore: 720,
+          tentativeResponseMinutes: 45,
+          reminderMinutesBefore: 90,
+          currency: 'RUB',
+          roundingMode: 'UP_10',
+        }),
+      },
+    );
+
+    await harness.command('/newgame');
+    await harness.click('Без шаблона');
+    expect(harness.lastMessage()).toContain('Место игры');
+    await harness.text('Арена');
+    expect(harness.lastMessage()).toContain('Выберите дату');
+    await harness.click('10');
+    expect(harness.lastMessage()).toContain('Выберите час');
+    await harness.click('19');
+    await harness.click('19:30');
+    expect(harness.lastMessage()).toContain('Сколько игроков');
+    await harness.click('12');
+    expect(harness.lastMessage()).toContain('Общая стоимость');
+    await harness.text('2400');
+
+    expect(harness.lastMessage()).toContain('Настройки игры');
+    expect(await drafts.load(firstGroupId, actorUserId)).toMatchObject({
+      step: 'CUSTOMIZE',
+      startsAtIso: '2026-09-10T15:30:00.000Z',
+      snapshot: {
+        name: 'Волейбол',
+        venue: 'Арена',
+        startsAtLocalTime: '19:30',
+        durationMinutes: 120,
+        capacity: 12,
+        registrationOpensMinutesBefore: 7_410,
+        defaultTotalCostMinor: 240_000n,
+        memberPriorityEnabled: true,
+        tentativePromptMinutesBefore: 720,
+        tentativeResponseMinutes: 45,
+        reminderMinutesBefore: 90,
+        roundingMode: 'UP_10',
+      },
+    });
+    await harness.click('Предпросмотр');
+    expect(harness.lastMessage()).toContain('Регистрация откроется сразу');
+    await harness.click('Опубликовать');
+    expect(await drafts.load(firstGroupId, actorUserId)).toMatchObject({
+      step: 'PUBLISHED',
+      templateId: undefined,
+    });
   });
 
   it('resumes a persisted draft after handler recreation and supports back', async () => {
@@ -719,6 +785,7 @@ const createHarness = (
   templateRepository: GameCreationTemplates,
   publishGame: GameCreationHandlerOptions['publishGame'],
   textFlows?: OrganizerTextFlowCoordinator,
+  defaults?: GameCreationDefaults,
 ) => {
   const handlers = new GameCreationHandlers({
     organizerContext,
@@ -727,6 +794,7 @@ const createHarness = (
     publishGame,
     clock: () => new Date('2026-09-05T12:00:00.000Z'),
     textFlows,
+    defaults,
   });
   const bot = new Bot('123456:abcdefghijklmnopqrstuvwxyz', { botInfo });
   const messages: Array<{

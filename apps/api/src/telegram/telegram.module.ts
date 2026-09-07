@@ -269,6 +269,10 @@ export const registerProductionTelegramHandlers = (
           },
           publishGame,
           textFlows,
+          defaults: {
+            load: async (groupId) =>
+              (await groups.getOnboardingSnapshot(groupId))?.settings ?? null,
+          },
         });
         const templateHandlers = new TemplateWizardHandlers(
           organizerContext,

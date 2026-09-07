@@ -227,7 +227,11 @@ export class RegistrationRepository {
     });
   }
 
-  public async resolve(gameId: GameId, telegramUserId: TelegramId) {
+  public async resolve(
+    gameId: GameId,
+    telegramUserId: TelegramId,
+    displayName?: string,
+  ) {
     return this.database.transaction(async (transaction) => {
       const [game] = await transaction
         .select({ groupId: games.groupId })
@@ -235,12 +239,23 @@ export class RegistrationRepository {
         .where(eq(games.id, gameId))
         .limit(1);
       if (game === undefined) throw new Error('Game not found');
+      const normalizedDisplayName = displayName?.trim() || undefined;
       const [user] = await transaction
         .insert(users)
-        .values({ telegramUserId: BigInt(telegramUserId) })
+        .values({
+          telegramUserId: BigInt(telegramUserId),
+          ...(normalizedDisplayName === undefined
+            ? {}
+            : { displayName: normalizedDisplayName }),
+        })
         .onConflictDoUpdate({
           target: users.telegramUserId,
-          set: { updatedAt: new Date() },
+          set: {
+            updatedAt: new Date(),
+            ...(normalizedDisplayName === undefined
+              ? {}
+              : { displayName: normalizedDisplayName }),
+          },
         })
         .returning({ id: users.id });
       if (user === undefined) throw new Error('User upsert returned no row');
@@ -323,6 +338,49 @@ export class RegistrationRepository {
         )
         .limit(1);
       if (existing !== undefined) {
+        const alreadyHasIntent =
+          input.intent === 'TENTATIVE'
+            ? existing.state === 'TENTATIVE'
+            : existing.state === 'ROSTERED' || existing.state === 'WAITLISTED';
+        if (!alreadyHasIntent) {
+          const now = new Date();
+          await transaction
+            .update(registrations)
+            .set({
+              state: input.intent === 'TENTATIVE' ? 'TENTATIVE' : 'WAITLISTED',
+              confirmedAt: input.intent === 'TENTATIVE' ? null : now,
+              confirmationRevision: existing.confirmationRevision + 1,
+              membershipPriority: input.membershipPriority,
+              updatedAt: now,
+            })
+            .where(eq(registrations.id, existing.id));
+          await recalculatePlacement(
+            transaction,
+            input,
+            game.capacity,
+            now,
+            input.intent === 'CONFIRMED' ? [existing.id] : [],
+            game.memberPriorityEnabled,
+          );
+          const active = await activeCandidates(
+            transaction,
+            input,
+            game.memberPriorityEnabled,
+          );
+          const changed = active.find((item) => item.id === existing.id);
+          if (changed === undefined) {
+            throw new Error('Updated registration not found');
+          }
+          await recordChange(transaction, {
+            groupId: input.groupId,
+            gameId: input.gameId,
+            registrationId: existing.id,
+            actorUserId: input.userId,
+            eventType: 'PARTICIPANT_STATUS_CHANGED',
+            payload: { fromState: existing.state, state: changed.state },
+          });
+          return resultFor(existing.id, changed.state, active);
+        }
         return resultFor(
           existing.id,
           existing.state,

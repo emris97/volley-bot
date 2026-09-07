@@ -7,7 +7,11 @@ import type { SettingsEditorField } from '../organizer/settings-editor.model.js'
 
 const stepCodes: Record<GameCreationDraftStep, string> = {
   TEMPLATE: 't',
+  SCRATCH_VENUE: 'v',
   DATE: 'd',
+  SCRATCH_TIME: 'i',
+  SCRATCH_CAPACITY: 'a',
+  SCRATCH_COST: 'o',
   CUSTOMIZE: 'c',
   PREVIEW: 'p',
   PUBLISHED: 'u',

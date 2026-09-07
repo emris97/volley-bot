@@ -62,7 +62,13 @@ import {
   renderGamePreviewView,
   renderGamePublished,
   renderGameTemplateChoice,
+  renderScratchCapacity,
+  renderScratchCost,
+  renderScratchHour,
+  renderScratchMinute,
+  renderScratchVenue,
 } from './game-creation.presenter.js';
+import { localIsoDate } from '../organizer/date-time-picker.js';
 
 export interface GameCreationDraftRepository {
   load(
@@ -129,6 +135,18 @@ export interface GameCreationHandlerOptions {
   publishGame: GamePublisher;
   clock?: () => Date;
   textFlows?: OrganizerTextFlowCoordinator;
+  defaults?: GameCreationDefaults;
+}
+
+export interface GameCreationDefaults {
+  load(groupId: GroupId): Promise<{
+    memberPriorityEnabled: boolean;
+    tentativePromptMinutesBefore: number;
+    tentativeResponseMinutes: number;
+    reminderMinutesBefore: number;
+    currency: 'RUB';
+    roundingMode: 'EXACT' | 'UP_1' | 'UP_10' | 'UP_50';
+  } | null>;
 }
 
 type ActorInput = {
@@ -144,6 +162,7 @@ export class GameCreationHandlers {
   private readonly publishGame: GamePublisher;
   private readonly clock: () => Date;
   private readonly textFlows?: OrganizerTextFlowCoordinator;
+  private readonly defaults?: GameCreationDefaults;
 
   public constructor(options: GameCreationHandlerOptions);
   public constructor(
@@ -163,6 +182,7 @@ export class GameCreationHandlers {
       this.publishGame = optionsOrDrafts.publishGame;
       this.clock = optionsOrDrafts.clock ?? (() => new Date());
       this.textFlows = optionsOrDrafts.textFlows;
+      this.defaults = optionsOrDrafts.defaults;
       return;
     }
     this.drafts = optionsOrDrafts;
@@ -339,6 +359,40 @@ export class GameCreationHandlers {
     );
   }
 
+  private async beginScratch(
+    telegramUserId: TelegramId,
+    controlId?: string,
+  ): Promise<OrganizerView> {
+    const actor = await this.requiredOrganizer().require(telegramUserId);
+    const draft = await this.drafts.load(actor.groupId, actor.userId);
+    if (
+      draft === null ||
+      draft.step !== 'TEMPLATE' ||
+      !sameGameDraftControl(draft, parseGameDraftControlId(controlId))
+    ) {
+      return draft === null
+        ? this.beginFor(actor)
+        : this.renderCurrent(actor, draft, staleControlText);
+    }
+    try {
+      const updated = nextGameDraftView({
+        ...draft,
+        step: 'SCRATCH_VENUE',
+        templateId: undefined,
+        snapshot: undefined,
+        startsAtIso: undefined,
+        editingField: undefined,
+        cancelPending: false,
+        previewed: false,
+      });
+      await this.saveMutation(updated);
+      await this.claim(actor, updated);
+      return renderScratchVenue(updated);
+    } catch (error) {
+      return this.renderMutationError(actor, error);
+    }
+  }
+
   public async setDate(
     telegramUserId: TelegramId,
     date: string,
@@ -361,7 +415,18 @@ export class GameCreationHandlers {
       return renderGameDateStep(
         draft,
         actor.timeZone,
+        this.clock(),
+        undefined,
         'Введите дату в формате ДД.ММ.ГГГГ, например 10.09.2026.',
+      );
+    }
+    if (parsedDate < localIsoDate(this.clock(), actor.timeZone)) {
+      return renderGameDateStep(
+        draft,
+        actor.timeZone,
+        this.clock(),
+        undefined,
+        'Дата игры не может быть в прошлом.',
       );
     }
     try {
@@ -377,7 +442,13 @@ export class GameCreationHandlers {
       );
     } catch (error) {
       if (error instanceof LocalDateTimeResolutionError) {
-        return renderGameDateStep(draft, actor.timeZone, localTimeErrorText);
+        return renderGameDateStep(
+          draft,
+          actor.timeZone,
+          this.clock(),
+          undefined,
+          localTimeErrorText,
+        );
       }
       return this.renderMutationError(actor, error);
     }
@@ -387,6 +458,240 @@ export class GameCreationHandlers {
     input: ActorInput & { startsAt: Date },
   ): Promise<void> {
     return this.setStartsAtDirect(input);
+  }
+
+  private async setScratchVenue(
+    actor: OrganizerContext,
+    draft: GameCreationDraft,
+    text: string,
+  ): Promise<OrganizerView> {
+    const venue = parseUnicodeText(text, 1, 120, 'VENUE_LENGTH');
+    if (isParseError(venue))
+      return renderScratchVenue(draft, 'Укажите место длиной до 120 символов.');
+    const groupDefaults =
+      (await this.defaults?.load(actor.groupId)) ?? fallbackGameDefaults;
+    const snapshot = validateTemplateSnapshot({
+      name: 'Волейбол',
+      venue,
+      address: null,
+      startsAtLocalTime: '19:00',
+      durationMinutes: 120,
+      capacity: 12,
+      registrationOpensMinutesBefore: 0,
+      registrationClosesMinutesBefore: null,
+      tentativePromptMinutesBefore: groupDefaults.tentativePromptMinutesBefore,
+      tentativeResponseMinutes: groupDefaults.tentativeResponseMinutes,
+      reminderMinutesBefore: groupDefaults.reminderMinutesBefore,
+      memberPriorityEnabled: groupDefaults.memberPriorityEnabled,
+      defaultTotalCostMinor: 0n,
+      currency: groupDefaults.currency,
+      roundingMode: groupDefaults.roundingMode,
+    });
+    try {
+      const updated = nextGameDraftView({
+        ...draft,
+        step: 'DATE',
+        snapshot,
+        previewed: false,
+      });
+      await this.saveMutation(updated);
+      return this.renderCurrent(actor, updated);
+    } catch (error) {
+      return this.renderMutationError(actor, error);
+    }
+  }
+
+  private async showCalendarMonth(
+    telegramUserId: TelegramId,
+    opaqueId?: string,
+  ): Promise<OrganizerView> {
+    const parsed = parseValueControl(opaqueId);
+    const actor = await this.requiredOrganizer().require(telegramUserId);
+    const draft = await this.drafts.load(actor.groupId, actor.userId);
+    if (
+      parsed === null ||
+      !/^\d{6}$/.test(parsed.value) ||
+      draft === null ||
+      draft.step !== 'DATE' ||
+      !sameGameDraftControl(draft, parseGameDraftControlId(parsed.controlId))
+    ) {
+      return draft === null
+        ? this.beginFor(actor)
+        : this.renderCurrent(actor, draft, staleControlText);
+    }
+    const month = `${parsed.value.slice(0, 4)}-${parsed.value.slice(4)}`;
+    try {
+      return renderGameDateStep(draft, actor.timeZone, this.clock(), month);
+    } catch {
+      return this.renderCurrent(actor, draft, staleControlText);
+    }
+  }
+
+  private async selectCalendarDate(
+    telegramUserId: TelegramId,
+    opaqueId?: string,
+  ): Promise<OrganizerView> {
+    const parsed = parseValueControl(opaqueId);
+    if (parsed === null || !/^\d{8}$/.test(parsed.value))
+      return this.currentForUser(telegramUserId, staleControlText);
+    const date = `${parsed.value.slice(6)}.${parsed.value.slice(4, 6)}.${parsed.value.slice(0, 4)}`;
+    return this.setDate(telegramUserId, date, parsed.controlId);
+  }
+
+  private async selectScratchHour(
+    telegramUserId: TelegramId,
+    opaqueId?: string,
+  ): Promise<OrganizerView> {
+    const parsed = parseValueControl(opaqueId);
+    const actor = await this.requiredOrganizer().require(telegramUserId);
+    const draft = await this.drafts.load(actor.groupId, actor.userId);
+    const hour = Number(parsed?.value);
+    if (
+      parsed === null ||
+      !/^\d{2}$/.test(parsed.value) ||
+      hour < 0 ||
+      hour > 23 ||
+      draft === null ||
+      (draft.step !== 'SCRATCH_TIME' &&
+        !(draft.step === 'CUSTOMIZE' && draft.editingField === 'TIME')) ||
+      !sameGameDraftControl(draft, parseGameDraftControlId(parsed.controlId))
+    ) {
+      return draft === null
+        ? this.beginFor(actor)
+        : this.renderCurrent(actor, draft, staleControlText);
+    }
+    return renderScratchMinute(draft, hour);
+  }
+
+  private async selectScratchTime(
+    telegramUserId: TelegramId,
+    opaqueId?: string,
+  ): Promise<OrganizerView> {
+    const parsed = parseValueControl(opaqueId);
+    const actor = await this.requiredOrganizer().require(telegramUserId);
+    const draft = await this.drafts.load(actor.groupId, actor.userId);
+    if (
+      parsed === null ||
+      !/^(?:[01]\d|2[0-3])(?:00|15|30|45)$/.test(parsed.value) ||
+      draft === null ||
+      (draft.step !== 'SCRATCH_TIME' &&
+        !(draft.step === 'CUSTOMIZE' && draft.editingField === 'TIME')) ||
+      draft.startsAtIso === undefined ||
+      draft.snapshot === undefined ||
+      !sameGameDraftControl(draft, parseGameDraftControlId(parsed.controlId))
+    ) {
+      return draft === null
+        ? this.beginFor(actor)
+        : this.renderCurrent(actor, draft, staleControlText);
+    }
+    const time = `${parsed.value.slice(0, 2)}:${parsed.value.slice(2)}`;
+    try {
+      if (draft.step === 'CUSTOMIZE')
+        return this.applyFieldChange(
+          actor,
+          draft,
+          { startsAtLocalTime: time },
+          time,
+        );
+      const startsAt = localDateTimeToInstant({
+        date: localDateFor(draft.startsAtIso, actor.timeZone),
+        time,
+        timeZone: actor.timeZone,
+      });
+      if (startsAt <= this.clock())
+        return renderScratchHour(draft, 'Время игры должно быть в будущем.');
+      const updated = nextGameDraftView({
+        ...draft,
+        step: 'SCRATCH_CAPACITY',
+        startsAtIso: startsAt.toISOString(),
+        snapshot: { ...draft.snapshot, startsAtLocalTime: time },
+      });
+      await this.saveMutation(updated);
+      return renderScratchCapacity(updated);
+    } catch (error) {
+      if (error instanceof LocalDateTimeResolutionError)
+        return renderScratchHour(draft, localTimeErrorText);
+      return this.renderMutationError(actor, error);
+    }
+  }
+
+  private async selectScratchCapacity(
+    telegramUserId: TelegramId,
+    opaqueId?: string,
+  ): Promise<OrganizerView> {
+    const parsed = parseValueControl(opaqueId);
+    const actor = await this.requiredOrganizer().require(telegramUserId);
+    const draft = await this.drafts.load(actor.groupId, actor.userId);
+    if (
+      parsed === null ||
+      draft === null ||
+      draft.step !== 'SCRATCH_CAPACITY' ||
+      !sameGameDraftControl(draft, parseGameDraftControlId(parsed.controlId))
+    ) {
+      return draft === null
+        ? this.beginFor(actor)
+        : this.renderCurrent(actor, draft, staleControlText);
+    }
+    return this.setScratchCapacity(actor, draft, parsed.value);
+  }
+
+  private async setScratchCapacity(
+    actor: OrganizerContext,
+    draft: GameCreationDraft,
+    text: string,
+  ): Promise<OrganizerView> {
+    const capacity = parseInteger(text, 1, 200, 'CAPACITY_RANGE');
+    if (isParseError(capacity))
+      return renderScratchCapacity(draft, 'Введите число от 1 до 200.');
+    try {
+      const updated = nextGameDraftView({
+        ...draft,
+        step: 'SCRATCH_COST',
+        snapshot: { ...draft.snapshot!, capacity },
+      });
+      await this.saveMutation(updated);
+      return renderScratchCost(updated);
+    } catch (error) {
+      return this.renderMutationError(actor, error);
+    }
+  }
+
+  private async setScratchCost(
+    actor: OrganizerContext,
+    draft: GameCreationDraft,
+    text: string,
+  ): Promise<OrganizerView> {
+    const cost = parseRubles(text);
+    if (isParseError(cost))
+      return renderScratchCost(
+        draft,
+        'Введите общую сумму в рублях, например 2400.',
+      );
+    try {
+      const registrationOpensMinutesBefore = Math.max(
+        0,
+        Math.ceil(
+          (new Date(draft.startsAtIso!).getTime() - this.clock().getTime()) /
+            60_000,
+        ),
+      );
+      const snapshot = validateTemplateSnapshot({
+        ...draft.snapshot!,
+        defaultTotalCostMinor: cost,
+        registrationOpensMinutesBefore,
+      });
+      const updated = nextGameDraftView({
+        ...draft,
+        step: 'CUSTOMIZE',
+        snapshot,
+        editingField: undefined,
+        previewed: false,
+      });
+      await this.saveMutation(updated);
+      return renderGameCustomize(updated);
+    } catch (error) {
+      return this.renderMutationError(actor, error);
+    }
   }
 
   public async editField(
@@ -566,7 +871,13 @@ export class GameCreationHandlers {
     const draft = await this.drafts.load(actor.groupId, actor.userId);
     if (draft === null || draft.cancelPending === true) return false;
     if (!(await this.owns(telegramUserId, actor, draft))) return false;
+    if (draft.step === 'SCRATCH_VENUE')
+      return this.setScratchVenue(actor, draft, text);
     if (draft.step === 'DATE') return this.setDate(telegramUserId, text);
+    if (draft.step === 'SCRATCH_CAPACITY')
+      return this.setScratchCapacity(actor, draft, text);
+    if (draft.step === 'SCRATCH_COST')
+      return this.setScratchCost(actor, draft, text);
     if (draft.step !== 'CUSTOMIZE' || draft.editingField === undefined)
       return false;
     const field = draft.editingField as SettingsEditorField;
@@ -621,6 +932,20 @@ export class GameCreationHandlers {
           token.controlId,
         );
       }
+      if (callback.action === 'z')
+        return this.beginScratch(telegramUserId, callback.opaqueId);
+      if (callback.action === 'j')
+        return this.showCalendarMonth(telegramUserId, callback.opaqueId);
+      if (callback.action === 'd')
+        return this.selectCalendarDate(telegramUserId, callback.opaqueId);
+      if (callback.action === 'h')
+        return this.selectScratchHour(telegramUserId, callback.opaqueId);
+      if (callback.action === 'm')
+        return this.selectScratchTime(telegramUserId, callback.opaqueId);
+      if (callback.action === 'a')
+        return this.selectScratchCapacity(telegramUserId, callback.opaqueId);
+      if (callback.action === 'o')
+        return this.showCalendarMonth(telegramUserId, callback.opaqueId);
       if (callback.action === 'e') {
         const token = parseFieldControl(callback.opaqueId);
         if (token === null)
@@ -706,7 +1031,10 @@ export class GameCreationHandlers {
     await this.saveMutation(
       nextGameDraftView({
         ...draft,
-        step: 'CUSTOMIZE',
+        step:
+          draft.step === 'DATE' && draft.templateId === undefined
+            ? 'SCRATCH_TIME'
+            : 'CUSTOMIZE',
         startsAtIso: input.startsAt.toISOString(),
         editingField: undefined,
         cancelPending: false,
@@ -803,8 +1131,20 @@ export class GameCreationHandlers {
         notice,
       });
     }
+    if (draft.step === 'SCRATCH_VENUE')
+      return renderScratchVenue(draft, notice);
     if (draft.step === 'DATE')
-      return renderGameDateStep(draft, actor.timeZone, notice);
+      return renderGameDateStep(
+        draft,
+        actor.timeZone,
+        this.clock(),
+        undefined,
+        notice,
+      );
+    if (draft.step === 'SCRATCH_TIME') return renderScratchHour(draft, notice);
+    if (draft.step === 'SCRATCH_CAPACITY')
+      return renderScratchCapacity(draft, notice);
+    if (draft.step === 'SCRATCH_COST') return renderScratchCost(draft, notice);
     if (draft.step === 'CUSTOMIZE')
       return draft.editingField === undefined
         ? renderGameCustomize(draft, notice)
@@ -852,14 +1192,26 @@ export class GameCreationHandlers {
         : this.renderCurrent(actor, draft, staleControlText);
     }
     let changed: GameCreationDraft;
-    if (draft.step === 'DATE') {
-      changed = {
-        ...draft,
-        step: 'TEMPLATE',
-        templateId: undefined,
-        snapshot: undefined,
-        startsAtIso: undefined,
-      };
+    if (draft.step === 'SCRATCH_VENUE') {
+      changed = { ...draft, step: 'TEMPLATE' };
+    } else if (draft.step === 'DATE') {
+      if (draft.templateId === undefined && draft.snapshot !== undefined) {
+        changed = { ...draft, step: 'SCRATCH_VENUE', startsAtIso: undefined };
+      } else {
+        changed = {
+          ...draft,
+          step: 'TEMPLATE',
+          templateId: undefined,
+          snapshot: undefined,
+          startsAtIso: undefined,
+        };
+      }
+    } else if (draft.step === 'SCRATCH_TIME') {
+      changed = { ...draft, step: 'DATE', startsAtIso: undefined };
+    } else if (draft.step === 'SCRATCH_CAPACITY') {
+      changed = { ...draft, step: 'SCRATCH_TIME' };
+    } else if (draft.step === 'SCRATCH_COST') {
+      changed = { ...draft, step: 'SCRATCH_CAPACITY' };
     } else if (draft.step === 'CUSTOMIZE') {
       changed =
         draft.editingField === undefined
@@ -1271,6 +1623,23 @@ const parseChoiceControl = (
     : { choice, controlId: `${compactDraftId}.${step}.${revision}` };
 };
 
+const parseValueControl = (
+  value: string | undefined,
+): { value: string; controlId: string } | null => {
+  const [selectedValue, compactDraftId, step, revision, ...rest] =
+    value?.split('.') ?? [];
+  return rest.length > 0 ||
+    selectedValue === undefined ||
+    compactDraftId === undefined ||
+    step === undefined ||
+    revision === undefined
+    ? null
+    : {
+        value: selectedValue,
+        controlId: `${compactDraftId}.${step}.${revision}`,
+      };
+};
+
 const decodeGroupId = (value: string | undefined): GroupId | null => {
   if (value === undefined) return null;
   try {
@@ -1416,6 +1785,15 @@ const snapshotOf = (template: GameTemplate): GameTemplateSnapshot => ({
   currency: template.currency,
   roundingMode: template.roundingMode,
 });
+
+const fallbackGameDefaults = {
+  memberPriorityEnabled: false,
+  tentativePromptMinutesBefore: 1_440,
+  tentativeResponseMinutes: 60,
+  reminderMinutesBefore: 120,
+  currency: 'RUB',
+  roundingMode: 'EXACT',
+} as const;
 
 const localDateFor = (iso: string, timeZone: string): string => {
   const parts = Object.fromEntries(

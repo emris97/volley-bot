@@ -7,7 +7,15 @@ import type {
 } from '@volley/domain';
 
 export type GameCreationDraftStep =
-  'TEMPLATE' | 'DATE' | 'CUSTOMIZE' | 'PREVIEW' | 'PUBLISHED';
+  | 'TEMPLATE'
+  | 'SCRATCH_VENUE'
+  | 'DATE'
+  | 'SCRATCH_TIME'
+  | 'SCRATCH_CAPACITY'
+  | 'SCRATCH_COST'
+  | 'CUSTOMIZE'
+  | 'PREVIEW'
+  | 'PUBLISHED';
 
 export type GameCreationDraftEditField =
   | 'NAME'

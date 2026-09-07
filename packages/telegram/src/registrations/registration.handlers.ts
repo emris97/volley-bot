@@ -27,6 +27,7 @@ export interface RegistrationActorResolver {
   resolve(
     gameId: GameId,
     telegramUserId: TelegramId,
+    displayName?: string,
   ): Promise<RegistrationActor>;
 }
 
@@ -78,6 +79,7 @@ export class RegistrationHandlers {
 
   public async handleCallback(input: {
     telegramUserId: TelegramId;
+    displayName: string;
     updateId: number;
     data: string;
   }): Promise<string> {
@@ -85,6 +87,7 @@ export class RegistrationHandlers {
     const actor = await this.actors.resolve(
       callback.gameId,
       input.telegramUserId,
+      input.displayName,
     );
     if (callback.action === 'GOING' || callback.action === 'TENTATIVE') {
       const result = await this.register.execute({
@@ -125,6 +128,7 @@ export const registerRegistrationHandlers = (
   bot.callbackQuery(/^v1:/, async (context) => {
     const text = await handlers.handleCallback({
       telegramUserId: toTelegramId(context.callbackQuery.from.id),
+      displayName: telegramDisplayName(context.callbackQuery.from),
       updateId: context.update.update_id,
       data: context.callbackQuery.data,
     });
@@ -134,10 +138,26 @@ export const registerRegistrationHandlers = (
         text: 'Откройте личный чат с ботом.',
       });
     } else {
-      await context.answerCallbackQuery({ text });
+      await context.answerCallbackQuery({ text, show_alert: true });
     }
   });
   return bot;
+};
+
+const telegramDisplayName = (user: {
+  first_name: string;
+  last_name?: string;
+  username?: string;
+}): string => {
+  const fullName = [user.first_name, user.last_name]
+    .filter((part): part is string => part !== undefined)
+    .join(' ')
+    .trim();
+  return fullName.length > 0
+    ? fullName
+    : user.username === undefined
+      ? 'Игрок'
+      : `@${user.username}`;
 };
 
 const statusText = (result: RegistrationResult): string => {

@@ -112,6 +112,9 @@ describe('game creation presenter', () => {
     });
 
     expect(view.text).not.toContain(templateId);
+    expect(view.keyboard.flat().map(({ text }) => text)).toContain(
+      'Без шаблона',
+    );
     expect(
       view.keyboard.flat().every(({ callbackData }) => {
         return (
