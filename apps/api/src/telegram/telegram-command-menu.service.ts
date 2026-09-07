@@ -10,12 +10,12 @@ interface CommandMenuApi {
     commands: typeof PRIVATE_COMMANDS,
     options: {
       scope: { type: 'all_private_chats' };
-      language_code: 'ru';
+      language_code?: 'ru';
     },
   ): Promise<unknown>;
   deleteMyCommands(options: {
     scope: { type: 'all_group_chats' | 'all_chat_administrators' };
-    language_code: 'ru';
+    language_code?: 'ru';
   }): Promise<unknown>;
 }
 
@@ -61,16 +61,18 @@ export class TelegramCommandMenuService
     try {
       await this.api.setMyCommands(PRIVATE_COMMANDS, {
         scope: { type: 'all_private_chats' },
+      });
+      await this.api.setMyCommands(PRIVATE_COMMANDS, {
+        scope: { type: 'all_private_chats' },
         language_code: 'ru',
       });
-      await this.api.deleteMyCommands({
-        scope: { type: 'all_group_chats' },
-        language_code: 'ru',
-      });
-      await this.api.deleteMyCommands({
-        scope: { type: 'all_chat_administrators' },
-        language_code: 'ru',
-      });
+      for (const scope of [
+        { type: 'all_group_chats' as const },
+        { type: 'all_chat_administrators' as const },
+      ]) {
+        await this.api.deleteMyCommands({ scope });
+        await this.api.deleteMyCommands({ scope, language_code: 'ru' });
+      }
       this.timer = undefined;
     } catch (error) {
       if (this.stopped) return;

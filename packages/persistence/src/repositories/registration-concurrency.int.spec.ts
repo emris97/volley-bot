@@ -1,6 +1,7 @@
 import {
   asGameId,
   asGroupId,
+  asTelegramId,
   asUserId,
   type RegistrationState,
 } from '@volley/domain';
@@ -202,6 +203,76 @@ describe('RegistrationRepository concurrency', () => {
     expect(await registrationState(pool, tentative.registrationId)).toBe(
       'ROSTERED',
     );
+  });
+
+  it('stores the latest Telegram display name while resolving a player', async () => {
+    const groupId = await insertGroupWithChat(pool, '-2005');
+    const gameId = await insertOpenGame(pool, groupId, 12);
+    const repository = new RegistrationRepository(createDatabase(pool));
+
+    await repository.resolve(gameId, asTelegramId('501'), 'Ада Лавлейс');
+
+    const stored = await pool.query<{ display_name: string | null }>(
+      'SELECT display_name FROM users WHERE telegram_user_id = $1',
+      ['501'],
+    );
+    expect(stored.rows).toEqual([{ display_name: 'Ада Лавлейс' }]);
+  });
+
+  it('switches directly between confirmed and tentative registration', async () => {
+    const groupId = await insertGroupWithChat(pool, '-2006');
+    const gameId = await insertOpenGame(pool, groupId, 1);
+    const firstUserId = await insertUser(pool, '601');
+    const secondUserId = await insertUser(pool, '602');
+    const repository = new RegistrationRepository(createDatabase(pool));
+    const first = await repository.registerParticipant({
+      groupId,
+      gameId,
+      userId: firstUserId,
+      intent: 'CONFIRMED',
+      membershipPriority: 1,
+      idempotencyKey: 'callback:switch-first',
+    });
+    const second = await repository.registerParticipant({
+      groupId,
+      gameId,
+      userId: secondUserId,
+      intent: 'CONFIRMED',
+      membershipPriority: 1,
+      idempotencyKey: 'callback:switch-second',
+    });
+
+    const tentative = await repository.registerParticipant({
+      groupId,
+      gameId,
+      userId: firstUserId,
+      intent: 'TENTATIVE',
+      membershipPriority: 1,
+      idempotencyKey: 'callback:switch-maybe',
+    });
+
+    expect(tentative).toMatchObject({
+      registrationId: first.registrationId,
+      state: 'TENTATIVE',
+    });
+    expect(await registrationState(pool, second.registrationId)).toBe(
+      'ROSTERED',
+    );
+
+    const confirmedAgain = await repository.registerParticipant({
+      groupId,
+      gameId,
+      userId: firstUserId,
+      intent: 'CONFIRMED',
+      membershipPriority: 1,
+      idempotencyKey: 'callback:switch-going',
+    });
+
+    expect(confirmedAgain).toMatchObject({
+      registrationId: first.registrationId,
+      state: 'WAITLISTED',
+      waitlistPosition: 1,
+    });
   });
 
   it('updates the game revision transactionally, rebalances capacity, and separates schedule revisions', async () => {

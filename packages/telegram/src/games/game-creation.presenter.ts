@@ -5,6 +5,12 @@ import type {
 import type { GameTemplate } from '@volley/domain';
 import type { OrganizerView } from '../organizer/main-menu.presenter.js';
 import type { SettingsEditorField } from '../organizer/settings-editor.model.js';
+import {
+  localIsoDate,
+  renderCalendarKeyboard,
+  renderHourKeyboard,
+  renderMinuteKeyboard,
+} from '../organizer/date-time-picker.js';
 import { renderGamePreview } from '../messages/game-preview.renderer.js';
 import {
   compactGameUuid,
@@ -39,6 +45,13 @@ const gameCreationActions = new Set([
   'n',
   's',
   'k',
+  'z',
+  'd',
+  'j',
+  'h',
+  'm',
+  'a',
+  'o',
 ]);
 
 export const isGameCreationCallbackShape = (
@@ -100,7 +113,7 @@ export const renderGameTemplateChoice = (
     input.notice,
     '<b>Выберите шаблон игры</b>',
     input.templates.length === 0
-      ? 'Нет активных шаблонов. Сначала создайте шаблон через /templates.'
+      ? 'Нет активных шаблонов. Можно быстро создать игру без шаблона.'
       : 'Настройки шаблона будут скопированы в игру.',
   ]
     .filter(Boolean)
@@ -118,6 +131,12 @@ export const renderGameTemplateChoice = (
     ]),
     [
       {
+        text: 'Без шаблона',
+        callbackData: draftCallback('z', input.draft),
+      },
+    ],
+    [
+      {
         text: 'Отмена',
         callbackData: draftCallback('x', input.draft),
       },
@@ -128,12 +147,110 @@ export const renderGameTemplateChoice = (
 export const renderGameDateStep = (
   draft: GameCreationDraft,
   timeZone: string,
+  now: Date,
+  visibleMonth?: string,
+  notice?: string,
+): OrganizerView => {
+  const today = localIsoDate(now, timeZone);
+  const month = visibleMonth ?? today.slice(0, 7);
+  return {
+    text: [
+      notice,
+      '<b>Дата игры</b>',
+      `Выберите дату. Часовой пояс: ${escapeHtml(timeZone)}. Можно также отправить дату в формате ДД.ММ.ГГГГ.`,
+    ]
+      .filter(Boolean)
+      .join('\n\n'),
+    parseMode: 'HTML',
+    keyboard: [
+      ...renderCalendarKeyboard({
+        month,
+        minDate: today,
+        callbackData: (action, value) =>
+          gameCreationCallback(
+            { date: 'd', month: 'j', noop: 'o' }[action]!,
+            `${value}.${gameDraftControlId(draft)}`,
+          ),
+      }),
+      ...navigationKeyboard(draft),
+    ],
+  };
+};
+
+export const renderScratchVenue = (
+  draft: GameCreationDraft,
+  notice?: string,
+): OrganizerView => ({
+  text: [notice, '<b>Место игры</b>', 'Отправьте название площадки.']
+    .filter(Boolean)
+    .join('\n\n'),
+  parseMode: 'HTML',
+  keyboard: navigationKeyboard(draft),
+});
+
+export const renderScratchHour = (
+  draft: GameCreationDraft,
+  notice?: string,
+): OrganizerView => ({
+  text: [notice, '<b>Выберите час начала</b>'].filter(Boolean).join('\n\n'),
+  parseMode: 'HTML',
+  keyboard: [
+    ...renderHourKeyboard((hour) =>
+      gameCreationCallback('h', `${hour}.${gameDraftControlId(draft)}`),
+    ),
+    ...navigationKeyboard(draft),
+  ],
+});
+
+export const renderScratchMinute = (
+  draft: GameCreationDraft,
+  hour: number,
+): OrganizerView => ({
+  text: '<b>Выберите время начала</b>',
+  parseMode: 'HTML',
+  keyboard: [
+    ...renderMinuteKeyboard(hour, (time) =>
+      gameCreationCallback(
+        'm',
+        `${time.replace(':', '')}.${gameDraftControlId(draft)}`,
+      ),
+    ),
+    ...navigationKeyboard(draft),
+  ],
+});
+
+export const renderScratchCapacity = (
+  draft: GameCreationDraft,
   notice?: string,
 ): OrganizerView => ({
   text: [
     notice,
-    '<b>Дата игры</b>',
-    `Отправьте дату в формате ДД.ММ.ГГГГ. Время из шаблона: ${draft.snapshot?.startsAtLocalTime ?? '—'} (${escapeHtml(timeZone)}).`,
+    '<b>Сколько игроков?</b>',
+    'Выберите кнопку или отправьте число от 1 до 200.',
+  ]
+    .filter(Boolean)
+    .join('\n\n'),
+  parseMode: 'HTML',
+  keyboard: [
+    [10, 12, 14, 16].map((capacity) => ({
+      text: capacity.toString(),
+      callbackData: gameCreationCallback(
+        'a',
+        `${capacity}.${gameDraftControlId(draft)}`,
+      ),
+    })),
+    ...navigationKeyboard(draft),
+  ],
+});
+
+export const renderScratchCost = (
+  draft: GameCreationDraft,
+  notice?: string,
+): OrganizerView => ({
+  text: [
+    notice,
+    '<b>Общая стоимость</b>',
+    'Отправьте общую стоимость игры в рублях, например 2400.',
   ]
     .filter(Boolean)
     .join('\n\n'),
@@ -360,6 +477,10 @@ const fieldChoices = (
       [{ text: 'До 10 ₽ вверх', callbackData: callback('a') }],
       [{ text: 'До 50 ₽ вверх', callbackData: callback('f') }],
     ];
+  if (field === 'TIME')
+    return renderHourKeyboard((hour) =>
+      gameCreationCallback('h', `${hour}.${gameDraftControlId(draft)}`),
+    );
   return [];
 };
 
@@ -386,7 +507,7 @@ const fieldHint = (field: SettingsEditorField): string =>
     NAME: 'Отправьте название игры.',
     VENUE: 'Отправьте название площадки.',
     ADDRESS: 'Отправьте адрес или «-», если адрес не нужен.',
-    TIME: 'Отправьте время в формате ЧЧ:ММ.',
+    TIME: 'Выберите час или отправьте время в формате ЧЧ:ММ.',
     DURATION: 'Отправьте длительность в минутах (15–720).',
     CAPACITY: 'Отправьте количество мест (1–200).',
     OPENING: 'За сколько минут открыть регистрацию?',

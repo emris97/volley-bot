@@ -161,7 +161,11 @@ const draftKeys = new Set([
 ]);
 const steps = new Set<GameCreationDraftStep>([
   'TEMPLATE',
+  'SCRATCH_VENUE',
   'DATE',
+  'SCRATCH_TIME',
+  'SCRATCH_CAPACITY',
+  'SCRATCH_COST',
   'CUSTOMIZE',
   'PREVIEW',
   'PUBLISHED',

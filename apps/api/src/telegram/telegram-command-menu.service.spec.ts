@@ -6,6 +6,21 @@ describe('TelegramCommandMenuService', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  it('installs the private command menu for clients without a Russian locale', async () => {
+    const api = {
+      setMyCommands: vi.fn().mockResolvedValue(true),
+      deleteMyCommands: vi.fn().mockResolvedValue(true),
+    };
+    const service = new TelegramCommandMenuService(api, { warn: vi.fn() });
+
+    service.onApplicationBootstrap();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(api.setMyCommands).toHaveBeenCalledWith(PRIVATE_COMMANDS, {
+      scope: { type: 'all_private_chats' },
+    });
+  });
+
   it('retries private command installation after 1 and 2 seconds without blocking bootstrap', async () => {
     const api = {
       setMyCommands: vi
@@ -20,10 +35,13 @@ describe('TelegramCommandMenuService', () => {
     expect(() => service.onApplicationBootstrap()).not.toThrow();
     await vi.advanceTimersByTimeAsync(3_000);
 
-    expect(api.setMyCommands).toHaveBeenCalledTimes(3);
-    expect(api.setMyCommands).toHaveBeenNthCalledWith(3, PRIVATE_COMMANDS, {
+    expect(api.setMyCommands).toHaveBeenCalledTimes(4);
+    expect(api.setMyCommands).toHaveBeenNthCalledWith(4, PRIVATE_COMMANDS, {
       scope: { type: 'all_private_chats' },
       language_code: 'ru',
+    });
+    expect(api.deleteMyCommands).toHaveBeenCalledWith({
+      scope: { type: 'all_group_chats' },
     });
     expect(api.deleteMyCommands).toHaveBeenCalledWith({
       scope: { type: 'all_group_chats' },
